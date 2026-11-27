@@ -2885,6 +2885,23 @@ pub fn patch_default_model_in_config_toml(
     Ok(document.to_string())
 }
 
+/// Remove the default model pointer when the provider no longer has any models.
+pub fn clear_default_model_in_config_toml(existing: &str) -> Result<String, String> {
+    use toml_edit::DocumentMut;
+    let mut document = if existing.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        existing
+            .parse::<DocumentMut>()
+            .map_err(|error| format!("Invalid TOML: {error}"))?
+    };
+    document.as_table_mut().remove("model");
+    if let Some(chat) = document.get_mut("chat").and_then(|item| item.as_table_mut()) {
+        chat.remove("model");
+    }
+    Ok(document.to_string())
+}
+
 fn normalize_codex_model_catalog_for_storage(
     settings_object: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<serde_json::Value> {
@@ -11493,6 +11510,21 @@ approval_policy = "never"
         let document = patched.parse::<toml_edit::DocumentMut>().unwrap();
         assert_eq!(document["model"].as_str(), Some("new"));
         assert_eq!(document["chat"]["model"].as_str(), Some("new"));
+    }
+
+    #[test]
+    fn clearing_the_default_model_removes_both_locations() {
+        let patched = super::clear_default_model_in_config_toml(
+            "model = \"old\"\n[chat]\nmodel = \"old\"\napproval_policy = \"never\"\n",
+        )
+        .unwrap();
+        let document = patched.parse::<toml_edit::DocumentMut>().unwrap();
+        assert!(document.get("model").is_none());
+        assert!(document["chat"].get("model").is_none());
+        assert_eq!(
+            document["chat"]["approval_policy"].as_str(),
+            Some("never")
+        );
     }
 }
 

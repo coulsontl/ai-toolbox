@@ -136,6 +136,27 @@ fn internal(error: String) -> ApiError {
     ApiError::internal(error)
 }
 
+/// Map the precondition strings that command-layer delete/update helpers return
+/// to the HTTP codes the API documents.
+///
+/// These commands predate the control API and signal "missing row" or "applied
+/// row cannot be removed" as ordinary `Err(String)`. Passing every one through
+/// `internal` made a missing provider a 500, which tells callers the server
+/// broke instead of pointing at the request.
+fn command_error(error: String) -> ApiError {
+    let lowered = error.to_ascii_lowercase();
+    if lowered.contains("not found") {
+        ApiError::not_found(error)
+    } else if lowered.contains("cannot be deleted")
+        || lowered.contains("cannot be disabled")
+        || lowered.contains("must be saved before")
+    {
+        ApiError::conflict(error)
+    } else {
+        ApiError::internal(error)
+    }
+}
+
 /// A create has no stored value to fall back to, so a `***` placeholder can
 /// only mean the caller echoed a masked read. Reject it before any writer runs.
 fn ensure_no_redacted_input(value: &Value, action: &str) -> ApiResult<()> {
@@ -205,6 +226,14 @@ fn settings_config_object(value: &Value) -> Map<String, Value> {
 
 fn set_settings_config(value: &mut Value, object: Map<String, Value>) {
     value["settingsConfig"] = Value::String(Value::Object(object).to_string());
+}
+
+fn validate_zcode_settings(raw: &Value) -> ApiResult<()> {
+    serde_json::from_value::<crate::coding::zcode::types::ZcodeSettingsConfig>(Value::Object(
+        settings_config_object(raw),
+    ))
+    .map(|_| ())
+    .map_err(|error| invalid(format!("Invalid ZCode provider settings: {error}")))
 }
 
 /// Applies canonical `baseUrl` / `apiKey` / `model` fields to a DB provider
@@ -887,10 +916,28 @@ pub async fn update_provider(
     id: &str,
     body: Value,
 ) -> ApiResult<Value> {
+    reject_redacted_canonical_key(&body)?;
     with_gateway_reattach_api(context, cli, || async {
         update_provider_inner(context, cli, id, body).await
     })
     .await
+}
+
+/// An update has a stored value to fall back to, so a top-level `apiKey` of
+/// `***` can only be a masked read echoed back. Silently ignoring it made the
+/// documented "masked writes are rejected" contract untrue; nested
+/// `settingsConfig` echoes are still allowed because the merge layer preserves
+/// the stored secret for those.
+fn reject_redacted_canonical_key(body: &Value) -> ApiResult<()> {
+    if body
+        .get("apiKey")
+        .is_some_and(super::redact::is_redacted_value)
+    {
+        return Err(ApiError::bad_request(
+            "Masked secrets ('***') cannot be used to update a provider; send the full value or omit the key",
+        ));
+    }
+    Ok(())
 }
 
 async fn update_provider_inner(
@@ -1008,6 +1055,10 @@ async fn update_db_provider(
             Ok(public_db_provider(serde_json::to_value(provider)?))
         }
         "zcode" => {
+            // The ZCode command persists first and projects afterwards. An
+            // invalid model row therefore used to return 500 after the bad row
+            // was already stored. Validate the merged settings before writing.
+            validate_zcode_settings(&merged)?;
             let provider = serde_json::from_value(merged)
                 .map_err(|error| invalid(format!("Invalid ZCode provider: {error}")))?;
             let provider = crate::coding::zcode::commands::update_zcode_provider(
@@ -1171,7 +1222,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "claudedesktop" => {
@@ -1181,7 +1232,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "codex" => {
@@ -1191,7 +1242,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "grok" => {
@@ -1201,7 +1252,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "kimi" => {
@@ -1211,7 +1262,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "geminicli" => {
@@ -1221,7 +1272,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "zcode" => {
@@ -1231,7 +1282,7 @@ pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> Ap
                 id.to_string(),
             )
             .await
-            .map_err(internal)?;
+            .map_err(command_error)?;
             Ok(json!({"deleted": id}))
         }
         "opencode" => delete_opencode_provider(context, id).await,
@@ -1412,6 +1463,18 @@ async fn delete_opencode_provider(context: &ServerContext, id: &str) -> ApiResul
             "OpenCode provider '{id}' not found"
         )));
     }
+    let selection_matches = match config.get("model") {
+        Some(Value::Object(selection)) => {
+            selection.get("providerID").and_then(Value::as_str) == Some(id)
+        }
+        Some(Value::String(selection)) => selection.starts_with(&format!("{id}/")),
+        _ => false,
+    };
+    if selection_matches {
+        if let Some(object) = config.as_object_mut() {
+            object.remove("model");
+        }
+    }
     save_opencode_config_value(context, config).await?;
     Ok(json!({"deleted": id}))
 }
@@ -1546,6 +1609,7 @@ async fn delete_openclaw_provider(context: &ServerContext, id: &str) -> ApiResul
             "OpenClaw provider '{id}' not found"
         )));
     }
+    clear_openclaw_model_selection(&mut config, id, None);
     save_openclaw_config_value(context, config).await?;
     Ok(json!({"deleted": id}))
 }
@@ -2091,6 +2155,9 @@ async fn add_omo_model(
             model = json!({});
         }
         model["id"] = json!(model_id);
+        if let Some(name) = body.get("name").and_then(Value::as_str) {
+            model["name"] = json!(name);
+        }
         models.push(model);
     }
     config["models"] = Value::Array(models);
@@ -2542,18 +2609,7 @@ async fn add_model_inner(
         "zcode" => {
             let mut raw = raw_db_provider(context, cli, provider_id).await?;
             let mut settings = settings_config_object(&raw);
-            let mut models = settings
-                .get("models")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            models.push(body.get("model").cloned().unwrap_or_else(|| {
-                json!({
-                    "modelId": model_id,
-                    "id": model_id,
-                })
-            }));
-            settings.insert("models".to_string(), Value::Array(models));
+            add_model_to_zcode_settings(&mut settings, &model_id, &body)?;
             set_settings_config(&mut raw, settings);
             update_db_provider(context, cli, provider_id, raw).await
         }
@@ -2617,6 +2673,12 @@ fn add_model_to_settings(
                     entry = json!({});
                 }
                 entry["model"] = json!(model_id);
+                if entry.get("key").is_none() && matches!(cli, "grok" | "kimi") {
+                    entry["key"] = json!(model_id);
+                }
+                if let Some(name) = body.get("name").and_then(Value::as_str) {
+                    entry["displayName"] = json!(name);
+                }
                 models.push(entry);
             }
         }
@@ -2632,6 +2694,130 @@ fn add_model_to_settings(
         _ => return Err(ApiError::not_found("Unknown database CLI")),
     }
     Ok(())
+}
+
+/// ZCode rows are typed (`ZcodeModelRow`), so a bare `{modelId}` is rejected by
+/// the projection after the row was already stored. Build a `smart` row here,
+/// mirroring the create dialog, and keep the default flags consistent.
+fn add_model_to_zcode_settings(
+    settings: &mut Map<String, Value>,
+    model_id: &str,
+    body: &Value,
+) -> ApiResult<()> {
+    let mut models = settings
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if models.iter().any(|model| {
+        model.get("modelId").and_then(Value::as_str) == Some(model_id)
+            || model.get("id").and_then(Value::as_str) == Some(model_id)
+    }) {
+        return Err(ApiError::bad_request(format!(
+            "Model '{model_id}' already exists in this ZCode provider"
+        )));
+    }
+    let mut entry = body.get("model").cloned().unwrap_or_else(|| json!({}));
+    if !entry.is_object() {
+        entry = json!({});
+    }
+    entry["modelId"] = json!(model_id);
+    if entry.get("ruleKind").is_none() {
+        entry["ruleKind"] = json!("smart");
+    }
+    if let Some(name) = body.get("name").and_then(Value::as_str) {
+        entry["displayName"] = json!(name);
+    }
+    let has_default = models
+        .iter()
+        .any(|model| model.get("isDefault").and_then(Value::as_bool) == Some(true));
+    if !has_default
+        && settings
+            .get("defaultModelId")
+            .and_then(Value::as_str)
+            .is_none()
+    {
+        entry["isDefault"] = json!(true);
+        settings.insert("defaultModelId".to_string(), json!(model_id));
+    }
+    models.push(entry);
+    settings.insert("models".to_string(), Value::Array(models));
+    Ok(())
+}
+
+fn set_zcode_default_model(settings: &mut Map<String, Value>, model_id: &str) -> ApiResult<()> {
+    let models = settings
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| ApiError::bad_request("This ZCode provider has no models"))?;
+    let mut found = false;
+    for model in models.iter_mut() {
+        let is_target = model.get("modelId").and_then(Value::as_str) == Some(model_id)
+            || model.get("id").and_then(Value::as_str) == Some(model_id);
+        if is_target {
+            found = true;
+        }
+        model["isDefault"] = json!(is_target);
+    }
+    if !found {
+        return Err(ApiError::not_found(format!(
+            "Model '{model_id}' was not found in this ZCode provider"
+        )));
+    }
+    settings.insert("defaultModelId".to_string(), json!(model_id));
+    Ok(())
+}
+
+/// After a model is removed, a default that pointed at it must move to a
+/// remaining row (or disappear when the list is empty), otherwise the stored
+/// provider fails validation on the next projection.
+fn fix_zcode_default_after_delete(settings: &mut Map<String, Value>, removed_id: &str) {
+    let default_was_removed = settings
+        .get("defaultModelId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value == removed_id);
+    let models = settings
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .map(|models| {
+            models.retain(|model| {
+                model.get("modelId").and_then(Value::as_str) != Some(removed_id)
+                    && model.get("id").and_then(Value::as_str) != Some(removed_id)
+            });
+            models.clone()
+        })
+        .unwrap_or_default();
+    if !default_was_removed
+        && models
+            .iter()
+            .any(|model| model.get("isDefault").and_then(Value::as_bool) == Some(true))
+    {
+        return;
+    }
+    match models.first().and_then(|model| {
+        model
+            .get("modelId")
+            .or_else(|| model.get("id"))
+            .and_then(Value::as_str)
+    }) {
+        Some(next_id) => {
+            let next_id = next_id.to_string();
+            if let Some(models) = settings.get_mut("models").and_then(Value::as_array_mut) {
+                for model in models.iter_mut() {
+                    let is_target = model.get("modelId").and_then(Value::as_str)
+                        == Some(next_id.as_str())
+                        || model.get("id").and_then(Value::as_str) == Some(next_id.as_str());
+                    model["isDefault"] = json!(is_target);
+                }
+            }
+            settings.insert("defaultModelId".to_string(), json!(next_id));
+        }
+        None => {
+            // `null` survives the merge layer and deserializes to `None`;
+            // removing the key would be re-added from the stored settings.
+            settings.insert("defaultModelId".to_string(), Value::Null);
+        }
+    }
 }
 
 async fn add_file_model(
@@ -2658,9 +2844,10 @@ async fn add_file_model(
         if !model.is_object() {
             model = json!({});
         }
-        model["name"] = model
+        model["name"] = body
             .get("name")
             .cloned()
+            .or_else(|| model.get("name").cloned())
             .unwrap_or_else(|| json!(model_id));
         config["provider"][provider_id]["models"][model_id] = model;
         save_opencode_config_value(context, config).await?;
@@ -2683,6 +2870,9 @@ async fn add_file_model(
             model = json!({});
         }
         model["id"] = json!(model_id);
+        if let Some(name) = body.get("name").and_then(Value::as_str) {
+            model["name"] = json!(name);
+        }
         if !models.iter().any(|item| item["id"] == model_id) {
             models.push(model);
         }
@@ -2713,6 +2903,9 @@ async fn add_runtime_model(
         model = json!({});
     }
     model["id"] = json!(model_id);
+    if let Some(name) = body.get("name").and_then(Value::as_str) {
+        model["name"] = json!(name);
+    }
     match &mut models {
         Value::Array(items) => {
             if !items.iter().any(|item| item["id"] == model_id) {
@@ -2855,7 +3048,15 @@ async fn delete_model_inner(
         "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
             let mut raw = raw_db_provider(context, cli, provider_id).await?;
             let mut settings = settings_config_object(&raw);
-            remove_model_from_settings(cli, &mut settings, model_id);
+            if cli == "zcode" {
+                fix_zcode_default_after_delete(&mut settings, model_id);
+            } else {
+                let removed_default = is_default_catalog_model(cli, &settings, model_id);
+                remove_model_from_settings(cli, &mut settings, model_id);
+                if removed_default {
+                    fix_catalog_default_after_delete(cli, &mut settings)?;
+                }
+            }
             set_settings_config(&mut raw, settings);
             update_db_provider(context, cli, provider_id, raw).await?;
             Ok(json!({"deleted": model_id}))
@@ -2927,6 +3128,213 @@ fn remove_model_from_settings(cli: &str, settings: &mut Map<String, Value>, mode
     }
 }
 
+fn is_default_catalog_model(cli: &str, settings: &Map<String, Value>, model_id: &str) -> bool {
+    match cli {
+        "kimi" | "grok" => {
+            let Some(default_key) = settings.get("defaultModelKey").and_then(Value::as_str) else {
+                return false;
+            };
+            if default_key == model_id {
+                return true;
+            }
+            // The runtime id may be the catalog entry's `model` while the
+            // default points at its `key` (or the other way around).
+            settings
+                .get("modelCatalog")
+                .and_then(|catalog| catalog.get("models"))
+                .and_then(Value::as_array)
+                .is_some_and(|models| {
+                    models.iter().any(|model| {
+                        let key = model.get("key").and_then(Value::as_str);
+                        let model_value = model.get("model").and_then(Value::as_str);
+                        let matches_target =
+                            key == Some(model_id) || model_value == Some(model_id);
+                        matches_target
+                            && (key == Some(default_key) || model_value == Some(default_key))
+                    })
+                })
+        }
+        "codex" => codex_default_model(&Value::Object(settings.clone()))
+            .is_some_and(|value| value == model_id),
+        _ => false,
+    }
+}
+
+/// Deleting the current default model used to leave `defaultModelKey` (Kimi /
+/// Grok) or the TOML `model` (Codex) pointing at a model that no longer exists,
+/// which Kimi rejects outright. Move the default to the first remaining model,
+/// or drop it when the catalog is empty.
+fn fix_catalog_default_after_delete(
+    cli: &str,
+    settings: &mut Map<String, Value>,
+) -> ApiResult<()> {
+    let remaining: Vec<String> = settings
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .and_then(Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|model| {
+                    model
+                        .get("key")
+                        .or_else(|| model.get("model"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    match cli {
+        "kimi" | "grok" => {
+            match remaining.first() {
+                Some(next) => {
+                    settings.insert("defaultModelKey".to_string(), json!(next));
+                }
+                None => {
+                    // See `fix_zcode_default_after_delete`: omission cannot
+                    // delete through the merge layer, but `null` can.
+                    settings.insert("defaultModelKey".to_string(), Value::Null);
+                }
+            }
+        }
+        "codex" => {
+            let config = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let patched = match remaining.first() {
+                Some(next) => crate::coding::codex::commands::patch_default_model_in_config_toml(
+                    config, next,
+                ),
+                None => crate::coding::codex::commands::clear_default_model_in_config_toml(config),
+            }
+            .map_err(invalid)?;
+            settings.insert("config".to_string(), json!(patched));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn clear_opencode_model_selection(
+    config: &mut Value,
+    provider_id: &str,
+    removed_model: &str,
+) {
+    let selection_matches = match config.get("model") {
+        Some(Value::Object(selection)) => {
+            selection.get("providerID").and_then(Value::as_str) == Some(provider_id)
+                && selection.get("model").and_then(Value::as_str) == Some(removed_model)
+        }
+        Some(Value::String(selection)) => selection == &format!("{provider_id}/{removed_model}"),
+        _ => false,
+    };
+    if !selection_matches {
+        return;
+    }
+    let next = config
+        .get("provider")
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(|provider| provider.get("models"))
+        .and_then(Value::as_object)
+        .and_then(|models| models.keys().next().cloned());
+    match next {
+        Some(next) => {
+            config["model"] = json!({"providerID": provider_id, "model": next});
+        }
+        None => {
+            if let Some(object) = config.as_object_mut() {
+                object.remove("model");
+            }
+        }
+    }
+}
+
+/// Drop a default selection that points at a removed model or provider.
+///
+/// OpenClaw requires `agents.defaults.model.primary` whenever that block
+/// exists, so removing only the key would leave a document OpenClaw rejects on
+/// the next save. Promote the first surviving candidate instead: another model
+/// in the same provider, then the first configured fallback. With nothing left
+/// to promote, remove the whole block (the schema treats it as optional).
+fn clear_openclaw_model_selection(
+    config: &mut Value,
+    provider_id: &str,
+    removed_model: Option<&str>,
+) {
+    let stale_primary = removed_model.map(|model| format!("{provider_id}/{model}"));
+    let selection = config
+        .get("agents")
+        .and_then(|agents| agents.get("defaults"))
+        .and_then(|defaults| defaults.get("model"));
+    let Some(selection) = selection else {
+        return;
+    };
+    let matches = match (
+        &stale_primary,
+        selection.get("primary").and_then(Value::as_str),
+    ) {
+        (Some(stale), Some(primary)) => primary == stale,
+        (None, Some(primary)) => primary.starts_with(&format!("{provider_id}/")),
+        _ => false,
+    };
+    if !matches {
+        return;
+    }
+
+    let same_provider = config
+        .get("models")
+        .and_then(|models| models.get("providers"))
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(|provider| provider.get("models"))
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models.iter().find_map(|model| {
+                model
+                    .get("id")
+                    .or_else(|| model.get("model"))
+                    .and_then(Value::as_str)
+                    .map(|id| format!("{provider_id}/{id}"))
+            })
+        });
+    let fallback = selection
+        .get("fallbacks")
+        .and_then(Value::as_array)
+        .and_then(|fallbacks| fallbacks.first())
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let replacement = same_provider
+        .map(|model| (model, false))
+        .or_else(|| fallback.map(|model| (model, true)));
+
+    let Some(defaults) = config
+        .get_mut("agents")
+        .and_then(|agents| agents.get_mut("defaults"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    match replacement {
+        Some((next, from_fallback)) => {
+            let Some(model) = defaults.get_mut("model").and_then(Value::as_object_mut) else {
+                return;
+            };
+            model.insert("primary".to_string(), json!(next));
+            if from_fallback {
+                if let Some(fallbacks) = model.get_mut("fallbacks").and_then(Value::as_array_mut) {
+                    if !fallbacks.is_empty() {
+                        fallbacks.remove(0);
+                    }
+                }
+            }
+        }
+        None => {
+            defaults.remove("model");
+        }
+    }
+}
+
 async fn delete_file_model(
     context: &ServerContext,
     cli: &str,
@@ -2944,6 +3352,7 @@ async fn delete_file_model(
         {
             models.remove(model_id);
         }
+        clear_opencode_model_selection(&mut config, provider_id, model_id);
         save_opencode_config_value(context, config).await
     } else {
         let mut config = read_openclaw_config_value(context).await?;
@@ -2957,6 +3366,7 @@ async fn delete_file_model(
         {
             models.retain(|model| model["id"] != model_id);
         }
+        clear_openclaw_model_selection(&mut config, provider_id, Some(model_id));
         save_openclaw_config_value(context, config).await
     }
 }
@@ -3041,7 +3451,7 @@ async fn set_default_model_inner(
         "zcode" => {
             let mut raw = raw_db_provider(context, cli, provider_id).await?;
             let mut settings = settings_config_object(&raw);
-            settings.insert("defaultModelId".to_string(), json!(model_id));
+            set_zcode_default_model(&mut settings, model_id)?;
             set_settings_config(&mut raw, settings);
             update_db_provider(context, cli, provider_id, raw).await?;
             Ok(json!({"defaultModel": model_id}))
@@ -3531,6 +3941,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn delete_preconditions_map_to_not_found_and_conflict() {
+        let missing = command_error("ZCode provider 'x' not found".to_string());
+        assert_eq!((missing.status, missing.code), (404, "not_found"));
+
+        let applied = command_error("The applied Kimi provider cannot be deleted".to_string());
+        assert_eq!((applied.status, applied.code), (409, "conflict"));
+
+        let unexpected = command_error("disk exploded".to_string());
+        assert_eq!(
+            (unexpected.status, unexpected.code),
+            (500, "internal_error")
+        );
+    }
+
+    #[test]
     fn aliases_normalize_to_the_canonical_seventeen() {
         assert_eq!(normalize_cli_key("claude"), Some("claudecode"));
         assert_eq!(normalize_cli_key("claude-code"), Some("claudecode"));
@@ -3767,5 +4192,174 @@ mod tests {
         );
         assert_eq!(kimi["modelCatalog"]["models"][0]["provider"], "custom");
         assert_eq!(kimi["defaultModelKey"], "kimi-k2");
+    }
+
+    #[test]
+    fn provider_update_rejects_a_masked_canonical_key() {
+        let error = reject_redacted_canonical_key(&json!({"apiKey": "***"})).unwrap_err();
+        assert_eq!(error.status, 400);
+        assert_eq!(error.code, "bad_request");
+        // Omitting the key keeps the stored secret; a full value is accepted.
+        assert!(reject_redacted_canonical_key(&json!({"name": "x"})).is_ok());
+        assert!(reject_redacted_canonical_key(&json!({"apiKey": "sk-real"})).is_ok());
+        // Nested settingsConfig echoes are still handled by the merge layer.
+        assert!(reject_redacted_canonical_key(&json!({
+            "settingsConfig": {"auth": {"API_KEY": "***"}}
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn zcode_added_models_are_typed_and_keep_one_default() {
+        let mut settings = json!({
+            "providerId": "custom:demo",
+            "providerName": "Demo",
+            "config": {"api": {"baseUrl": "https://demo.test"}},
+            "models": [{"modelId": "model-a", "ruleKind": "smart", "isDefault": true}],
+            "defaultModelId": "model-a"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        add_model_to_zcode_settings(&mut settings, "model-b", &json!({"name": "Model B"}))
+            .unwrap();
+        let parsed: crate::coding::zcode::types::ZcodeSettingsConfig =
+            serde_json::from_value(Value::Object(settings.clone())).unwrap();
+        assert_eq!(parsed.models.len(), 2);
+        assert_eq!(parsed.models[1].model_id, "model-b");
+        assert_eq!(
+            parsed.models[1].rule_kind,
+            crate::coding::zcode::types::ZcodeModelRuleKind::Smart
+        );
+        assert_eq!(parsed.models[1].display_name.as_deref(), Some("Model B"));
+        assert!(!parsed.models[1].is_default);
+        assert!(parsed.models[0].is_default);
+
+        set_zcode_default_model(&mut settings, "model-b").unwrap();
+        let parsed: crate::coding::zcode::types::ZcodeSettingsConfig =
+            serde_json::from_value(Value::Object(settings)).unwrap();
+        assert_eq!(parsed.default_model_id.as_deref(), Some("model-b"));
+        assert!(!parsed.models[0].is_default);
+        assert!(parsed.models[1].is_default);
+    }
+
+    #[test]
+    fn zcode_deleting_the_default_moves_it_to_the_next_row() {
+        let mut settings = json!({
+            "providerId": "custom:demo",
+            "models": [
+                {"modelId": "model-a", "ruleKind": "smart", "isDefault": true},
+                {"modelId": "model-b", "ruleKind": "smart", "isDefault": false}
+            ],
+            "defaultModelId": "model-a"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        fix_zcode_default_after_delete(&mut settings, "model-a");
+        let parsed: crate::coding::zcode::types::ZcodeSettingsConfig =
+            serde_json::from_value(Value::Object(settings.clone())).unwrap();
+        assert_eq!(parsed.models.len(), 1);
+        assert_eq!(parsed.models[0].model_id, "model-b");
+        assert!(parsed.models[0].is_default);
+        assert_eq!(parsed.default_model_id.as_deref(), Some("model-b"));
+
+        fix_zcode_default_after_delete(&mut settings, "model-b");
+        let parsed: crate::coding::zcode::types::ZcodeSettingsConfig =
+            serde_json::from_value(Value::Object(settings)).unwrap();
+        assert!(parsed.models.is_empty());
+        assert_eq!(parsed.default_model_id, None);
+    }
+
+    #[test]
+    fn zcode_validation_rejects_a_bare_model_row_before_it_is_stored() {
+        let raw = json!({
+            "settingsConfig": json!({
+                "providerId": "custom:demo",
+                "models": [{"id": "model-a"}]
+            })
+            .to_string()
+        });
+        let error = validate_zcode_settings(&raw).unwrap_err();
+        assert_eq!(error.code, "bad_request");
+        assert!(error.message.contains("Invalid ZCode provider settings"));
+    }
+
+    #[test]
+    fn deleting_the_kimi_default_falls_back_or_drops_the_key() {
+        let mut settings = json!({
+            "modelCatalog": {"models": [
+                {"key": "model-a", "model": "model-a"},
+                {"key": "model-b", "model": "model-b"}
+            ]},
+            "defaultModelKey": "model-a"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(is_default_catalog_model("kimi", &settings, "model-a"));
+        remove_model_from_settings("kimi", &mut settings, "model-a");
+        fix_catalog_default_after_delete("kimi", &mut settings).unwrap();
+        assert_eq!(settings["defaultModelKey"], json!("model-b"));
+
+        remove_model_from_settings("kimi", &mut settings, "model-b");
+        fix_catalog_default_after_delete("kimi", &mut settings).unwrap();
+        // The merge layer cannot delete an omitted key, so "no default" is an
+        // explicit null rather than a removed field.
+        assert_eq!(settings.get("defaultModelKey"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn file_cli_model_selections_do_not_dangle_after_a_delete() {
+        let mut opencode = json!({
+            "provider": {"demo": {"models": {"keep": {}}}},
+            "model": {"providerID": "demo", "model": "gone"}
+        });
+        clear_opencode_model_selection(&mut opencode, "demo", "gone");
+        assert_eq!(opencode["model"], json!({"providerID": "demo", "model": "keep"}));
+
+        let mut openclaw = json!({
+            "models": {"providers": {"demo": {"models": [{"id": "keep"}]}}},
+            "agents": {"defaults": {"model": {"primary": "demo/gone", "fallbacks": ["x"]}}}
+        });
+        clear_openclaw_model_selection(&mut openclaw, "demo", Some("gone"));
+        assert_eq!(openclaw["agents"]["defaults"]["model"]["primary"], json!("demo/keep"));
+        assert_eq!(openclaw["agents"]["defaults"]["model"]["fallbacks"], json!(["x"]));
+
+        // Deleting the provider removes its models too, so the first fallback
+        // becomes the primary; OpenClaw rejects a model block without one.
+        let mut provider_deleted = json!({
+            "models": {"providers": {}},
+            "agents": {"defaults": {"model": {"primary": "demo/gone", "fallbacks": ["other/model", "x"]}}}
+        });
+        clear_openclaw_model_selection(&mut provider_deleted, "demo", None);
+        assert_eq!(
+            provider_deleted["agents"]["defaults"]["model"]["primary"],
+            json!("other/model")
+        );
+        assert_eq!(
+            provider_deleted["agents"]["defaults"]["model"]["fallbacks"],
+            json!(["x"])
+        );
+        assert!(
+            serde_json::from_value::<crate::coding::open_claw::types::OpenClawConfig>(
+                provider_deleted
+            )
+            .is_ok()
+        );
+
+        // With nothing left to promote, drop the optional block rather than
+        // leaving a `model` object that fails OpenClaw's deserializer.
+        let mut dropped = json!({
+            "agents": {"defaults": {"model": {"primary": "demo/gone"}}}
+        });
+        clear_openclaw_model_selection(&mut dropped, "demo", Some("gone"));
+        assert!(dropped["agents"]["defaults"].get("model").is_none());
+        assert!(
+            serde_json::from_value::<crate::coding::open_claw::types::OpenClawConfig>(dropped)
+                .is_ok()
+        );
     }
 }
