@@ -181,6 +181,11 @@
   }
 }
 
+/* No second line and no error block: centre the row on its single line. */
+.rowCompact {
+  align-items: center;
+}
+
 .rowIcon {
   display: inline-flex;
   width: 36px;
@@ -195,7 +200,7 @@
   min-width: 0;
   flex: 1;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 
 .rowHeading {
@@ -301,6 +306,16 @@
   line-height: 1.45;
 }
 
+/* Provider statuses wrap as a single flex item so a long list moves as a unit
+   to its own line instead of breaking between channels. */
+.statusGroup {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
 .statusItem {
   display: inline-flex;
   min-width: 0;
@@ -336,6 +351,14 @@
 
 .statusText {
   color: var(--pl-text-muted);
+  white-space: nowrap;
+}
+
+/* Package summary stands in for missing status items; one truncated line. */
+.statusSummary {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

@@ -47,6 +47,7 @@ import {
   getCountdownParts,
   getProviderHealth,
   getProtocolLabel,
+  isMeaningfulExpiryDate,
   pickLocalizedText,
   type PluginQuotaRow,
 } from '../utils/pluginFormatters';
@@ -863,12 +864,18 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                     const usageError = usageErrors[account.account];
                     const quotaRows = quotaRowsByAccount[account.account] ?? [];
                     const checkinResult = checkinResults[account.account];
-                    const expiry = account.expiresAt
-                      ? new Date(account.expiresAt).toISOString()
+                    const expiresAtTimestamp = account.expiresAt ? account.expiresAt : Number.NaN;
+                    const expiry = Number.isFinite(expiresAtTimestamp)
+                      && !Number.isNaN(new Date(expiresAtTimestamp).getTime())
+                      ? new Date(expiresAtTimestamp).toISOString()
                       : '';
-                    const expired = Boolean(
-                      account.expiresAt && account.expiresAt < Date.now(),
-                    );
+                    const expired = Boolean(expiry) && expiresAtTimestamp < Date.now();
+                    // A "never expires" sentinel (e.g. Qoder's 9999-12-31) is
+                    // noise next to the real credential expiry.
+                    const showCredentialExpiry = expired || isMeaningfulExpiryDate(expiry);
+                    const planUntil = isMeaningfulExpiryDate(usage?.until)
+                      ? formatDateTime(usage.until, i18n.language)
+                      : '';
                     const accountBusy = accountBusyKey === account.account;
                     const lastCheckinTime = account.lastCheckinAt
                       ? formatDateTime(account.lastCheckinAt, i18n.language)
@@ -877,7 +884,11 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                     const showAccountKey = providerAccounts.length > 1
                       && account.account !== primaryIdentity;
                     const hasFootnotes = Boolean(
-                      expiry || account.lastCheckinOutcome || account.lastCheckinAt,
+                      planUntil
+                      || usage?.signIn === 'expired'
+                      || showCredentialExpiry
+                      || account.lastCheckinOutcome
+                      || account.lastCheckinAt,
                     );
 
                     return (
@@ -996,8 +1007,13 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                         <div className={styles.quotaArea}>
                           {usage ? (
                             <>
-                              {usage.balance || usage.until || usage.signIn === 'expired' ? (
-                                <div className={styles.usageMetaRow}>
+                              {usage.error ? (
+                                <div className={styles.inlineError}>
+                                  {t('plugins.accounts.usageError', { error: usage.error })}
+                                </div>
+                              ) : null}
+                              {usage.balance || quotaRows.length > 0 ? (
+                                <div className={styles.quotaStrip}>
                                   {usage.balance ? (
                                     <span className={styles.walletInline}>
                                       {t('plugins.accounts.walletBalance', {
@@ -1005,27 +1021,6 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                       })}
                                     </span>
                                   ) : null}
-                                  {usage.until ? (
-                                    <span className={styles.usageHint}>
-                                      {t('plugins.accounts.usageUntil', {
-                                        time: formatDateTime(usage.until, i18n.language),
-                                      })}
-                                    </span>
-                                  ) : null}
-                                  {usage.signIn === 'expired' ? (
-                                    <span className={styles.usageWarning}>
-                                      {t('plugins.accounts.signInExpired')}
-                                    </span>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                              {usage.error ? (
-                                <div className={styles.inlineError}>
-                                  {t('plugins.accounts.usageError', { error: usage.error })}
-                                </div>
-                              ) : null}
-                              {quotaRows.length > 0 ? (
-                                <div className={styles.quotaStrip}>
                                   {quotaRows.map((row) => {
                                     const resetText = row.resetAt
                                       ? t('plugins.accounts.resetIn', {
@@ -1122,7 +1117,17 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                           ) : null}
                           {hasFootnotes ? (
                             <div className={styles.accountFootnotes}>
-                              {expiry ? (
+                              {planUntil ? (
+                                <span>
+                                  {t('plugins.accounts.usageUntil', { time: planUntil })}
+                                </span>
+                              ) : null}
+                              {usage?.signIn === 'expired' ? (
+                                <span className={styles.usageWarning}>
+                                  {t('plugins.accounts.signInExpired')}
+                                </span>
+                              ) : null}
+                              {showCredentialExpiry ? (
                                 <span className={expired ? styles.expiryExpired : undefined}>
                                   {expired
                                     ? t('plugins.accounts.expired')

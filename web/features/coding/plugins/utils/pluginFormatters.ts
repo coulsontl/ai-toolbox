@@ -139,6 +139,25 @@ export const formatDateTime = (value: string | null | undefined, language: strin
   });
 };
 
+/**
+ * Whether an expiry timestamp is worth showing.
+ *
+ * Some providers report a "never expires" sentinel such as `9999-12-31` (Qoder
+ * returns it for its base plan). Rendering it reads like a garbled date and
+ * repeats the real credential expiry right below it. Unparseable values are
+ * dropped for the same reason.
+ */
+export const isMeaningfulExpiryDate = (value: string | null | undefined): boolean => {
+  if (!value) {
+    return false;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return false;
+  }
+  return new Date(timestamp).getUTCFullYear() < 2999;
+};
+
 const RELATIVE_UNITS: Array<{ unit: Intl.RelativeTimeFormatUnit; seconds: number }> = [
   { unit: 'day', seconds: 86_400 },
   { unit: 'hour', seconds: 3_600 },

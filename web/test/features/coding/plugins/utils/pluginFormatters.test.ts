@@ -8,6 +8,7 @@ import {
   getPluginKindCategory,
   getPluginPageTitle,
   isChinaMirrorRegistry,
+  isMeaningfulExpiryDate,
   redactPluginLog,
 } from '../../../../../features/coding/plugins/utils/pluginFormatters.ts';
 import type {
@@ -116,6 +117,18 @@ test('buildPluginQuotaRows marks low remaining allowance as warning or error', (
 
   assert.equal(rows[0].level, 'warning');
   assert.equal(rows[1].level, 'error');
+});
+
+test('isMeaningfulExpiryDate drops sentinel, empty and unreadable expiries', () => {
+  assert.equal(isMeaningfulExpiryDate('2026-11-29T02:05:00Z'), true);
+  assert.equal(isMeaningfulExpiryDate('2026-11-29'), true);
+  assert.equal(isMeaningfulExpiryDate('9999-12-31T00:00:00Z'), false, 'Qoder base plan sentinel');
+  assert.equal(isMeaningfulExpiryDate('2999-01-01T00:00:00Z'), false, 'far-future sentinel');
+  assert.equal(isMeaningfulExpiryDate('2998-12-31T23:59:59Z'), true, 'below the sentinel year');
+  assert.equal(isMeaningfulExpiryDate('not a date'), false);
+  assert.equal(isMeaningfulExpiryDate(''), false);
+  assert.equal(isMeaningfulExpiryDate(null), false);
+  assert.equal(isMeaningfulExpiryDate(undefined), false);
 });
 
 test('getPluginKindCategory treats an empty market kind as provider', () => {

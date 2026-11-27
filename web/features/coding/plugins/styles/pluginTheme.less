@@ -19,13 +19,14 @@
   --pl-text-secondary: #4b5563;
   --pl-text-muted: #6b7280;
 
-  /* Soft indigo accent (Magpie feel, high contrast >= 7:1 on tint) */
-  --pl-accent: #4f46e5;
-  --pl-accent-hover: #4338ca;
-  --pl-accent-text: #4338ca;
-  --pl-accent-bg: #eef2ff;
-  --pl-accent-bg-hover: #e0e7ff;
-  --pl-accent-border: rgba(79, 70, 229, 0.18);
+  /* Accent follows the app-wide primary blue; tints are derived from the live
+     token so light and dark stay aligned with Ant Design and App.css. */
+  --pl-accent: var(--ant-color-primary, var(--color-primary));
+  --pl-accent-hover: var(--ant-color-primary-hover, #40a9ff);
+  --pl-accent-text: var(--ant-color-primary-active, #096dd9);
+  --pl-accent-bg: var(--color-bg-selected);
+  --pl-accent-bg-hover: color-mix(in srgb, var(--pl-accent) 16%, var(--pl-surface));
+  --pl-accent-border: color-mix(in srgb, var(--pl-accent) 26%, transparent);
 
   /* Toned semantic colors */
   --pl-success: #15803d;
@@ -60,12 +61,14 @@
   --pl-text-secondary: #94a3b8;
   --pl-text-muted: #64748b;
 
-  --pl-accent: #6366f1;
-  --pl-accent-hover: #818cf8;
-  --pl-accent-text: #a5b4fc;
-  --pl-accent-bg: rgba(99, 102, 241, 0.16);
-  --pl-accent-bg-hover: rgba(99, 102, 241, 0.24);
-  --pl-accent-border: rgba(129, 140, 248, 0.26);
+  /* Dark mode keeps the same primary family; the hover alias doubles as the
+     readable light-blue text on low-saturation accent tints. */
+  --pl-accent: var(--ant-color-primary, var(--color-primary));
+  --pl-accent-hover: var(--ant-color-primary-hover, #3c9ae8);
+  --pl-accent-text: var(--ant-color-primary-hover, var(--ant-color-primary, #3c9ae8));
+  --pl-accent-bg: color-mix(in srgb, var(--pl-accent) 18%, transparent);
+  --pl-accent-bg-hover: color-mix(in srgb, var(--pl-accent) 26%, transparent);
+  --pl-accent-border: color-mix(in srgb, var(--pl-accent) 34%, transparent);
 
   --pl-success: #4ade80;
   --pl-success-bg: rgba(34, 197, 94, 0.14);

@@ -5,7 +5,7 @@
 //! / single `*.middleware.js` file. Local paths are referenced in place; the
 //! user's files are never copied or deleted.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -301,11 +301,13 @@ pub fn inspect_installed_package(path: &Path) -> Result<PackageInspection, Strin
     let display_name = magpie_string(&magpie, "name")
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| package_name.clone());
+    let description = package.description.trim().to_string();
 
     Ok(PackageInspection {
         package_name,
         version: package.version.trim().to_string(),
-        description: package.description.trim().to_string(),
+        summary: package_summary(&magpie, &description),
+        description,
         display_name,
         kind,
         middleware_entry,
@@ -318,7 +320,6 @@ pub fn inspect_installed_package(path: &Path) -> Result<PackageInspection, Strin
             .filter(|options| options.is_object())
             .cloned()
             .unwrap_or_else(empty_json_object),
-        summary: magpie_summary(&magpie),
         icon: magpie_string(&magpie, "icon").unwrap_or_default(),
     })
 }
@@ -414,6 +415,19 @@ fn magpie_summary(magpie: &Value) -> BTreeMap<String, String> {
                 .map(|value| (language.clone(), value.to_string()))
         })
         .collect()
+}
+
+/// `magpie.summary`, falling back to the package description under `en`.
+///
+/// Standard OpenCode / Magpie provider packages (for example the
+/// `@magpie-community/*` set) ship no `magpie` block at all. Without this
+/// fallback their installed card has no second line to render.
+fn package_summary(magpie: &Value, description: &str) -> BTreeMap<String, String> {
+    let summary = magpie_summary(magpie);
+    if summary.is_empty() && !description.is_empty() {
+        return BTreeMap::from([("en".to_string(), description.to_string())]);
+    }
+    summary
 }
 
 /// Every page a package declares.
@@ -968,15 +982,69 @@ pub async fn install_plugin(
     );
 
     // Keep user state across reinstalls.
-    if let Some(existing) = store::get_installed_plugin(db, &record.id)? {
+    let existing = store::get_installed_plugin(db, &record.id)?;
+    if let Some(existing) = &existing {
         record.enabled = existing.enabled;
         if record.options == empty_json_object() {
-            record.options = existing.options;
+            record.options = existing.options.clone();
         }
-        record.installed_at = existing.installed_at;
+        record.installed_at = existing.installed_at.clone();
     }
+    let market_index = if missing_market_metadata(&record) {
+        market::local_market_metadata(paths)
+    } else {
+        HashMap::new()
+    };
+    let market_key = record.package_name.clone();
+    fill_missing_metadata(&mut record, existing.as_ref(), market_index.get(&market_key));
 
     store::upsert_installed_plugin(db, &record)
+}
+
+/// Whether a record still lacks metadata the package itself does not declare.
+fn missing_market_metadata(record: &InstalledPluginRecord) -> bool {
+    record.providers.is_empty() || record.summary.is_empty() || record.icon.is_empty()
+}
+
+/// Fill metadata a package.json does not declare.
+///
+/// A plain OpenCode provider package has no `magpie` block, so its inspection
+/// reports no providers, summary or icon. Overwriting the stored record with
+/// that emptiness erased what an earlier inspection or the local market cache
+/// had already established, which is why the installed card lost its channel
+/// list. The previous record wins first (it may hold user-visible facts learned
+/// from an older package revision), then locally cached market metadata.
+fn fill_missing_metadata(
+    record: &mut InstalledPluginRecord,
+    previous: Option<&InstalledPluginRecord>,
+    market_listing: Option<&market::MarketListing>,
+) {
+    if let Some(previous) =
+        previous.filter(|previous| previous.package_name == record.package_name)
+    {
+        if record.providers.is_empty() {
+            record.providers = previous.providers.clone();
+        }
+        if record.summary.is_empty() {
+            record.summary = previous.summary.clone();
+        }
+        if record.icon.is_empty() {
+            record.icon = previous.icon.clone();
+        }
+    }
+
+    let Some(listing) = market_listing else {
+        return;
+    };
+    if record.providers.is_empty() {
+        record.providers = listing.providers.clone();
+    }
+    if record.summary.is_empty() {
+        record.summary = listing.summary.clone();
+    }
+    if record.icon.is_empty() {
+        record.icon = listing.icon.clone();
+    }
 }
 
 /// Re-read every installed package and persist metadata changes. A package that
@@ -986,25 +1054,36 @@ pub fn refresh_installed_plugins(
     paths: &PluginPaths,
 ) -> Result<Vec<InstalledPluginRecord>, String> {
     let records = store::list_installed_plugins(db)?;
+    // Only touch the local market caches when some record actually needs them.
+    let market_index = if records.iter().any(missing_market_metadata) {
+        market::local_market_metadata(paths)
+    } else {
+        HashMap::new()
+    };
     let mut refreshed = Vec::with_capacity(records.len());
     for record in records {
         let target = target_path(paths, &record);
         let updated = match inspect_installed_package(&target) {
-            Ok(inspection) => InstalledPluginRecord {
-                package_name: inspection.package_name,
-                display_name: inspection.display_name,
-                version: inspection.version,
-                kind: inspection.kind,
-                middleware_entry: inspection.middleware_entry,
-                has_provider_entry: inspection.has_provider_entry,
-                providers: inspection.providers,
-                pages: inspection.pages,
-                permissions: inspection.permissions,
-                summary: inspection.summary,
-                icon: inspection.icon,
-                last_error: None,
-                ..record.clone()
-            },
+            Ok(inspection) => {
+                let mut updated = InstalledPluginRecord {
+                    package_name: inspection.package_name,
+                    display_name: inspection.display_name,
+                    version: inspection.version,
+                    kind: inspection.kind,
+                    middleware_entry: inspection.middleware_entry,
+                    has_provider_entry: inspection.has_provider_entry,
+                    providers: inspection.providers,
+                    pages: inspection.pages,
+                    permissions: inspection.permissions,
+                    summary: inspection.summary,
+                    icon: inspection.icon,
+                    last_error: None,
+                    ..record.clone()
+                };
+                let market_key = updated.package_name.clone();
+                fill_missing_metadata(&mut updated, Some(&record), market_index.get(&market_key));
+                updated
+            }
             Err(error) => InstalledPluginRecord {
                 last_error: Some(error),
                 ..record.clone()
@@ -1438,6 +1517,108 @@ mod tests {
         let refreshed = refresh_installed_plugins(&db, &paths).unwrap();
         assert_eq!(refreshed[0].pages.len(), 2);
         assert!(refreshed[0].last_error.is_some());
+    }
+
+    #[test]
+    fn packages_without_a_magpie_block_fall_back_to_the_description() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("plain-provider");
+        write_package(
+            &plugin,
+            r#"{"name":"plain-provider","version":"1.0.0","description":"Signs in to a provider","main":"index.js","exports":{"./provider":{"import":"./dist/provider.js"}}}"#,
+        );
+
+        let inspection = inspect_installed_package(&plugin).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Provider);
+        assert!(inspection.providers.is_empty());
+        assert_eq!(
+            inspection.summary.get("en").map(String::as_str),
+            Some("Signs in to a provider")
+        );
+    }
+
+    #[test]
+    fn refresh_keeps_known_providers_when_package_json_has_no_magpie_block() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(root.path());
+        let plugin = paths.root().join("plain-provider");
+        write_package(
+            &plugin,
+            r#"{"name":"plain-provider","version":"1.0.0","description":"A plain provider","main":"index.js"}"#,
+        );
+
+        store::upsert_installed_plugin(
+            &db,
+            &InstalledPluginRecord {
+                id: "plain-provider".to_string(),
+                spec: plugin.to_string_lossy().to_string(),
+                package_name: "plain-provider".to_string(),
+                source_type: "local".to_string(),
+                local_path: plugin.to_string_lossy().to_string(),
+                enabled: true,
+                providers: vec!["kept-channel".to_string()],
+                icon: "kept-icon".to_string(),
+                ..InstalledPluginRecord::default()
+            },
+        )
+        .unwrap();
+
+        let refreshed = refresh_installed_plugins(&db, &paths).unwrap();
+        assert_eq!(refreshed[0].providers, vec!["kept-channel"]);
+        assert_eq!(refreshed[0].icon, "kept-icon");
+        assert_eq!(
+            refreshed[0].summary.get("en").map(String::as_str),
+            Some("A plain provider")
+        );
+    }
+
+    #[test]
+    fn refresh_backfills_missing_metadata_from_the_local_market_cache() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(root.path());
+        let plugin = paths.root().join("bare-provider");
+        write_package(
+            &plugin,
+            r#"{"name":"bare-provider","version":"1.0.0","main":"index.js"}"#,
+        );
+
+        store::upsert_installed_plugin(
+            &db,
+            &InstalledPluginRecord {
+                id: "bare-provider".to_string(),
+                spec: plugin.to_string_lossy().to_string(),
+                package_name: "bare-provider".to_string(),
+                source_type: "local".to_string(),
+                local_path: plugin.to_string_lossy().to_string(),
+                enabled: true,
+                ..InstalledPluginRecord::default()
+            },
+        )
+        .unwrap();
+
+        market::write_market_cache(
+            &paths,
+            "test-market",
+            &[market::MarketListing {
+                package: "bare-provider".to_string(),
+                name: "Bare".to_string(),
+                icon: "bare".to_string(),
+                providers: vec!["bare-api".to_string()],
+                summary: BTreeMap::from([("en".to_string(), "Cached summary".to_string())]),
+                ..market::MarketListing::default()
+            }],
+        )
+        .unwrap();
+
+        let refreshed = refresh_installed_plugins(&db, &paths).unwrap();
+        assert_eq!(refreshed[0].providers, vec!["bare-api"]);
+        assert_eq!(refreshed[0].icon, "bare");
+        assert_eq!(
+            refreshed[0].summary.get("en").map(String::as_str),
+            Some("Cached summary")
+        );
     }
 
     #[test]

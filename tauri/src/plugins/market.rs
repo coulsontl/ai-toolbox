@@ -7,7 +7,7 @@
 //! the built-in source has a compiled-in snapshot for offline use.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -228,6 +228,56 @@ pub fn write_market_cache(
 pub fn read_market_cache(paths: &PluginPaths, market_id: &str) -> Option<Vec<MarketListing>> {
     let bytes = std::fs::read(paths.market_cache_path(market_id)).ok()?;
     parse_registry(&bytes).ok()
+}
+
+/// Every package this machine's market caches can describe, keyed by package
+/// name.
+///
+/// This is display metadata only: it reads `plugins/cache/markets/*.json` plus
+/// the compiled-in built-in snapshot, so it never touches the network, Bun or
+/// the market source table. It lets an installed package whose `package.json`
+/// has no `magpie` block keep its channel list, icon and summary. Earlier
+/// caches win; a later cache only fills fields the first one left empty.
+pub fn local_market_metadata(paths: &PluginPaths) -> HashMap<String, MarketListing> {
+    let mut cache_paths: Vec<PathBuf> = std::fs::read_dir(paths.market_cache_dir())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect();
+    cache_paths.sort();
+
+    let mut batches: Vec<Vec<MarketListing>> = cache_paths
+        .iter()
+        .filter_map(|path| parse_registry(&std::fs::read(path).ok()?).ok())
+        .collect();
+    batches.push(fallback_market_listings());
+
+    let mut index: HashMap<String, MarketListing> = HashMap::new();
+    for listings in batches {
+        for listing in listings {
+            let entry = index.entry(listing.package.clone()).or_insert_with(|| {
+                MarketListing {
+                    package: listing.package.clone(),
+                    ..MarketListing::default()
+                }
+            });
+            if entry.name.is_empty() {
+                entry.name = listing.name;
+            }
+            if entry.icon.is_empty() {
+                entry.icon = listing.icon;
+            }
+            if entry.providers.is_empty() {
+                entry.providers = listing.providers;
+            }
+            if entry.summary.is_empty() {
+                entry.summary = listing.summary;
+            }
+        }
+    }
+    index
 }
 
 /// What a refresh produced. `last_error` is set when the list shown is not the

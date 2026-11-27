@@ -59,6 +59,7 @@ const PluginMarketDetailModal: React.FC<PluginMarketDetailModalProps> = ({
       open={open}
       width={560}
       footer={null}
+      closable={false}
       onCancel={onClose}
       rootClassName={styles.modalRoot}
       aria-label={t('plugins.market.detail.title')}

@@ -1,5 +1,7 @@
 # 插件中心 Magpie 清透柔靛风 UI 重构与渠道级自动签到规格书
 
+> 状态说明：插件页强调色已统一为 AI Toolbox 全局主色蓝，`--pl-accent*` 现复用 `var(--ant-color-primary*)` / `var(--color-primary)` / `var(--color-bg-selected)`；下文「柔靛」色值仅作历史设计记录，运行时以 `web/features/coding/plugins/styles/pluginTheme.less` 为准。
+>
 > 工作目录：`D:\GitHub\ai-toolbox-plugins-ui`（分支：`feat/plugins-ui-magpie`）
 > 核心约束：**视觉全面升级为「Magpie 清透柔靛风 + Unslop 4px 节奏」，但现有功能一项不可丢失；亮色、暗色、跟随系统主题均须精致协调。**
 

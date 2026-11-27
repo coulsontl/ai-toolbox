@@ -6653,7 +6653,7 @@
       "usageLoadFailed": "Failed to read usage: {{error}}",
       "usageError": "Usage note: {{error}}",
       "usageRefreshFailedCached": "Refresh failed; showing cached usage",
-      "usageUntil": "Valid until {{time}}",
+      "usageUntil": "Plan valid until {{time}}",
       "signInExpired": "Credentials expired; sign in again",
       "walletBalance": "Balance {{balance}}",
       "quotaWindow": "Allowance",

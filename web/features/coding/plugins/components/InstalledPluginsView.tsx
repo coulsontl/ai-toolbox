@@ -36,6 +36,7 @@ import {
   formatPluginError,
   getPluginKindCategory,
   getPluginPageTitle,
+  getPluginSummary,
   isChinaMirrorRegistry,
   isMiddlewarePluginKind,
   isPagePluginKind,
@@ -419,11 +420,25 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
             const providerList = plugin.providers.join(
               i18n.language.startsWith('zh') ? '、' : ', ',
             );
+            // Middleware and page kinds always render a status item; provider
+            // kinds only do when the package declares channels. Everything else
+            // falls back to the package summary so the second line is never an
+            // empty div.
+            const hasKindStatus =
+              isMiddlewarePluginKind(category) || isPagePluginKind(category);
+            const summaryFallback = providerStatuses.length > 0 || hasKindStatus
+              ? ''
+              : getPluginSummary(plugin.summary, i18n.language);
+            const hasStatusRow =
+              providerStatuses.length > 0 || hasKindStatus || Boolean(summaryFallback);
+            const rowCompact = !hasStatusRow && !plugin.lastError;
 
             return (
               <article
                 key={plugin.id}
-                className={`${styles.row} ${plugin.enabled ? '' : styles.rowDisabled}`}
+                className={`${styles.row} ${plugin.enabled ? '' : styles.rowDisabled} ${
+                  rowCompact ? styles.rowCompact : ''
+                }`}
               >
                 <span className={styles.rowIcon}>
                   <PluginIcon icon={plugin.icon} name={plugin.displayName || plugin.packageName} />
@@ -447,60 +462,73 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                         {t('plugins.installed.disabledTag')}
                       </span>
                     )}
-                    {providerStatuses.length > 0 ? (
-                      <span className={styles.rowCarries}>
-                        <span className={styles.rowCarriesDot} aria-hidden="true" />
-                        {t('plugins.installed.providersCarried', { providers: providerList })}
-                      </span>
-                    ) : null}
                     <span className={styles.rowKind}>
                       {kindIcon(category)}
                       <span>{kindLabel(category)}</span>
                     </span>
                   </div>
-                  <div className={styles.rowStatus}>
-                    {providerStatuses.map((status) => (
-                      <span key={status.provider} className={styles.statusItem}>
-                        <span
-                          className={`${styles.statusDot} ${
-                            status.signedIn ? styles.statusDotOn : ''
-                          }`}
-                          aria-hidden="true"
-                        />
-                        <span className={styles.statusProvider}>{status.provider}</span>
-                        <span className={styles.statusText}>
-                          {status.signedIn
-                            ? t('plugins.installed.providerSignedIn')
-                            : t('plugins.installed.providerSignedOut')}
-                        </span>
-                      </span>
-                    ))}
-                    {isMiddlewarePluginKind(category) ? (
-                      middlewareState ? (
+                  {hasStatusRow ? (
+                    <div className={styles.rowStatus}>
+                      {providerStatuses.length > 0 ? (
+                        <>
+                          <span className={styles.rowCarries}>
+                            <span className={styles.rowCarriesDot} aria-hidden="true" />
+                            {t('plugins.installed.providersCarried', { providers: providerList })}
+                          </span>
+                          {/* Provider statuses form one flex item so the whole cluster
+                              wraps to a new line instead of splitting mid-list. */}
+                          <span className={styles.statusGroup}>
+                            {providerStatuses.map((status) => (
+                              <span key={status.provider} className={styles.statusItem}>
+                                <span
+                                  className={`${styles.statusDot} ${
+                                    status.signedIn ? styles.statusDotOn : ''
+                                  }`}
+                                  aria-hidden="true"
+                                />
+                                <span className={styles.statusProvider}>{status.provider}</span>
+                                <span className={styles.statusText}>
+                                  {status.signedIn
+                                    ? t('plugins.installed.providerSignedIn')
+                                    : t('plugins.installed.providerSignedOut')}
+                                </span>
+                              </span>
+                            ))}
+                          </span>
+                        </>
+                      ) : null}
+                      {isMiddlewarePluginKind(category) ? (
+                        middlewareState ? (
+                          <span className={styles.statusItem}>
+                            {t('plugins.installed.middlewareSummary', {
+                              hooks: middlewareState.hooks.length > 0
+                                ? middlewareState.hooks.join(' · ')
+                                : t('plugins.runtime.hooksEmpty'),
+                              calls: middlewareState.calls,
+                              avg: formatMicroseconds(middlewareState.avgMicros),
+                            })}
+                          </span>
+                        ) : (
+                          <span className={styles.statusItem}>
+                            {t('plugins.installed.metrics.notLoaded')}
+                          </span>
+                        )
+                      ) : null}
+                      {isPagePluginKind(category) ? (
                         <span className={styles.statusItem}>
-                          {t('plugins.installed.middlewareSummary', {
-                            hooks: middlewareState.hooks.length > 0
-                              ? middlewareState.hooks.join(' · ')
-                              : t('plugins.runtime.hooksEmpty'),
-                            calls: middlewareState.calls,
-                            avg: formatMicroseconds(middlewareState.avgMicros),
+                          {t('plugins.installed.pageSummary', {
+                            pages: plugin.pages?.length ?? 0,
+                            permissions: plugin.permissions?.length ?? 0,
                           })}
                         </span>
-                      ) : (
-                        <span className={styles.statusItem}>
-                          {t('plugins.installed.metrics.notLoaded')}
+                      ) : null}
+                      {summaryFallback ? (
+                        <span className={styles.statusSummary} title={summaryFallback}>
+                          {summaryFallback}
                         </span>
-                      )
-                    ) : null}
-                    {isPagePluginKind(category) ? (
-                      <span className={styles.statusItem}>
-                        {t('plugins.installed.pageSummary', {
-                          pages: plugin.pages?.length ?? 0,
-                          permissions: plugin.permissions?.length ?? 0,
-                        })}
-                      </span>
-                    ) : null}
-                  </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {plugin.lastError ? (
                     <details className={styles.errorDetails}>
                       <summary>{t('plugins.installed.viewError')}</summary>

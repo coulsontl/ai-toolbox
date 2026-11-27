@@ -6650,7 +6650,7 @@
       "usageLoadFailed": "额度读取失败：{{error}}",
       "usageError": "额度提示：{{error}}",
       "usageRefreshFailedCached": "刷新失败，当前显示为缓存数据",
-      "usageUntil": "有效期至 {{time}}",
+      "usageUntil": "套餐有效期至 {{time}}",
       "signInExpired": "登录凭据已过期，请重新登录",
       "walletBalance": "余额 {{balance}}",
       "quotaWindow": "额度窗口",
