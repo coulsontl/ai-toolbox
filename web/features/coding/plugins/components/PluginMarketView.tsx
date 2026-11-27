@@ -14,6 +14,7 @@ import {
   getPluginMarketListings,
   installPlugin,
   listPluginMarkets,
+  refreshPluginMarkets,
   type MarketPluginListing,
   type MarketSourceRecord,
 } from '@/services';
@@ -52,6 +53,7 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
   const [appliedSearch, setAppliedSearch] = React.useState('');
   const [includeNpmSearch, setIncludeNpmSearch] = React.useState(false);
   const [installingPackage, setInstallingPackage] = React.useState<string | null>(null);
+  const [refreshingMarkets, setRefreshingMarkets] = React.useState(false);
   const [registryOpen, setRegistryOpen] = React.useState(false);
   // Bumped when the empty state resets every filter; state updates are batched,
   // so requesting from the click handler would still read the old filters.
@@ -84,7 +86,7 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
     }
   }, [marketFilter, markets]);
 
-  const loadListings = React.useCallback(async () => {
+  const loadListings = React.useCallback(async (): Promise<boolean> => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     setLoading(true);
@@ -95,15 +97,17 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
         marketId: marketFilter === 'all' ? null : marketFilter,
         includeNpmSearch,
       });
-      if (requestIdRef.current !== requestId) return;
+      if (requestIdRef.current !== requestId) return true;
       setListings(nextListings);
       setError(null);
       onListingCountChange(nextListings.length);
+      return true;
     } catch (listingError) {
-      if (requestIdRef.current !== requestId) return;
+      if (requestIdRef.current !== requestId) return false;
       setError(
         t('plugins.market.loadFailed', { error: formatPluginError(listingError) }),
       );
+      return false;
     } finally {
       if (requestIdRef.current === requestId) {
         setLoading(false);
@@ -117,6 +121,24 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
 
   const handleMarketChanged = async () => {
     await Promise.all([loadMarkets(), loadListings()]);
+  };
+
+  const handleRefreshMarket = async () => {
+    setRefreshingMarkets(true);
+    try {
+      const nextMarkets = await refreshPluginMarkets();
+      setMarkets(nextMarkets);
+      const listingsLoaded = await loadListings();
+      if (listingsLoaded) {
+        message.success(t('plugins.page.notice.refreshed'));
+      }
+    } catch (refreshError) {
+      setError(
+        t('plugins.market.loadFailed', { error: formatPluginError(refreshError) }),
+      );
+    } finally {
+      setRefreshingMarkets(false);
+    }
   };
 
   const handleInstall = async (listing: MarketPluginListing) => {
@@ -227,6 +249,20 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
         >
           <Settings2 size={14} aria-hidden="true" />
           <span>{t('plugins.market.manageMarkets')}</span>
+        </button>
+
+        <button
+          type="button"
+          className={styles.actionButton}
+          disabled={refreshingMarkets || loading}
+          onClick={() => void handleRefreshMarket()}
+        >
+          <RefreshCw
+            size={14}
+            className={refreshingMarkets || loading ? styles.spin : undefined}
+            aria-hidden="true"
+          />
+          <span>{t('common.refresh')}</span>
         </button>
 
         <span className={styles.totalLabel}>

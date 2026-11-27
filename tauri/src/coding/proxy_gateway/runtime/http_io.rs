@@ -290,6 +290,20 @@ pub(super) struct DebugHttpResponse {
     /// either side wrote anything.
     pub(super) compaction_mode: Option<String>,
     pub(super) upstream_request_body: Option<Vec<u8>>,
+    /// Headers actually sent to the upstream (gateway-built or captured from a
+    /// plugin provider's host). Raw here; observability redacts before writing.
+    pub(super) upstream_request_headers: Option<Vec<(String, String)>>,
+    /// Body a plugin provider really sent when it differs from
+    /// `upstream_request_body`. Detail-only; `None` when identical.
+    pub(super) plugin_request_body: Option<Vec<u8>>,
+    /// Original (pre-truncation) length reported by the plugin host.
+    pub(super) plugin_request_body_bytes: u64,
+    /// The host's capture cap cut `plugin_request_body`, so it is a prefix of
+    /// the body the plugin really sent even when it fits the log size limit.
+    pub(super) plugin_request_body_truncated: bool,
+    /// Kept so a streaming `onEvent` middleware's rewrites can be merged after
+    /// the stream has been consumed, right before the detail row is written.
+    pub(super) middleware_state: Option<crate::plugins::middleware_rt::MiddlewareState>,
     /// Protocol of the final upstream attempt, independent of the client protocol.
     pub(super) target_protocol: Option<AiProtocol>,
     pub(super) upstream_response_body: Option<Vec<u8>>,
@@ -637,6 +651,11 @@ pub(super) fn json_response(
         fast_cost_multiplier: None,
         ultrafast_cost_multiplier: None,
         upstream_request_body: None,
+        upstream_request_headers: None,
+        plugin_request_body: None,
+        plugin_request_body_bytes: 0,
+        plugin_request_body_truncated: false,
+        middleware_state: None,
         upstream_response_body: None,
         upstream_response_body_bytes: 0,
         upstream_response_body_stream_snapshot: None,
@@ -689,6 +708,11 @@ pub(super) fn empty_response(
         fast_cost_multiplier: None,
         ultrafast_cost_multiplier: None,
         upstream_request_body: None,
+        upstream_request_headers: None,
+        plugin_request_body: None,
+        plugin_request_body_bytes: 0,
+        plugin_request_body_truncated: false,
+        middleware_state: None,
         upstream_response_body: None,
         upstream_response_body_bytes: 0,
         upstream_response_body_stream_snapshot: None,
@@ -1413,6 +1437,11 @@ mod tests {
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
+            upstream_request_headers: None,
+            plugin_request_body: None,
+            plugin_request_body_bytes: 0,
+            plugin_request_body_truncated: false,
+            middleware_state: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
             upstream_response_body_stream_snapshot: None,

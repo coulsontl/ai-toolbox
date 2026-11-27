@@ -403,6 +403,10 @@ function inTime(step, ms, what, ctl) {
 // fetch is given magpie's own here when it has none of its own.
 // Loopback never goes through one.
 const via = new AsyncLocalStorage() // the proxy: "", "direct" or its URL
+// outboundCapture is set around one provider fetch that asked for a capture
+// (captureRequest): {opts, last}. Every global fetch made inside that call
+// records the request it really sent, so the gateway can show it.
+const outboundCapture = new AsyncLocalStorage()
 const bunFetch = globalThis.fetch
 
 function proxyVar(k) {
@@ -766,9 +770,68 @@ function whileSigningIn(input, init) {
   return [input, { ...init, signal: own ? AbortSignal.any([own, signal]) : signal }]
 }
 
+// CAPTURE_BODY_MAX is the most request body one wire capture carries, whatever
+// the caller's own maxBodyBytes asks for.
+const CAPTURE_BODY_MAX = 256 << 10
+// REFRESH_URL is a sign-in token request, not the inference request a capture
+// wants to show: it is skipped unless nothing else was fetched.
+const REFRESH_URL = /\/(?:oauth\/token|token\/refresh|refresh_token)\b/i
+
+// captureOpts reads params.captureRequest; null when nothing is to be
+// captured, so the whole capture path stays off and costs nothing.
+function captureOpts(raw) {
+  if (!raw || typeof raw !== "object") return null
+  const headers = raw.headers === true
+  const body = raw.body === true
+  if (!headers && !body) return null
+  const max = Number(raw.maxBodyBytes)
+  return { headers, body, maxBodyBytes: Number.isFinite(max) && max > 0 ? Math.min(max, CAPTURE_BODY_MAX) : CAPTURE_BODY_MAX }
+}
+
+// captureBodyOf is a body in bytes, null for anything fetch encodes itself or
+// for a stream that can only be read once: never consume what the plugin
+// still has to send.
+function captureBodyOf(body) {
+  try {
+    if (typeof body === "string") return Buffer.from(body)
+    if (body instanceof URLSearchParams) return Buffer.from(body.toString())
+    if (body instanceof ArrayBuffer) return Buffer.from(body)
+    if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength)
+  } catch {}
+  return null
+}
+
+// captureWireRequest records the request about to be sent. last is the last
+// non-refresh request of the capture, so a token refresh the plugin made on
+// the way doesn't hide the inference request that followed.
+function captureWireRequest(slot, input, init) {
+  try {
+    const url = input instanceof Request ? input.url : String(input instanceof URL ? input.href : input)
+    const method = String((init?.method ?? (input instanceof Request ? input.method : "GET")) || "GET").toUpperCase()
+    const said = { url, method, headers: {}, body: null, bodyBytes: 0, truncated: false }
+    if (slot.opts.headers) {
+      const h = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+      h.forEach((value, name) => (said.headers[name] = value))
+    }
+    if (slot.opts.body && init && "body" in init) {
+      const bytes = captureBodyOf(init.body)
+      if (bytes) {
+        said.bodyBytes = bytes.length
+        const max = slot.opts.maxBodyBytes
+        const kept = bytes.length > max ? bytes.subarray(0, max) : bytes
+        said.truncated = kept.length < bytes.length
+        said.body = kept.toString("base64")
+      }
+    }
+    if (!REFRESH_URL.test(url) || slot.last === null) slot.last = said
+  } catch {}
+}
+
 globalThis.fetch = Object.assign(function fetch(input, init) {
   ;[input, init] = unsaid(input, init)
   ;[input, init] = whileSigningIn(input, init)
+  const capture = outboundCapture.getStore()
+  if (capture) captureWireRequest(capture, input, init)
   const r = reach.getStore()
   if (!r) return asked(input, init)
   return asked(input, init).then(
@@ -3600,6 +3663,7 @@ function callerOf(headers) {
 async function fetchAs(id, record, key, params) {
   const { controller: ctl, gate } = record
   const { provider, model, npm, url, method, headers, body, session } = params
+  const capture = captureOpts(params.captureRequest)
   // the sign-in as the request found it, before its loader or magpie
   // renewed it: a 401 is judged against it (staleAccess)
   const before = key ? readAuth()[key] : undefined
@@ -3649,12 +3713,23 @@ async function fetchAs(id, record, key, params) {
     // the fetch is owned since its message was read: an abort that came while
     // this setup was awaiting must not let the upstream start
     checkFetch(record)
-    const res = await f(url, {
+    const init = {
       method: method ?? "POST",
       headers: h,
       body: bodyOf(body),
       signal: ctl.signal,
-    })
+    }
+    // a capture only pays for itself when it was asked for: the fetch runs
+    // inside its slot, and every global fetch it makes is recorded there
+    let captured = null
+    let res
+    if (capture) {
+      const slot = { opts: capture, last: null }
+      res = await outboundCapture.run(slot, () => f(url, init))
+      captured = slot.last
+    } else {
+      res = await f(url, init)
+    }
     record.unconsumedBody = res.body
     checkFetch(record)
     transitionFetch(record, "streaming")
@@ -3669,6 +3744,12 @@ async function fetchAs(id, record, key, params) {
       // the reply's head is past magpie's envelope: give the fetch up rather
       // than write a line the host would refuse, and let the body go
       throw new Error(`the reply's headers are past the host's head envelope (${HEAD_MAX} bytes or ${HEAD_ENTRIES} entries)`)
+    }
+    // the captured request goes out before the head, and costs the head
+    // envelope and the credit window nothing: it is a separate frame
+    if (captured) {
+      checkFetch(record)
+      await sendForFetch(record, { id, event: "wire_request", ...captured })
     }
     await sendForFetch(record, { id, event: "head", status: res.status, headers: rh })
     checkFetch(record)

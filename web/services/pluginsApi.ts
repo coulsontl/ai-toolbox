@@ -168,6 +168,10 @@ export interface PluginAccountSummary {
   lastCheckinAt?: string | null;
   /** Short message the host attached to the last scheduled check-in. */
   lastCheckinMessage?: string | null;
+  /** Last persisted quota/usage snapshot for instant rendering before live refresh. */
+  quota?: PluginUsage | null;
+  /** Timestamp when `quota` was last persisted. */
+  quotaUpdatedAt?: string | null;
 }
 
 export interface PluginAccountMetaRecord {

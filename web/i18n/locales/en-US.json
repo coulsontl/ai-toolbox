@@ -230,8 +230,10 @@
         "notStored": "This detail was not stored. Enable the matching log item in gateway settings.",
         "requestHeaders": "Request Headers",
         "responseHeaders": "Response Headers",
+        "upstreamRequestHeaders": "Upstream Request Headers (Redacted)",
         "receivedBody": "Received request body (raw)",
-        "upstreamBody": "Actual upstream request body (rectified/converted)",
+        "upstreamBody": "Actual upstream request body (rectified/converted/middleware-rewritten)",
+        "pluginBody": "Final body sent by provider plugin",
         "lines": "{{count}} lines",
         "expand": "Expand",
         "collapse": "Collapse",
@@ -311,6 +313,12 @@
           "declared": "declared",
           "forwarded": "forwarded",
           "used": "used"
+        },
+        "rewriteKinds": {
+          "pluginMiddlewareRequest": "Plugin request rewrite",
+          "pluginMiddlewareProvider": "Plugin upstream rewrite",
+          "pluginMiddlewareResponse": "Plugin response rewrite",
+          "pluginProviderFetch": "Provider plugin rewrite"
         },
         "compaction": {
           "native": "Native compact",
@@ -6625,6 +6633,7 @@
       "usageEmpty": "Usage has not been read yet",
       "usageLoadFailed": "Failed to read usage: {{error}}",
       "usageError": "Usage note: {{error}}",
+      "usageRefreshFailedCached": "Refresh failed; showing cached usage",
       "usageUntil": "Valid until {{time}}",
       "signInExpired": "Credentials expired; sign in again",
       "walletBalance": "Balance {{balance}}",

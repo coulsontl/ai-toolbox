@@ -43,6 +43,7 @@ import styles from './PluginRuntimeView.module.less';
 type LogFilter = 'all' | 'info' | 'warn' | 'error';
 
 interface PluginRuntimeViewProps {
+  active: boolean;
   refreshKey: number;
   onBunStatusChange: (status: BunRuntimeStatus) => void;
 }
@@ -57,6 +58,7 @@ const redactLogEntries = (entries: PluginRuntimeLogEntry[]): PluginRuntimeLogEnt
   entries.map((entry) => ({ ...entry, message: redactPluginLog(entry.message) }));
 
 const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
+  active,
   refreshKey,
   onBunStatusChange,
 }) => {
@@ -71,6 +73,7 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   const [middlewareStates, setMiddlewareStates] = React.useState<MiddlewareStateView[]>([]);
   const [logs, setLogs] = React.useState<PluginRuntimeLogEntry[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [refreshingAll, setRefreshingAll] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [ensureBusy, setEnsureBusy] = React.useState(false);
   const [probeBusy, setProbeBusy] = React.useState(false);
@@ -79,8 +82,9 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   const [hostBusy, setHostBusy] = React.useState(false);
   const [logsBusy, setLogsBusy] = React.useState(false);
   const [logFilter, setLogFilter] = React.useState<LogFilter>('all');
+  const settingsDirtyRef = React.useRef(false);
 
-  const loadAll = React.useCallback(async () => {
+  const loadAll = React.useCallback(async (): Promise<boolean> => {
     setLoading(true);
     const [bunResult, hostResult, settingsResult, middlewareResult, logsResult] =
       await Promise.allSettled([
@@ -105,18 +109,25 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
     }
     if (settingsResult.status === 'fulfilled') {
       setSettings(settingsResult.value);
-      setDraft(settingsResult.value);
+      if (!settingsDirtyRef.current) {
+        setDraft(settingsResult.value);
+      }
     } else if (!firstError) {
       firstError = formatPluginError(settingsResult.reason);
     }
     if (middlewareResult.status === 'fulfilled') {
       setMiddlewareStates(middlewareResult.value);
+    } else if (!firstError) {
+      firstError = formatPluginError(middlewareResult.reason);
     }
     if (logsResult.status === 'fulfilled') {
       setLogs(redactLogEntries(logsResult.value));
+    } else if (!firstError) {
+      firstError = formatPluginError(logsResult.reason);
     }
     setError(firstError);
     setLoading(false);
+    return firstError === null;
   }, [onBunStatusChange]);
 
   React.useEffect(() => {
@@ -124,7 +135,7 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   }, [loadAll, refreshKey]);
 
   React.useEffect(() => {
-    if (!isActive) {
+    if (!isActive || !active) {
       return undefined;
     }
     let disposed = false;
@@ -148,7 +159,7 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
       disposed = true;
       window.clearInterval(timer);
     };
-  }, [isActive, onBunStatusChange]);
+  }, [active, isActive, onBunStatusChange]);
 
   const settingsDirty = Boolean(
     settings
@@ -158,6 +169,19 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
       || draft.followAppProxy !== settings.followAppProxy
     ),
   );
+  settingsDirtyRef.current = settingsDirty;
+
+  const handleRefreshAll = async () => {
+    setRefreshingAll(true);
+    try {
+      const succeeded = await loadAll();
+      if (succeeded) {
+        message.success(t('plugins.page.notice.refreshed'));
+      }
+    } finally {
+      setRefreshingAll(false);
+    }
+  };
 
   const updateDraft = (patch: Partial<PluginSettings>) => {
     setDraft((current) => ({ ...current, ...patch }));
@@ -393,6 +417,19 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
             </div>
           </div>
           <div className={styles.runtimeActions}>
+            <button
+              type="button"
+              className={styles.actionButton}
+              disabled={refreshingAll || loading}
+              onClick={() => void handleRefreshAll()}
+            >
+              <RefreshCw
+                size={14}
+                className={refreshingAll || loading ? styles.spin : undefined}
+                aria-hidden="true"
+              />
+              <span>{t('common.refresh')}</span>
+            </button>
             {bunStatus?.available ? (
               <button type="button" className={styles.actionButton} onClick={() => void handleRecheckBun()}>
                 <RefreshCw size={14} aria-hidden="true" />
