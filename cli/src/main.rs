@@ -8,7 +8,7 @@ use args::{
     Cli, CliCommand, Command, ConfigCommand, ConfigMode, GatewayCommand, ModelCommand,
     PluginCommand, PromptCommand, ProviderCommand, ProviderFields, TakeoverMode,
 };
-use http_client::{encode_query, encode_segment, Client, Method, TransportError};
+use http_client::{encode_query, encode_segment, Client, Method, RemoteError, TransportError};
 use serde_json::{json, Map, Value};
 
 fn main() {
@@ -47,8 +47,8 @@ fn main() {
 enum Failure {
     Usage(String),
     Unavailable(String),
-    Denied(String),
-    Failed(String),
+    Denied(RemoteError),
+    Failed(RemoteError),
 }
 
 impl Failure {
@@ -61,21 +61,21 @@ impl Failure {
         }
     }
 
-    fn code(&self) -> &'static str {
+    /// The stable machine code written to `--json`. Server codes pass through
+    /// unchanged (`approval_denied`, `approval_timeout`, `read_only`,
+    /// `unsupported`, ...); local failures get a CLI-local code.
+    fn code(&self) -> &str {
         match self {
             Failure::Usage(_) => "usage_error",
             Failure::Unavailable(_) => "app_not_running",
-            Failure::Denied(_) => "approval_denied",
-            Failure::Failed(_) => "execution_error",
+            Failure::Denied(error) | Failure::Failed(error) => &error.code,
         }
     }
 
     fn message(&self) -> &str {
         match self {
-            Failure::Usage(message)
-            | Failure::Unavailable(message)
-            | Failure::Denied(message)
-            | Failure::Failed(message) => message,
+            Failure::Usage(message) | Failure::Unavailable(message) => message,
+            Failure::Denied(error) | Failure::Failed(error) => &error.message,
         }
     }
 }
@@ -84,8 +84,8 @@ impl From<TransportError> for Failure {
     fn from(error: TransportError) -> Self {
         match error {
             TransportError::Unavailable(message) => Failure::Unavailable(message),
-            TransportError::Denied(message) => Failure::Denied(message),
-            TransportError::Failed(message) => Failure::Failed(message),
+            TransportError::Denied(error) => Failure::Denied(error),
+            TransportError::Failed(error) => Failure::Failed(error),
         }
     }
 }
@@ -590,15 +590,21 @@ fn run_prompt(cli: &Cli, command: &PromptCommand) -> Result<Value, Failure> {
             content_file,
         } => {
             check_cli_key(key)?;
-            let content = match content_file {
-                Some(path) => Some(read_source(path)?),
-                None => None,
-            };
-            let name = match name {
-                Some(name) => name.clone(),
-                None => resolve_prompt_name(&client, key, id)?,
-            };
-            let body = json!({ "id": id, "name": name, "content": content });
+            // Either field may be updated alone. The backend fills the missing
+            // half from the stored preset, so sending only what changed keeps
+            // a rename from rewriting the content and vice versa.
+            if name.is_none() && content_file.is_none() {
+                return Err(Failure::Usage(
+                    "prompt update needs --name and/or --content-file".to_string(),
+                ));
+            }
+            let mut body = json!({ "id": id });
+            if let Some(name) = name {
+                body["name"] = json!(name);
+            }
+            if let Some(path) = content_file {
+                body["content"] = json!(read_source(path)?);
+            }
             Ok(client
                 .request(
                     Method::Put,
@@ -680,6 +686,15 @@ fn run_gateway(cli: &Cli, command: &GatewayCommand) -> Result<Value, Failure> {
         GatewayCommand::ResetHealth => Ok(client
             .request(Method::Post, "/v1/gateway/health/reset", Some(&json!({})))?
             .body),
+        GatewayCommand::Clis => Ok(client
+            .request(Method::Get, "/v1/gateway/clis", None)?
+            .body),
+        GatewayCommand::Switch { cli: key, provider } => {
+            let body = json!({ "cliKey": key, "providerId": provider });
+            Ok(client
+                .request(Method::Post, "/v1/gateway/takeover/switch", Some(&body))?
+                .body)
+        }
         GatewayCommand::Engage {
             cli: key,
             mode,
@@ -776,28 +791,6 @@ fn read_api_key(fields: &ProviderFields) -> Result<Option<String>, Failure> {
     Ok(value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty()))
-}
-
-fn resolve_prompt_name(client: &Client, cli: &str, id: &str) -> Result<String, Failure> {
-    let listing = client
-        .request(
-            Method::Get,
-            &format!("/v1/clis/{}/prompts", encode_segment(cli)),
-            None,
-        )?
-        .body;
-    listing
-        .get("prompts")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .find(|item| item.get("id").and_then(Value::as_str) == Some(id))
-        })
-        .and_then(|item| item.get("name"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| Failure::Usage(format!("Prompt preset '{id}' was not found in '{cli}'")))
 }
 
 fn read_source(source: &str) -> Result<String, Failure> {
@@ -1010,6 +1003,29 @@ mod tests {
         };
         let body = provider_body(&fields).unwrap();
         assert_eq!(body["name"], "Renamed");
+    }
+
+    #[test]
+    fn denial_families_share_exit_four_but_keep_the_server_code() {
+        for code in [
+            "approval_denied",
+            "approval_timeout",
+            "read_only",
+            "unsupported",
+        ] {
+            let failure = Failure::from(TransportError::Denied(RemoteError {
+                code: code.to_string(),
+                message: "no".to_string(),
+            }));
+            assert_eq!(failure.exit_code(), 4, "{code} must exit 4");
+            assert_eq!(failure.code(), code);
+        }
+        let execution = Failure::from(TransportError::Failed(RemoteError {
+            code: "bad_request".to_string(),
+            message: "fix it".to_string(),
+        }));
+        assert_eq!(execution.exit_code(), 5);
+        assert_eq!(execution.code(), "bad_request");
     }
 
     #[test]

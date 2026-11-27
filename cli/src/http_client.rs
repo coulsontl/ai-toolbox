@@ -38,14 +38,32 @@ pub struct HttpResponse {
     pub body: Value,
 }
 
+/// The server's own error payload, kept intact so `--json` can expose the
+/// stable `code` (`approval_denied`, `read_only`, `unsupported`, ...) instead
+/// of collapsing every failure into one CLI-local label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteError {
+    pub code: String,
+    pub message: String,
+}
+
+impl RemoteError {
+    fn local(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum TransportError {
     /// The app is not listening, the discovery file is stale, or auth failed.
     Unavailable(String),
-    /// The desktop user denied the approval or it timed out.
-    Denied(String),
+    /// The desktop user denied the approval, it timed out, or writes are off.
+    Denied(RemoteError),
     /// The request reached the app but failed.
-    Failed(String),
+    Failed(RemoteError),
 }
 
 pub struct Client {
@@ -73,7 +91,10 @@ impl Client {
     ) -> Result<HttpResponse, TransportError> {
         let body_text = match body {
             Some(value) => serde_json::to_string(value).map_err(|error| {
-                TransportError::Failed(format!("Cannot encode request: {error}"))
+                TransportError::Failed(RemoteError::local(
+                    "encoding_error",
+                    format!("Cannot encode request: {error}"),
+                ))
             })?,
             None => String::new(),
         };
@@ -201,12 +222,28 @@ fn classify(response: HttpResponse) -> Result<HttpResponse, TransportError> {
                 .to_string(),
         ),
     };
-    let text = format!("{message} ({code})");
+    let error = RemoteError {
+        code: code.clone(),
+        message,
+    };
     match response.status {
-        401 => Err(TransportError::Unavailable(text)),
-        403 => Err(TransportError::Denied(text)),
-        408 if code == "approval_timeout" => Err(TransportError::Denied(text)),
-        _ => Err(TransportError::Failed(text)),
+        401 => Err(TransportError::Unavailable(format!(
+            "{} ({code})",
+            error.message
+        ))),
+        // 403 covers `approval_denied` and `read_only`; 408 is an approval
+        // that outlived the desktop timeout. All three need the user's
+        // decision, so they share the "denied" exit code but keep the exact
+        // server code for `--json`.
+        403 | 408 => Err(TransportError::Denied(error)),
+        _ if matches!(
+            code.as_str(),
+            "approval_denied" | "approval_timeout" | "read_only" | "unsupported"
+        ) =>
+        {
+            Err(TransportError::Denied(error))
+        }
+        _ => Err(TransportError::Failed(error)),
     }
 }
 
@@ -281,13 +318,41 @@ mod tests {
             status: 403,
             body: serde_json::json!({"error": {"code": "approval_denied", "message": "no"}}),
         };
-        assert!(matches!(classify(denied), Err(TransportError::Denied(_))));
+        match classify(denied) {
+            Err(TransportError::Denied(error)) => assert_eq!(error.code, "approval_denied"),
+            other => panic!("expected a denial, got {other:?}"),
+        }
 
         let timeout = HttpResponse {
             status: 408,
             body: serde_json::json!({"error": {"code": "approval_timeout", "message": "late"}}),
         };
-        assert!(matches!(classify(timeout), Err(TransportError::Denied(_))));
+        match classify(timeout) {
+            Err(TransportError::Denied(error)) => assert_eq!(error.code, "approval_timeout"),
+            other => panic!("expected an approval timeout, got {other:?}"),
+        }
+
+        // Read-only is a 403 with its own code; the code must survive so the
+        // skill (and --json consumers) can tell the user what to change.
+        let read_only = HttpResponse {
+            status: 403,
+            body: serde_json::json!({"error": {"code": "read_only", "message": "off"}}),
+        };
+        match classify(read_only) {
+            Err(TransportError::Denied(error)) => assert_eq!(error.code, "read_only"),
+            other => panic!("expected read-only denial, got {other:?}"),
+        }
+
+        // `unsupported` can arrive with a non-403 status but is still a
+        // capability boundary, not a transient execution failure.
+        let unsupported = HttpResponse {
+            status: 405,
+            body: serde_json::json!({"error": {"code": "unsupported", "message": "nope"}}),
+        };
+        match classify(unsupported) {
+            Err(TransportError::Denied(error)) => assert_eq!(error.code, "unsupported"),
+            other => panic!("expected unsupported denial, got {other:?}"),
+        }
 
         let unauthorized = HttpResponse {
             status: 401,

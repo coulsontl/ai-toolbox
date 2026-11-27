@@ -15,8 +15,10 @@ pub struct Cli {
     /// Print machine-readable JSON
     #[arg(long, global = true)]
     pub json: bool,
-    /// Request timeout in seconds
-    #[arg(long, global = true, default_value_t = 75)]
+    /// Request timeout in seconds. Keep it above the desktop approval timeout
+    /// (`approvalTimeoutSecs` in the control API settings, default 60) or a
+    /// write that is waiting for the user's click will be cut off locally.
+    #[arg(long, global = true, default_value_t = 120)]
     pub timeout: u64,
     /// Override the discovery file path
     #[arg(long, global = true, value_name = "PATH")]
@@ -389,6 +391,16 @@ pub enum GatewayCommand {
     },
     Health,
     ResetHealth,
+    /// Show every gateway-managed CLI and its takeover state
+    Clis,
+    /// Switch the primary provider of a CLI already managed by the gateway
+    Switch {
+        #[arg(long)]
+        cli: String,
+        /// Provider id to make primary
+        #[arg(long)]
+        provider: String,
+    },
     /// Route a CLI through the gateway
     Engage {
         #[arg(long)]
@@ -432,6 +444,36 @@ mod tests {
         assert!(parsed.json);
         assert_eq!(parsed.timeout, 10);
         assert!(matches!(parsed.command, Command::Provider { .. }));
+    }
+
+    #[test]
+    fn default_timeout_covers_the_desktop_approval_window() {
+        let parsed = Cli::try_parse_from(["aitb", "status"]).unwrap();
+        assert!(
+            parsed.timeout >= 120,
+            "the default timeout must outlast a 60s approval wait plus overhead"
+        );
+    }
+
+    #[test]
+    fn parses_gateway_clis_and_switch() {
+        let parsed = Cli::try_parse_from(["aitb", "gateway", "clis"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Gateway {
+                command: GatewayCommand::Clis
+            }
+        ));
+        let parsed = Cli::try_parse_from([
+            "aitb", "gateway", "switch", "--cli", "codex", "--provider", "p1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Gateway {
+                command: GatewayCommand::Switch { .. }
+            }
+        ));
     }
 
     #[test]
