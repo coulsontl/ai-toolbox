@@ -101,9 +101,18 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/settings/` | 应用设置存储、adapter 全量替换语义、CLI 路径覆盖与托盘联动 |
 | `tauri/src/settings/backup/` | 备份恢复（本地/WebDAV/GitHub-Gitee 仓库）、可选加密、自动备份与恢复后续链路 |
 | `tauri/src/plugins/` | Magpie 兼容插件宿主：SQLite v38 `plugin_entity`、多市场源注册、按需 Bun Provider 宿主、`rquickjs` 网关中间件与 17 CLI 集成桥接 |
+| `tauri/src/control_api/` | 本机 Agent 控制面：loopback HTTP、Bearer 鉴权、L0/L1/L2 授权弹窗、按 CLI 复用既有命令、凭据脱敏与 `aitb` 安装 |
 | `tauri/src/coding/image/` | Image 后端渠道配置、任务、资产落盘、图片 API 调用与备份联动 |
 
 后续新增模块级 `AGENTS.md` 时，继续在此表追加，不在根文档其他位置零散登记。
+
+## Local Control API / aitb
+
+- 控制面只监听 `127.0.0.1:0`，所有请求必须带随机 Bearer Token；`Host` / `Origin` 防护不得放宽。Token 只在私有发现文件和内存中，HTTP 响应、前端设置页、审批弹窗与日志都不得出现明文。
+- 所有 `control_api_*` Tauri 命令必须走 `control_api::invoke_handler`（`#[inline(never)]`），不要合并进 `lib.rs` 根 `generate_handler!`；原因与 `plugins_*` 相同（Windows MSVC 1 MiB 主线程栈）。
+- 写操作必须经过 `approve_write` 的 L1/L2 分级与 `ApprovalHub`；默认 `always_ask`。不要在路由层绕过授权，也不要放宽 gateway stop 的接管保护。
+- 控制面不实现第二套 CLI 配置解析器：provider/model/config/prompt 操作必须调用既有 Tauri 命令（`app.state::<T>()`）。公开响应统一走 `redact`，PATCH 必须保留未传的 Key；TOML/YAML 中的 `***` 不得写回。
+- `cli/` 中的 `aitb` 是独立 crate，只通过发现文件 + HTTP 访问控制面；退出码 `0/2/3/4/5` 是 Agent 契约。
 
 ## Gateway 协议转换维护入口
 
@@ -186,8 +195,10 @@ ai-toolbox/
 ├── tauri/                  # Rust backend
 │   ├── src/                # Rust source
 │   │   ├── coding/         # Coding modules (claude_code, codex, open_code, skills)
+│   │   ├── control_api/    # Local Agent Control API (loopback HTTP + approvals)
 │   │   └── settings/       # Settings modules
 │   └── Cargo.toml          # Rust dependencies
+├── cli/                    # Standalone `aitb` CLI (no Tauri dependency)
 └── package.json            # Frontend dependencies
 ```
 
@@ -238,6 +249,14 @@ cd tauri && cargo fmt
 cd tauri && cargo clippy
 ```
 
+### Standalone CLI (`aitb`)
+
+```bash
+# Build and test the loopback control-plane client
+cd cli && cargo build --release
+cd cli && cargo test --offline
+```
+
 ### Testing
 
 ```bash
@@ -252,6 +271,11 @@ cd tauri && cargo test
 
 # Run single Rust test
 cd tauri && cargo test test_name
+
+# Control API / plugin / aitb focused suites
+cd tauri && cargo test --lib control_api --jobs 2
+cd tauri && cargo test --lib plugins:: --jobs 2
+cd cli && cargo test --offline
 ```
 
 ### Test Execution Rules
