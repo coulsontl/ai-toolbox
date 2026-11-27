@@ -98,6 +98,10 @@ check('plugin list', ['plugin', 'list'], (body) => Array.isArray(body));
 check('plugin providers', ['plugin', 'providers'], (body) => Array.isArray(body));
 check('plugin accounts', ['plugin', 'accounts'], (body) => Array.isArray(body));
 check('plugin middleware', ['plugin', 'middleware'], (body) => Array.isArray(body));
+check('plugin pages', ['plugin', 'pages'], (body) => Array.isArray(body));
+check('plugin settings', ['plugin', 'settings'], (body) => typeof body?.npmRegistry === 'string');
+check('plugin bun-status', ['plugin', 'bun-status'], (body) => typeof body?.available === 'boolean');
+check('plugin host-status', ['plugin', 'host-status'], (body) => typeof body?.running === 'boolean');
 
 // L1 writes only when the approval policy will not block on a modal.
 const l1Allowed = status?.approvalMode === 'auto_approve' || status?.approvalMode === 'ask_high_risk';

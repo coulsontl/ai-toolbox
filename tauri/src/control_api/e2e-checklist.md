@@ -52,6 +52,15 @@
 | `plugin logs` / `clear-logs` | 有日志 | 读取分页；clear 后为空；不影响插件运行 | 再读 logs；插件仍 enabled | 无需（日志不可恢复，接受） |
 | `plugin link-cli` | 记录目标 CLI provider | URL provider 与 body `providerId` 不一致时 400；一致时创建链接 | `provider get`；CLI 列表出现插件 provider | 删除链接 provider；恢复 DB |
 | `plugin remove --purge-data` | 记录插件数据目录 | 插件与数据都删除；未带 flag 时保留数据 | 目录存在性；`plugin list` | 从备份恢复目录与 DB |
+| `plugin settings`（只读） | 记录 `bunManualPath` / `npmRegistry` / `followAppProxy` / `providerAutoCheckin` | 只读返回；不含凭据 | 输出与设置页对比 | 无需 |
+| `plugin settings --china-mirror true`（L1） | 记录原 `npmRegistry` | 只改 `npmRegistry`；其余字段保留；`plugin settings` 读回一致 | 读回；设置页显示镜像开启 | `--china-mirror false` 或恢复 DB |
+| `plugin settings --bun-path` / `--clear-bun-path`（L1） | 记录原 `bunManualPath` | 局部更新；未传字段不变；非法路径不阻止保存但 `bun-status` 反映不可用 | `plugin settings`；`plugin bun-status` | 回写原路径；恢复 DB |
+| `plugin provider-options --set`（L1） | 记录原 options | 与 `plugin options` 相同：GET 不带 `--set`，PUT 整对象替换 | 读回；`plugin providers` 的 `optionValues` | 回写原 options |
+| `plugin provider-auto-checkin --enabled`（L1） | 记录渠道与账号级签到状态 | 渠道级开关翻转；未配置过的渠道首次写入显式值；账号级旧标记仍兼容 | `plugin providers` 的 `autoCheckin`；`plugin accounts` | 反向命令；恢复 DB |
+| `plugin bun-status` / `plugin bun-probe`（只读） | 记录可用 Bun 与路径 | 返回 `available/path/source`；probe 只验证版本，不写设置 | 输出；`plugin settings` 未变 | 无需 |
+| `plugin bun-ensure`（L1） | 记录 `available` 与托管目录 | 已可用时不重复下载；缺失时下载并校验 SHA-256 | `plugin bun-status`；托管目录文件 | 无需（可保留运行时）；异常时删除托管目录重试 |
+| `plugin host-status` / `plugin host-restart`（L0/L1） | 记录宿主 `running`、`crashes`、`circuitOpen` | status 只读；restart 先中断再拉起，generation 递增且不计崩溃 | 两次 `host-status` 对比 `startedAt`/`pid` | 无需；若插件进行中先等请求结束 |
+| `plugin pages`（只读） | 记录启用插件页面 | 返回已启用插件的页面清单；不返回 token | 输出与插件中心页面列表对比 | 无需 |
 
 ## 4. Provider 域
 

@@ -6,7 +6,8 @@ use std::io::Read;
 
 use args::{
     Cli, CliCommand, Command, ConfigCommand, ConfigMode, GatewayCommand, ModelCommand,
-    PluginCommand, PromptCommand, ProviderCommand, ProviderFields, TakeoverMode,
+    PluginCommand, PluginSettingsFields, PromptCommand, ProviderCommand, ProviderFields,
+    TakeoverMode,
 };
 use http_client::{encode_query, encode_segment, Client, Method, RemoteError, TransportError};
 use serde_json::{json, Map, Value};
@@ -203,12 +204,65 @@ fn run_plugin(cli: &Cli, command: &PluginCommand) -> Result<Value, Failure> {
         PluginCommand::Providers => Ok(client
             .request(Method::Get, "/v1/plugins/providers", None)?
             .body),
-        PluginCommand::ProviderOptions { provider } => Ok(client
+        PluginCommand::ProviderOptions { provider, set } => match set {
+            Some(raw) => {
+                let options = parse_json_object(raw, "--set")?;
+                let body = json!({ "options": options });
+                Ok(client
+                    .request(
+                        Method::Put,
+                        &format!("/v1/plugins/providers/{}/options", encode_segment(provider)),
+                        Some(&body),
+                    )?
+                    .body)
+            }
+            None => Ok(client
+                .request(
+                    Method::Get,
+                    &format!("/v1/plugins/providers/{}/options", encode_segment(provider)),
+                    None,
+                )?
+                .body),
+        },
+        PluginCommand::ProviderAutoCheckin { provider, enabled } => Ok(client
             .request(
-                Method::Get,
-                &format!("/v1/plugins/providers/{}/options", encode_segment(provider)),
-                None,
+                Method::Put,
+                &format!(
+                    "/v1/plugins/providers/{}/auto-checkin",
+                    encode_segment(provider)
+                ),
+                Some(&json!({ "enabled": enabled })),
             )?
+            .body),
+        PluginCommand::Settings { fields } => {
+            let patch = settings_patch(fields)?;
+            if patch.as_object().is_some_and(|object| object.is_empty()) {
+                Ok(client.request(Method::Get, "/v1/plugins/settings", None)?.body)
+            } else {
+                Ok(client
+                    .request(Method::Put, "/v1/plugins/settings", Some(&patch))?
+                    .body)
+            }
+        }
+        PluginCommand::BunStatus => Ok(client.request(Method::Get, "/v1/plugins/bun", None)?.body),
+        PluginCommand::BunEnsure => Ok(client
+            .request(Method::Post, "/v1/plugins/bun/ensure", Some(&json!({})))?
+            .body),
+        PluginCommand::BunProbe { path } => Ok(client
+            .request(
+                Method::Post,
+                "/v1/plugins/bun/probe",
+                Some(&json!({ "path": path })),
+            )?
+            .body),
+        PluginCommand::HostStatus => {
+            Ok(client.request(Method::Get, "/v1/plugins/host", None)?.body)
+        }
+        PluginCommand::HostRestart => Ok(client
+            .request(Method::Post, "/v1/plugins/host/restart", Some(&json!({})))?
+            .body),
+        PluginCommand::Pages => Ok(client
+            .request(Method::Get, "/v1/plugins/pages", None)?
             .body),
         PluginCommand::RefreshModels => Ok(client
             .request(
@@ -746,6 +800,53 @@ fn with_scope(path: String, scope: Option<&str>) -> String {
     }
 }
 
+/// Registry values must match the desktop settings page
+/// (`web/features/coding/plugins/utils/pluginFormatters.ts`).
+const NPM_REGISTRY_OFFICIAL: &str = "https://registry.npmjs.org";
+const NPM_REGISTRY_CHINA: &str = "https://registry.npmmirror.com";
+
+/// Builds the partial settings body for `plugin settings`. An empty object
+/// means the caller passed no edit flags; the command then reads instead of
+/// writing, because the server rejects a PUT with no known field.
+fn settings_patch(fields: &PluginSettingsFields) -> Result<Value, Failure> {
+    let mut patch = match &fields.json_body {
+        Some(source) => {
+            let text = read_source(source)?;
+            let parsed: Value = serde_json::from_str(&text).map_err(|error| {
+                Failure::Usage(format!("--json-body is not valid JSON: {error}"))
+            })?;
+            if !parsed.is_object() {
+                return Err(Failure::Usage(
+                    "--json-body must contain a JSON object".to_string(),
+                ));
+            }
+            parsed
+        }
+        None => Value::Object(Map::new()),
+    };
+
+    if let Some(path) = &fields.bun_path {
+        patch["bunManualPath"] = json!(path);
+    }
+    if fields.clear_bun_path {
+        patch["bunManualPath"] = json!("");
+    }
+    if let Some(registry) = &fields.npm_registry {
+        patch["npmRegistry"] = json!(registry);
+    }
+    if let Some(china_mirror) = fields.china_mirror {
+        patch["npmRegistry"] = json!(if china_mirror {
+            NPM_REGISTRY_CHINA
+        } else {
+            NPM_REGISTRY_OFFICIAL
+        });
+    }
+    if let Some(follow_app_proxy) = fields.follow_app_proxy {
+        patch["followAppProxy"] = json!(follow_app_proxy);
+    }
+    Ok(patch)
+}
+
 fn provider_body(fields: &ProviderFields) -> Result<Value, Failure> {
     let mut body = match &fields.json_body {
         Some(source) => {
@@ -973,6 +1074,50 @@ fn bool_text(value: Option<&Value>) -> &'static str {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    fn settings_fields() -> PluginSettingsFields {
+        PluginSettingsFields {
+            bun_path: None,
+            clear_bun_path: false,
+            npm_registry: None,
+            china_mirror: None,
+            follow_app_proxy: None,
+            json_body: None,
+        }
+    }
+
+    #[test]
+    fn settings_patch_is_empty_without_edit_flags() {
+        let patch = settings_patch(&settings_fields()).unwrap();
+        assert!(patch.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_patch_translates_the_china_mirror_switch() {
+        let fields = PluginSettingsFields {
+            china_mirror: Some(true),
+            ..settings_fields()
+        };
+        let patch = settings_patch(&fields).unwrap();
+        assert_eq!(patch["npmRegistry"], NPM_REGISTRY_CHINA);
+
+        let fields = PluginSettingsFields {
+            china_mirror: Some(false),
+            ..settings_fields()
+        };
+        let patch = settings_patch(&fields).unwrap();
+        assert_eq!(patch["npmRegistry"], NPM_REGISTRY_OFFICIAL);
+    }
+
+    #[test]
+    fn settings_patch_clears_the_bun_path() {
+        let fields = PluginSettingsFields {
+            clear_bun_path: true,
+            ..settings_fields()
+        };
+        let patch = settings_patch(&fields).unwrap();
+        assert_eq!(patch["bunManualPath"], "");
+    }
 
     #[test]
     fn provider_body_reads_api_key_from_the_environment() {

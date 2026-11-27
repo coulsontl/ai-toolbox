@@ -36,6 +36,7 @@ aitoolbox cli list --json
 - 网关：`gateway status` / `gateway clis` → `engage` 或 `switch` → `gateway logs --only-failed`；停止前先 `restore`。
 - 已被网关接管的 CLI 不要手工 `restore` 再改供应商：直接 `provider update` / `provider apply` / `model add`，后端会恢复直连、写入、再按原模式重新接管。
 - 插件：`plugin install` → `plugin reload` → `plugin logs` / `plugin middleware` / `plugin accounts` → `plugin link-cli`。
+- 插件运行环境：`plugin settings`（Bun 路径、npm registry、是否跟随应用代理）、`plugin bun-status` / `plugin bun-ensure` / `plugin bun-probe <path>`、`plugin host-status` / `plugin host-restart`、`plugin pages`（自定义页面清单）。
 - 每次写操作后做一次只读核对，不要只相信退出码。
 
 ### 1.4 授权与失败处理
@@ -176,6 +177,8 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 - 在插件中心打开对应 Provider，先确认账号状态为已登录。
 - 点「检查 / 连通性测试」，确认模型列表能拉到；或 `aitoolbox plugin account-check <provider>`。
+- Provider 插件依赖 Bun：先 `aitoolbox plugin bun-status` 看是否可用；不可用时 `aitoolbox plugin bun-ensure`，或设置 `--bun-path` / 用 `plugin bun-probe <path>` 验证手填路径。
+- Bun 宿主异常（崩溃、熔断、请求卡住）时看 `aitoolbox plugin host-status` 与 `aitoolbox plugin logs`；确需复位再用 `aitoolbox plugin host-restart`（会中断进行中的插件请求）。
 - 如果 Provider 插件声明的模型 `npm` 与上游协议不匹配，网关会按声明的协议转发；检查 `npm` 映射是否正确：
   - `@ai-sdk/anthropic` → Anthropic Messages
   - `@ai-sdk/openai` → OpenAI Responses

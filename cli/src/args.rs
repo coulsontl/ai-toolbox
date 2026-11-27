@@ -116,10 +116,39 @@ pub enum PluginCommand {
     Middleware,
     /// List plugin providers
     Providers,
-    /// Read plugin provider options
+    /// Read provider options, or replace them with --set
     ProviderOptions {
         provider: String,
+        /// JSON object with the new options
+        #[arg(long, value_name = "JSON")]
+        set: Option<String>,
     },
+    /// Enable or disable a provider's daily auto check-in
+    ProviderAutoCheckin {
+        provider: String,
+        /// Whether the background pass should check this provider in daily
+        #[arg(long, value_name = "true|false", action = clap::ArgAction::Set)]
+        enabled: bool,
+    },
+    /// Read the global plugin settings, or update them with flags / --json-body
+    Settings {
+        #[command(flatten)]
+        fields: PluginSettingsFields,
+    },
+    /// Show the Bun runtime status
+    BunStatus,
+    /// Download (or verify) the managed Bun runtime
+    BunEnsure,
+    /// Probe one Bun executable path
+    BunProbe {
+        path: String,
+    },
+    /// Show the Bun plugin host status
+    HostStatus,
+    /// Restart the Bun plugin host
+    HostRestart,
+    /// List custom pages of enabled plugins
+    Pages,
     /// Refresh the model list of every plugin provider
     RefreshModels,
     /// Add a plugin provider to a coding CLI (native input JSON)
@@ -155,6 +184,30 @@ pub enum PluginCommand {
         #[arg(long)]
         proxy: Option<String>,
     },
+}
+
+/// Partial update flags for `plugin settings`. No flag (and no `--json-body`)
+/// reads the current settings instead of writing.
+#[derive(Debug, Args, Clone)]
+pub struct PluginSettingsFields {
+    /// Explicit Bun executable path
+    #[arg(long, value_name = "PATH", conflicts_with = "clear_bun_path")]
+    pub bun_path: Option<String>,
+    /// Clear the explicit Bun executable path and fall back to discovery
+    #[arg(long)]
+    pub clear_bun_path: bool,
+    /// npm registry URL
+    #[arg(long, value_name = "URL", conflicts_with = "china_mirror")]
+    pub npm_registry: Option<String>,
+    /// Use the China npmmirror registry (true) or the official npm registry (false)
+    #[arg(long, value_name = "true|false")]
+    pub china_mirror: Option<bool>,
+    /// Route market and npm requests through the app proxy
+    #[arg(long, value_name = "true|false")]
+    pub follow_app_proxy: Option<bool>,
+    /// Full settings patch JSON (file path or - for stdin)
+    #[arg(long, value_name = "PATH|-")]
+    pub json_body: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -480,6 +533,130 @@ mod tests {
                 command: GatewayCommand::Switch { .. }
             }
         ));
+    }
+
+    #[test]
+    fn parses_plugin_settings_edit_flags() {
+        let parsed = Cli::try_parse_from([
+            "aitoolbox",
+            "plugin",
+            "settings",
+            "--bun-path",
+            "/opt/bun",
+            "--china-mirror",
+            "true",
+            "--follow-app-proxy",
+            "false",
+        ])
+        .unwrap();
+        let Command::Plugin {
+            command:
+                PluginCommand::Settings {
+                    fields:
+                        PluginSettingsFields {
+                            bun_path,
+                            clear_bun_path,
+                            china_mirror,
+                            follow_app_proxy,
+                            ..
+                        },
+                },
+        } = parsed.command
+        else {
+            panic!("expected `plugin settings`");
+        };
+        assert_eq!(bun_path.as_deref(), Some("/opt/bun"));
+        assert!(!clear_bun_path);
+        assert_eq!(china_mirror, Some(true));
+        assert_eq!(follow_app_proxy, Some(false));
+
+        let parsed = Cli::try_parse_from(["aitoolbox", "plugin", "settings"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Plugin {
+                command: PluginCommand::Settings { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn bun_path_flags_conflict() {
+        assert!(Cli::try_parse_from([
+            "aitoolbox",
+            "plugin",
+            "settings",
+            "--bun-path",
+            "/opt/bun",
+            "--clear-bun-path",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn parses_plugin_provider_commands() {
+        let parsed = Cli::try_parse_from([
+            "aitoolbox",
+            "plugin",
+            "provider-options",
+            "demo",
+            "--set",
+            "{\"fast\":true}",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Plugin {
+                command: PluginCommand::ProviderOptions { set: Some(_), .. }
+            }
+        ));
+
+        // `--enabled` takes a value; a bare flag must not be accepted.
+        let parsed = Cli::try_parse_from([
+            "aitoolbox",
+            "plugin",
+            "provider-auto-checkin",
+            "demo",
+            "--enabled",
+            "false",
+        ])
+        .unwrap();
+        let Command::Plugin {
+            command: PluginCommand::ProviderAutoCheckin { provider, enabled },
+        } = parsed.command
+        else {
+            panic!("expected `plugin provider-auto-checkin`");
+        };
+        assert_eq!(provider, "demo");
+        assert!(!enabled);
+        assert!(Cli::try_parse_from([
+            "aitoolbox",
+            "plugin",
+            "provider-auto-checkin",
+            "demo",
+            "--enabled"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn parses_plugin_runtime_commands() {
+        for (argv, expected) in [
+            (vec!["plugin", "bun-status"], "bun-status"),
+            (vec!["plugin", "bun-ensure"], "bun-ensure"),
+            (vec!["plugin", "host-status"], "host-status"),
+            (vec!["plugin", "host-restart"], "host-restart"),
+            (vec!["plugin", "pages"], "pages"),
+            (vec!["plugin", "bun-probe", "/opt/bun"], "bun-probe"),
+        ] {
+            let parsed = Cli::try_parse_from(
+                std::iter::once("aitoolbox").chain(argv.iter().copied()),
+            )
+            .unwrap();
+            assert!(
+                matches!(parsed.command, Command::Plugin { .. }),
+                "{expected} must parse under `plugin`"
+            );
+        }
     }
 
     #[test]

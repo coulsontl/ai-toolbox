@@ -50,14 +50,29 @@ aitoolbox plugin logs [--limit 200]
 aitoolbox plugin clear-logs
 aitoolbox plugin middleware
 aitoolbox plugin providers
-aitoolbox plugin provider-options <provider>
+aitoolbox plugin provider-options <provider> [--set '{"key":"value"}']
+aitoolbox plugin provider-auto-checkin <provider> --enabled true|false
 aitoolbox plugin refresh-models
 aitoolbox plugin accounts
 aitoolbox plugin account-check <provider> [--account <id>] [--proxy <url>]
 aitoolbox plugin account-usage <provider> [--account <id>] [--proxy <url>]
 aitoolbox plugin account-checkin <provider> [--account <id>] [--proxy <url>]
 aitoolbox plugin link-cli <provider> --json-body <path|->
+aitoolbox plugin settings [--bun-path <PATH> | --clear-bun-path] [--npm-registry <URL>] [--china-mirror true|false] [--follow-app-proxy true|false] [--json-body <path|->]
+aitoolbox plugin bun-status
+aitoolbox plugin bun-ensure
+aitoolbox plugin bun-probe <path>
+aitoolbox plugin host-status
+aitoolbox plugin host-restart
+aitoolbox plugin pages
 ```
+
+- `plugin settings` 不带修改参数时是 GET，返回 `bunManualPath` / `npmRegistry` / `followAppProxy` / `providerAutoCheckin`；带任一参数或 `--json-body` 时是 PUT，只更新传入字段（未传字段保留）。`--china-mirror true|false` 映射到 `https://registry.npmmirror.com` / `https://registry.npmjs.org`；`--clear-bun-path` 把 `bunManualPath` 置空，恢复自动探测。
+- `plugin provider-options` 不传 `--set` 时读取，传 `--set` 时整对象替换该渠道的选项（与 `plugin options` 相同语义）。
+- `plugin provider-auto-checkin` 只切换渠道级每日自动签到开关；账号级旧标记的兼容合并由后端处理。
+- `plugin bun-status` / `plugin bun-probe <path>` 只读：分别查看当前 Bun 运行时来源与探测任意可执行文件；`plugin bun-ensure` 会下载/校验托管 Bun（L1，需要授权）。
+- `plugin host-status` 查看 Bun 宿主进程；`plugin host-restart` 是 L1 可逆写操作，会中断进行中的插件请求。
+- `plugin pages` 返回已启用插件的自定义页面清单（`pluginId`、`pageId`、`title`、`entryFile` 等），不签发页面 token。
 
 `link-cli` 的 JSON 与桌面「添加到 CLI」弹窗一致。`pluginSpec`、`providerId`、`cliKey` 必填，`displayName` 建议填写；URL 路径里的 provider 必须与 body 的 `providerId` 一致，否则 400：
 
@@ -276,8 +291,18 @@ POST   /v1/gateway/health/reset
 POST   /v1/gateway/takeover/engage|restore|switch
 GET    /v1/plugins/providers
 GET    /v1/plugins/providers/:provider/options
+PUT    /v1/plugins/providers/:provider/options
+PUT    /v1/plugins/providers/:provider/auto-checkin
 POST   /v1/plugins/providers/refresh-models
 POST   /v1/plugins/providers/:provider/refresh-models
+GET    /v1/plugins/settings
+PUT    /v1/plugins/settings
+GET    /v1/plugins/pages
+GET    /v1/plugins/bun
+POST   /v1/plugins/bun/ensure
+POST   /v1/plugins/bun/probe
+GET    /v1/plugins/host
+POST   /v1/plugins/host/restart
 DELETE /v1/plugins/:id?purgeData=true
 ```
 

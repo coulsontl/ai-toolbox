@@ -496,6 +496,10 @@ aitoolbox plugin list --json
 aitoolbox plugin get my-plugin-id --json
 aitoolbox plugin logs --limit 200 --json
 aitoolbox plugin middleware --json
+aitoolbox plugin settings --json
+aitoolbox plugin bun-status --json
+aitoolbox plugin host-status --json
+aitoolbox plugin pages --json
 
 # 5) Provider 插件：检查账号 → 刷新模型 → 添加到 CLI
 aitoolbox plugin providers --json
@@ -529,6 +533,9 @@ aitoolbox provider test --cli codex --id <providerId> --json
 - 改 `package.json` 的页面清单、权限、图标、Provider 列表后必须 reload，宿主才会重新探测。
 - 改 Provider / 中间件代码后，reload 会按需重启对应运行时；如果模块有顶层缓存，禁用再启用或重启宿主更彻底。
 - 纯页面插件和纯中间件插件不需要 Bun；页面服务是 `127.0.0.1` 上的按需静态服务。
+- 插件全局设置也可用 CLI 维护：`aitoolbox plugin settings` 读取；`--bun-path` / `--clear-bun-path`、`--npm-registry` / `--china-mirror`、`--follow-app-proxy` 做局部更新。只想改一个字段时不要先 GET 再整体 PUT，后端会保留未传字段。
+- 渠道级每日自动签到用 `aitoolbox plugin provider-auto-checkin <provider> --enabled true|false`；渠道选项用 `aitoolbox plugin provider-options <provider> [--set '<JSON>']`。
+- Bun 宿主需要复位时用 `aitoolbox plugin host-restart`（L1，可逆但有中断）；`aitoolbox plugin bun-probe <path>` 只验证一个可执行文件，不写入设置。
 
 ### 6.2 Symptom → Check 故障表
 
@@ -540,6 +547,9 @@ aitoolbox provider test --cli codex --id <providerId> --json
 | 中间件完全没生效 | `aitoolbox plugin middleware` 是否显示 running；插件是否启用；`events` 导出是否过滤掉了目标事件 | 启用/reload；检查 hook 导出与事件名 |
 | 中间件超时或报错 | `aitoolbox plugin logs`；单次调用是否超过 250ms / 32MiB | 缩减逻辑或打包依赖；失败是 fail-open，不会中断请求 |
 | Provider 登录失败 | `aitoolbox plugin account-check <provider>`；OAuth 回调/设备码是否过期 | 重新登录；不要手工改 `plugin-auth.json` |
+| Provider 插件提示找不到 Bun | `aitoolbox plugin bun-status`；`bunManualPath` 与实际路径 | `aitoolbox plugin bun-ensure` 或 `plugin settings --bun-path <path>`；先 `plugin bun-probe <path>` 验证 |
+| Bun 宿主崩溃 / 请求一直 Pending | `aitoolbox plugin host-status`（`crashes`、`circuitOpen`）与 `plugin logs` | 修复插件代码后 `plugin reload`；必要时 `plugin host-restart` |
+| npm 安装插件很慢或超时 | `aitoolbox plugin settings` 的 `npmRegistry` 与 `followAppProxy` | 切国内镜像：`aitoolbox plugin settings --china-mirror true` |
 | Provider 模型列表为空 | `aitoolbox plugin refresh-models`；`auth.loader` 的 baseURL/apiKey；`provider.models` 返回值 | 修正 loader 或模型 hook 后 reload |
 | 添加到 CLI 后仍不通 | `aitoolbox provider list --cli <key>`；`aitoolbox gateway clis --json` 看目标 CLI 是否已被接管；Base URL 是否指向网关 | 直接 `aitoolbox provider test`（后端用原始凭据）；不要先 `restore`，否则会丢 aggregate 配置 |
 | 请求日志里看不到插件流量 | 网关是否启动；客户端是否真的经网关；插件 Provider 是否被选中 | `aitoolbox gateway status`、`aitoolbox gateway logs` |

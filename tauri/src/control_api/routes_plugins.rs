@@ -11,10 +11,11 @@ use tauri::Manager;
 use super::approval::RiskLevel;
 use super::error::{ApiError, ApiResult};
 use super::redact::redact_value;
-use super::routes::{approve_write, body_bool, body_optional_string};
+use super::routes::{approve_write, body_bool, body_optional_string, body_string};
 use super::ServerContext;
 use crate::plugins::installer;
 use crate::plugins::store;
+use crate::plugins::types::PluginSettings;
 use crate::plugins::{commands as plugin_commands, PluginManagerState};
 
 pub async fn dispatch(
@@ -33,7 +34,7 @@ pub async fn dispatch(
         }
         (&Method::POST, "install") => install(context, body).await,
         (&Method::POST, "reload") => reload(context, body).await,
-        (&Method::GET, "providers") => {
+        (&Method::GET, "providers") if is_provider_listing(segments) => {
             let listing = plugin_commands::plugins_list_providers(manager_state(context))
                 .await
                 .map_err(ApiError::from)?;
@@ -79,6 +80,72 @@ pub async fn dispatch(
             let states = plugin_commands::plugins_middleware_states(manager_state(context))
                 .map_err(ApiError::from)?;
             Ok(redacted(serde_json::to_value(states)?))
+        }
+        (&Method::GET, "settings") => {
+            let settings = plugin_commands::plugins_get_settings(manager_state(context))
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(settings)?))
+        }
+        (&Method::PUT, "settings") => save_settings(context, &body).await,
+        (&Method::GET, "pages") => {
+            let pages = plugin_commands::plugins_list_pages(manager_state(context))
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(pages)?))
+        }
+        (&Method::GET, "bun") => {
+            let status = plugin_commands::plugins_bun_status(manager_state(context))
+                .await
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(status)?))
+        }
+        (&Method::POST, "bun")
+            if segments.get(2).map(String::as_str) == Some("ensure") =>
+        {
+            approve_write(
+                context,
+                RiskLevel::L1,
+                "plugin.bun.ensure",
+                "Download or verify the managed Bun runtime",
+                None,
+                false,
+            )
+            .await?;
+            let status = plugin_commands::plugins_bun_ensure(manager_state(context))
+                .await
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(status)?))
+        }
+        // A probe only runs `bun --version` on the given path; nothing is
+        // written, so it stays L0 like other read-only routes.
+        (&Method::POST, "bun") if segments.get(2).map(String::as_str) == Some("probe") => {
+            let path = body_string(&body, "path")?;
+            let probe = plugin_commands::plugins_bun_probe_path(manager_state(context), path)
+                .await
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(probe)?))
+        }
+        (&Method::GET, "host") => {
+            let status = plugin_commands::plugins_host_status(manager_state(context))
+                .await
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(status)?))
+        }
+        (&Method::POST, "host")
+            if segments.get(2).map(String::as_str) == Some("restart") =>
+        {
+            approve_write(
+                context,
+                RiskLevel::L1,
+                "plugin.host.restart",
+                "Restart the plugin Bun host",
+                None,
+                false,
+            )
+            .await?;
+            let status = plugin_commands::plugins_host_restart(manager_state(context))
+                .await
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(status)?))
         }
         _ => dispatch_nested(context, method, segments, query, body).await,
     }
@@ -131,6 +198,26 @@ async fn dispatch_nested(
             .await
             .map_err(ApiError::from)?;
             Ok(redacted(serde_json::to_value(saved)?))
+        }
+        // /plugins/providers/:provider/auto-checkin
+        (&Method::PUT, "providers", provider, "auto-checkin") => {
+            let enabled = required_bool(&body, "enabled")?;
+            approve_write(
+                context,
+                RiskLevel::L1,
+                "plugin.provider.auto_checkin",
+                format!("Set plugin provider '{provider}' auto check-in to {enabled}"),
+                Some(provider.to_string()),
+                false,
+            )
+            .await?;
+            let saved = plugin_commands::plugins_set_provider_auto_checkin(
+                manager_state(context),
+                provider.to_string(),
+                enabled,
+            )
+            .map_err(ApiError::from)?;
+            Ok(json!({ "provider": provider, "autoCheckin": saved }))
         }
         // /plugins/providers/:provider/refresh-models
         (&Method::POST, "providers", provider, "refresh-models") => {
@@ -310,6 +397,81 @@ async fn dispatch_nested(
             segments.join("/")
         ))),
     }
+}
+
+/// Partial update: read the stored settings first so a form that only knows
+/// one field (the CLI's `plugin settings`) cannot clear the others. The front
+/// end's settings form always sends the full object, so both styles work.
+async fn save_settings(context: &ServerContext, body: &Value) -> ApiResult<Value> {
+    let mut settings = plugin_commands::plugins_get_settings(manager_state(context))
+        .map_err(ApiError::from)?;
+    if !apply_settings_patch(&mut settings, body)? {
+        return Err(ApiError::bad_request(
+            "Provide at least one of 'bunManualPath', 'npmRegistry', 'followAppProxy' or 'providerAutoCheckin'",
+        ));
+    }
+    approve_write(
+        context,
+        RiskLevel::L1,
+        "plugin.settings",
+        "Update the global plugin settings",
+        None,
+        false,
+    )
+    .await?;
+    let saved = plugin_commands::plugins_save_settings(manager_state(context), settings)
+        .map_err(ApiError::from)?;
+    Ok(redacted(serde_json::to_value(saved)?))
+}
+
+/// Overlays the supplied camelCase fields onto `settings`; returns whether the
+/// body actually carried any of them. Unknown keys are ignored so a newer CLI
+/// that sends an extra field still succeeds against an older app.
+fn apply_settings_patch(settings: &mut PluginSettings, body: &Value) -> ApiResult<bool> {
+    let body = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
+    let mut changed = false;
+    if let Some(value) = body.get("bunManualPath") {
+        settings.bun_manual_path = value
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request("'bunManualPath' must be a string"))?
+            .to_string();
+        changed = true;
+    }
+    if let Some(value) = body.get("npmRegistry") {
+        settings.npm_registry = value
+            .as_str()
+            .ok_or_else(|| ApiError::bad_request("'npmRegistry' must be a string"))?
+            .to_string();
+        changed = true;
+    }
+    if let Some(value) = body.get("followAppProxy") {
+        settings.follow_app_proxy = value
+            .as_bool()
+            .ok_or_else(|| ApiError::bad_request("'followAppProxy' must be a boolean"))?;
+        changed = true;
+    }
+    if let Some(value) = body.get("providerAutoCheckin") {
+        settings.provider_auto_checkin = serde_json::from_value(value.clone()).map_err(|_| {
+            ApiError::bad_request("'providerAutoCheckin' must be an object of providerId -> bool")
+        })?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+/// `GET /v1/plugins/providers` is a collection route. The guard keeps it from
+/// swallowing `GET /providers/:provider/options` (and any future nested GET),
+/// which must reach `dispatch_nested` and return that provider's data.
+fn is_provider_listing(segments: &[String]) -> bool {
+    segments.len() == 2
+}
+
+fn required_bool(body: &Value, key: &str) -> ApiResult<bool> {
+    body.get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| ApiError::bad_request(format!("'{key}' must be a boolean")))
 }
 
 /// `aitoolbox plugin remove --purge-data` sends a query parameter; older callers
@@ -495,6 +657,99 @@ mod tests {
         // An explicit false in the query beats a true body.
         query.insert("purgeData".to_string(), "false".to_string());
         assert!(!purge_data_requested(&query, &json!({"purgeData": true})));
+    }
+
+    #[test]
+    fn settings_patch_only_touches_the_supplied_fields() {
+        let mut settings = PluginSettings {
+            bun_manual_path: "/opt/bun".to_string(),
+            npm_registry: "https://registry.npmjs.org".to_string(),
+            follow_app_proxy: true,
+            provider_auto_checkin: HashMap::from([("demo".to_string(), true)]),
+        };
+
+        let changed = apply_settings_patch(
+            &mut settings,
+            &json!({
+                "npmRegistry": "https://registry.npmmirror.com",
+                "followAppProxy": false,
+            }),
+        )
+        .unwrap();
+        assert!(changed);
+        assert_eq!(settings.bun_manual_path, "/opt/bun");
+        assert_eq!(settings.npm_registry, "https://registry.npmmirror.com");
+        assert!(!settings.follow_app_proxy);
+        // The provider-level map was not in the body and must survive.
+        assert_eq!(settings.provider_auto_checkin.get("demo"), Some(&true));
+
+        let changed = apply_settings_patch(
+            &mut settings,
+            &json!({"providerAutoCheckin": {"other": false}}),
+        )
+        .unwrap();
+        assert!(changed);
+        assert_eq!(settings.provider_auto_checkin.get("other"), Some(&false));
+        assert_eq!(settings.provider_auto_checkin.len(), 1);
+    }
+
+    #[test]
+    fn settings_patch_rejects_an_empty_or_mistyped_body() {
+        let mut settings = PluginSettings::default();
+        assert!(!apply_settings_patch(&mut settings, &json!({})).unwrap());
+        assert!(!apply_settings_patch(&mut settings, &json!({"unknown": 1})).unwrap());
+
+        let wrong_type = apply_settings_patch(&mut settings, &json!({"followAppProxy": "yes"}))
+            .unwrap_err();
+        assert_eq!(wrong_type.status, 400);
+
+        let wrong_map = apply_settings_patch(&mut settings, &json!({"providerAutoCheckin": []}))
+            .unwrap_err();
+        assert_eq!(wrong_map.status, 400);
+    }
+
+    #[test]
+    fn settings_wire_shape_matches_the_cli_camel_case_fields() {
+        let value = serde_json::to_value(PluginSettings::default()).unwrap();
+        for key in [
+            "bunManualPath",
+            "npmRegistry",
+            "followAppProxy",
+            "providerAutoCheckin",
+        ] {
+            assert!(value.get(key).is_some(), "missing {key} in {value}");
+        }
+    }
+
+    #[test]
+    fn provider_listing_does_not_swallow_nested_provider_routes() {
+        let segments = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+        assert!(is_provider_listing(&segments(&["plugins", "providers"])));
+        assert!(!is_provider_listing(&segments(&[
+            "plugins",
+            "providers",
+            "demo",
+            "options"
+        ])));
+        assert!(!is_provider_listing(&segments(&[
+            "plugins",
+            "providers",
+            "demo",
+            "auto-checkin"
+        ])));
+    }
+
+    #[test]
+    fn auto_checkin_body_must_carry_a_boolean() {
+        assert!(required_bool(&json!({"enabled": true}), "enabled").unwrap());
+        assert!(!required_bool(&json!({"enabled": false}), "enabled").unwrap());
+        assert_eq!(required_bool(&json!({}), "enabled").unwrap_err().status, 400);
+        assert_eq!(
+            required_bool(&json!({"enabled": "true"}), "enabled")
+                .unwrap_err()
+                .status,
+            400
+        );
     }
 
     #[test]
