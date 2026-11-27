@@ -477,14 +477,65 @@ Bridge 会自动设置：
 
 同时设置 `document.documentElement.dataset.theme` 为 `light` / `dark`，并注入低优先级基础样式。页面应优先使用这些变量，不要硬编码亮色或暗色。
 
-## 6. 本地调试
+## 6. 本地调试闭环（Agent 优先用 `aitb`）
 
-1. 用「本机插件目录」安装，目录会原地引用。
-2. 修改页面 HTML / CSS / JS 后，点击插件中心侧边栏底部的刷新按钮，或页面顶栏的「重新加载」。
-3. 修改 `package.json`（页面清单、权限、图标、Provider 列表）后同样需要刷新，让宿主重新探测。
-4. 修改 Provider / 中间件代码后，禁用再启用插件，或重启插件宿主，让模块重新 import。
-5. 中间件沙箱报错会记录在插件运行时日志里；Provider 宿主日志也会显示登录、刷新、模型列表和请求失败原因。
-6. 纯页面插件和纯中间件插件不需要 Bun；页面服务是 `127.0.0.1` 上的按需静态服务。
+### 6.1 编写 → 安装 → 热重载 → 验收
+
+```bash
+# 1) 写代码：页面/Provider/中间件完成后，确认 package.json 清单
+# 2) 安装本地目录（原地引用，不复制源码）
+aitb plugin install /absolute/path/to/my-plugin --json
+
+# 3) 改完代码后热重载：重扫清单 → 刷中间件 → 同步页面服务 → 必要时重启 Bun host
+aitb plugin reload my-plugin-id --json
+# 或只重载全部
+aitb plugin reload --json
+
+# 4) 检查宿主状态
+aitb plugin list --json
+aitb plugin get my-plugin-id --json
+aitb plugin logs --limit 200 --json
+aitb plugin middleware --json
+
+# 5) Provider 插件：检查账号 → 刷新模型 → 添加到 CLI
+aitb plugin providers --json
+aitb plugin account-check my-provider --json
+aitb plugin account-usage my-provider --json
+aitb plugin refresh-models --json
+aitb plugin link-cli my-provider --json-body ./link-cli.json
+
+# 6) 跑到 CLI 侧验收
+aitb provider list --cli codex --json
+aitb provider test --cli codex --id <providerId> --json
+```
+
+- `plugin reload` 是 L1 可逆写操作。默认授权模式下会弹窗；设置页可以单独开启「本地插件重载免确认」，但只对本地目录来源生效。
+- `plugin install` 本地目录是 L1；`npm` / `github:` 远程来源是 L2，每次都要用户确认。
+- 改 `package.json` 的页面清单、权限、图标、Provider 列表后必须 reload，宿主才会重新探测。
+- 改 Provider / 中间件代码后，reload 会按需重启对应运行时；如果模块有顶层缓存，禁用再启用或重启宿主更彻底。
+- 纯页面插件和纯中间件插件不需要 Bun；页面服务是 `127.0.0.1` 上的按需静态服务。
+
+### 6.2 Symptom → Check 故障表
+
+| 现象 | 优先检查 | 修复 |
+| --- | --- | --- |
+| 插件列表里没有刚写的插件 | `aitb plugin list`；manifest `magpie` 字段是否合法；目录是否含 `package.json` | 修正 manifest 后 `aitb plugin reload` |
+| 页面 404 / 白屏 | `aitb plugin logs`；页面 `file` 是否在插件根内、扩展名是否为 `.html` | 修正路径/文件后 reload |
+| 页面 Bridge 报权限错误 | `package.json` 的 `permissions` 是否声明对应 scope | 补权限并 reload |
+| 中间件完全没生效 | `aitb plugin middleware` 是否显示 running；插件是否启用；`events` 导出是否过滤掉了目标事件 | 启用/reload；检查 hook 导出与事件名 |
+| 中间件超时或报错 | `aitb plugin logs`；单次调用是否超过 250ms / 32MiB | 缩减逻辑或打包依赖；失败是 fail-open，不会中断请求 |
+| Provider 登录失败 | `aitb plugin account-check <provider>`；OAuth 回调/设备码是否过期 | 重新登录；不要手工改 `plugin-auth.json` |
+| Provider 模型列表为空 | `aitb plugin refresh-models`；`auth.loader` 的 baseURL/apiKey；`provider.models` 返回值 | 修正 loader 或模型 hook 后 reload |
+| 添加到 CLI 后仍不通 | `aitb provider list --cli <key>`；目标 CLI 是否被网关接管；Base URL 是否指向网关 | `aitb gateway status` / `aitb gateway restore`，再 `aitb provider test` |
+| 请求日志里看不到插件流量 | 网关是否启动；客户端是否真的经网关；插件 Provider 是否被选中 | `aitb gateway status`、`aitb gateway logs` |
+| 修改代码后行为没变 | 是否执行了 `aitb plugin reload`；Bun host 是否被复用 | reload 指定 id；必要时 disable→enable |
+
+### 6.3 安全边界
+
+- 调试日志、终端输出、聊天记录里都不要出现 API Key / OAuth token / `plugin-auth.json` 明文。
+- Agent 不要为了“快速验证”去直接改 `plugin-auth.json`、数据库或网关内部状态；用插件命令和授权弹窗。
+- 远程插件安装前先确认来源可信；中间件在沙箱内运行，Provider 插件拥有完整 Node 能力。
+- 卸载默认保留插件私有数据；只有显式 `--purge-data` 才删除 `plugins/data/<plugin>`，删除前必须让用户确认。
 
 ## 7. 安全与边界
 
