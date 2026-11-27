@@ -78,6 +78,10 @@ export async function verifyFetchedModelsModal({ send, evaluate, baseUrl, artifa
     await action('rowName("claude-opus-4-8")'),
     '-',
   );
+  check(
+    'the display-name column is visible when at least one model carries a label',
+    (await action('columnHeaders()')).includes(await evaluate("fetchedModelsModalFixture.t('common.model.name')")),
+  );
   check('priority owner is pinned ahead of the alphabetical group', (await action('rows()'))[0], 'model-alpha');
   await screenshot('responses-fetched');
 
@@ -205,6 +209,11 @@ export async function verifyFetchedModelsModal({ send, evaluate, baseUrl, artifa
   await waitFor('fetchedModelsModalFixture.rows().length === 2', 'existing scenario rows');
   check('an already-present model is shown and tagged', await action('rowHasExistingTag("model-kept")'), true);
   check('an already-present model cannot be selected again', await action('rowDisabled("model-kept")'), true);
+  check(
+    'the display-name column is hidden when every fetched model is id-only',
+    (await action('columnHeaders()')).includes(await evaluate("fetchedModelsModalFixture.t('common.model.name')")),
+    false,
+  );
   await action('select("model-alpha")');
   await action('apply()');
   await waitFor('!!fetchedModelsModalFixture.state.applied', 'applied without cleanup');

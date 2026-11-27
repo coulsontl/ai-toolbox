@@ -136,6 +136,9 @@ const fixture = window.fetchedModelsModalFixture = {
     const cells = row ? [...row.querySelectorAll('td')] : [];
     return cells[2]?.textContent?.trim() ?? null;
   },
+  columnHeaders: () => visibleElements('.ant-table-thead th')
+    .map((cell) => cell.textContent.trim())
+    .filter(Boolean),
   bodyText: () => document.body.textContent,
   lastRequest,
   errorVisible: () => Boolean(document.querySelector('.ant-alert-error')),

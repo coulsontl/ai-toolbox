@@ -60,6 +60,17 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
     return [...list].sort(sortComparator);
   }, [models, searchText, sortComparator]);
 
+  // The backend falls back to the model id when no display name is available,
+  // so a real label is one that differs from the id. An all-empty fetch keeps
+  // the whole column hidden instead of showing a column of dashes.
+  const hasDisplayNames = React.useMemo(
+    () => models.some((model) => {
+      const displayName = model.name?.trim();
+      return Boolean(displayName && displayName !== model.id.trim());
+    }),
+    [models],
+  );
+
   // Calculate the default URL based on baseUrl, apiType, and sdkType
   const calculatedUrl = React.useMemo(
     () => buildModelsUrl(baseUrl, apiType, sdkType, resolveModelsUrlApiKey(apiKey, configValueMode)),
@@ -146,6 +157,22 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
   };
 
   // Table columns
+  const displayNameColumn = {
+    title: t('common.model.name'),
+    dataIndex: 'name',
+    key: 'name',
+    width: 220,
+    ellipsis: true,
+    render: (name: string | undefined, record: FetchedModel) => {
+      // The backend falls back to the model id when the provider sends no
+      // display name, so an unchanged value must not read as a second id.
+      const displayName = name?.trim();
+      if (!displayName || displayName === record.id.trim()) {
+        return <Text className={styles.ownedByText}>-</Text>;
+      }
+      return <Text className={styles.modelNameText}>{displayName}</Text>;
+    },
+  };
   const columns = [
     {
       title: t('opencode.fetchModels.modelId'),
@@ -165,22 +192,7 @@ const FetchModelsModal: React.FC<FetchModelsModalProps> = ({
         );
       },
     },
-    {
-      title: t('common.model.name'),
-      dataIndex: 'name',
-      key: 'name',
-      width: 220,
-      ellipsis: true,
-      render: (name: string | undefined, record: FetchedModel) => {
-        // The backend falls back to the model id when the provider sends no
-        // display name, so an unchanged value must not read as a second id.
-        const displayName = name?.trim();
-        if (!displayName || displayName === record.id.trim()) {
-          return <Text className={styles.ownedByText}>-</Text>;
-        }
-        return <Text className={styles.modelNameText}>{displayName}</Text>;
-      },
-    },
+    ...(hasDisplayNames ? [displayNameColumn] : []),
     {
       title: t('opencode.fetchModels.ownedBy'),
       dataIndex: 'ownedBy',
