@@ -1,36 +1,36 @@
-# `aitb` 与本地控制面速查
+# `aitoolbox` 与本地控制面速查
 
-`aitb` 是 AI Toolbox 随应用提供的轻量命令行客户端。它只与本机 `127.0.0.1` 上的控制面通信，令牌从发现文件读取，不会打印到终端，也不需要手工复制。
+`aitoolbox` 是 AI Toolbox 随应用提供的轻量命令行客户端。它只与本机 `127.0.0.1` 上的控制面通信，令牌从发现文件读取，不会打印到终端，也不需要手工复制。
 
 ## 1. 启动前检查
 
 ```bash
-aitb status --json
+aitoolbox status --json
 ```
 
 - 成功：返回 `enabled`、`running`、`url`、`discoveryFile`、`approvalMode` 等字段。
 - 退出码 `3`：应用没启动、控制面被关闭、发现文件缺失或令牌失效。先让用户在「设置 → Agent 集成（本地控制）」中启用服务。
 - 发现文件默认是 `~/.ai-toolbox/control.json`，可用 `AI_TOOLBOX_CONTROL_FILE` 或 `--control-file` 覆盖。
-- **不要 `cat` 发现文件，也不要在命令、日志或提交里输出 `token`。** 只通过 `aitb` 间接使用。
+- **不要 `cat` 发现文件，也不要在命令、日志或提交里输出 `token`。** 只通过 `aitoolbox` 间接使用。
 
 全局参数：
 
 ```bash
-aitb [--json] [--timeout 120] [--control-file PATH] <command>
+aitoolbox [--json] [--timeout 120] [--control-file PATH] <command>
 ```
 
 `--json` 输出机器可读结果；写操作默认等待桌面授权。`--timeout` 必须大于设置页的 `approvalTimeoutSecs`（默认 60 秒），否则本地 socket 会先超时、CLI 看不到真实的授权结果。120 秒是默认值；把 `--timeout` 调小不会缩短桌面弹窗，只会让 CLI 提前放弃。
 
-`aitb` 未安装或版本过旧时：`command not found` 说明还没在「设置 → Agent 集成」安装 CLI；`unknown subcommand` / 参数与本文不一致说明安装的是旧二进制，先在设置页重新安装，再执行 `aitb status --json` 核对 `version`。
+`aitoolbox` 未安装或版本过旧时：`command not found` 说明还没在「设置 → Agent 集成」安装 CLI；`unknown subcommand` / 参数与本文不一致说明安装的是旧二进制，先在设置页重新安装，再执行 `aitoolbox status --json` 核对 `version`。
 
 ## 2. 命令树
 
 ### 2.1 状态与能力
 
 ```bash
-aitb status
-aitb cli list
-aitb cli paths --cli codex
+aitoolbox status
+aitoolbox cli list
+aitoolbox cli paths --cli codex
 ```
 
 `cli list` 返回 17 个 `cliKey` 及其能力：`providerCrud`、`modelCrud`、`config`、`configReadOnly`、`prompts`、`apply`、`test`、`paths`。完整矩阵见 §3；调用前先核对，不要假设所有 CLI 都支持全部端点。
@@ -38,25 +38,25 @@ aitb cli paths --cli codex
 ### 2.2 插件
 
 ```bash
-aitb plugin list
-aitb plugin get <id>
-aitb plugin install <本地目录|npm 包|github:owner/repo>
-aitb plugin reload [id]
-aitb plugin enable <id>
-aitb plugin disable <id>
-aitb plugin remove <id> [--purge-data]
-aitb plugin options <id> [--set '{"key":"value"}']
-aitb plugin logs [--limit 200]
-aitb plugin clear-logs
-aitb plugin middleware
-aitb plugin providers
-aitb plugin provider-options <provider>
-aitb plugin refresh-models
-aitb plugin accounts
-aitb plugin account-check <provider> [--account <id>] [--proxy <url>]
-aitb plugin account-usage <provider> [--account <id>] [--proxy <url>]
-aitb plugin account-checkin <provider> [--account <id>] [--proxy <url>]
-aitb plugin link-cli <provider> --json-body <path|->
+aitoolbox plugin list
+aitoolbox plugin get <id>
+aitoolbox plugin install <本地目录|npm 包|github:owner/repo>
+aitoolbox plugin reload [id]
+aitoolbox plugin enable <id>
+aitoolbox plugin disable <id>
+aitoolbox plugin remove <id> [--purge-data]
+aitoolbox plugin options <id> [--set '{"key":"value"}']
+aitoolbox plugin logs [--limit 200]
+aitoolbox plugin clear-logs
+aitoolbox plugin middleware
+aitoolbox plugin providers
+aitoolbox plugin provider-options <provider>
+aitoolbox plugin refresh-models
+aitoolbox plugin accounts
+aitoolbox plugin account-check <provider> [--account <id>] [--proxy <url>]
+aitoolbox plugin account-usage <provider> [--account <id>] [--proxy <url>]
+aitoolbox plugin account-checkin <provider> [--account <id>] [--proxy <url>]
+aitoolbox plugin link-cli <provider> --json-body <path|->
 ```
 
 `link-cli` 的 JSON 与桌面「添加到 CLI」弹窗一致。`pluginSpec`、`providerId`、`cliKey` 必填，`displayName` 建议填写；URL 路径里的 provider 必须与 body 的 `providerId` 一致，否则 400：
@@ -72,21 +72,21 @@ aitb plugin link-cli <provider> --json-body <path|->
 }
 ```
 
-- `pluginSpec` 用 `aitb plugin providers --json` 里该 Provider 对应的插件 spec/id，空字符串会被拒绝。
+- `pluginSpec` 用 `aitoolbox plugin providers --json` 里该 Provider 对应的插件 spec/id，空字符串会被拒绝。
 - `modelIds` 为空表示插件 Provider 暴露的全部模型；`accountStrategy` 可选 `single` / `auto_rotate`，需要固定账号时再给 `accountKey`。
-- 不确定 Provider 元数据时先 `aitb plugin providers --json` 查看 `models`、`defaultModel`，不要猜 id。
+- 不确定 Provider 元数据时先 `aitoolbox plugin providers --json` 查看 `models`、`defaultModel`，不要猜 id。
 
 ### 2.3 供应商（渠道）
 
 ```bash
-aitb provider list --cli <cliKey>
-aitb provider get --cli <cliKey> --id <providerId>
-aitb provider create --cli <cliKey> --name "Demo" --base-url https://api.example.com/v1 --model demo-model --api-key-env DEMO_KEY
-aitb provider update --cli <cliKey> --id <providerId> --name "Renamed" --base-url https://new.example.com/v1
-aitb provider delete --cli <cliKey> --id <providerId>
-aitb provider apply --cli <cliKey> --id <providerId> [--model <modelId>]
-aitb provider test --cli <cliKey> --id <providerId> [--model <modelId>] [--prompt "say hi"]
-aitb provider fetch-models --cli <cliKey> --id <providerId>
+aitoolbox provider list --cli <cliKey>
+aitoolbox provider get --cli <cliKey> --id <providerId>
+aitoolbox provider create --cli <cliKey> --name "Demo" --base-url https://api.example.com/v1 --model demo-model --api-key-env DEMO_KEY
+aitoolbox provider update --cli <cliKey> --id <providerId> --name "Renamed" --base-url https://new.example.com/v1
+aitoolbox provider delete --cli <cliKey> --id <providerId>
+aitoolbox provider apply --cli <cliKey> --id <providerId> [--model <modelId>]
+aitoolbox provider test --cli <cliKey> --id <providerId> [--model <modelId>] [--prompt "say hi"]
+aitoolbox provider fetch-models --cli <cliKey> --id <providerId>
 ```
 
 - **API Key 只走 `--api-key-env <ENV>` 或 `--api-key-stdin`**，不要写在 argv 里；也不要让 Agent 把 Key 写进日志。
@@ -101,10 +101,10 @@ aitb provider fetch-models --cli <cliKey> --id <providerId>
 ### 2.4 模型
 
 ```bash
-aitb model list --cli <cliKey> --provider <providerId>
-aitb model add --cli <cliKey> --provider <providerId> --id <modelId> [--name "Display"]
-aitb model delete --cli <cliKey> --provider <providerId> --id <modelId>
-aitb model default --cli <cliKey> --provider <providerId> --id <modelId>
+aitoolbox model list --cli <cliKey> --provider <providerId>
+aitoolbox model add --cli <cliKey> --provider <providerId> --id <modelId> [--name "Display"]
+aitoolbox model delete --cli <cliKey> --provider <providerId> --id <modelId>
+aitoolbox model default --cli <cliKey> --provider <providerId> --id <modelId>
 ```
 
 - `model add --name` 会写入该 CLI 的显示名（Codex/Grok/Kimi/ZCode 的 `displayName`、OpenCode/OpenClaw/运行时/OMO 的 `name`）。
@@ -113,9 +113,9 @@ aitb model default --cli <cliKey> --provider <providerId> --id <modelId>
 ### 2.5 全局配置文件
 
 ```bash
-aitb config get --cli <cliKey> [--scope common|cli|omo|settings]
-aitb config set --cli <cliKey> --file <path|-> [--mode patch|replace] [--root-dir <path>] [--clear-root-dir]
-aitb config extract --cli <cliKey> [--scope ...]
+aitoolbox config get --cli <cliKey> [--scope common|cli|omo|settings]
+aitoolbox config set --cli <cliKey> --file <path|-> [--mode patch|replace] [--root-dir <path>] [--clear-root-dir]
+aitoolbox config extract --cli <cliKey> [--scope ...]
 ```
 
 返回结构：
@@ -153,12 +153,12 @@ aitb config extract --cli <cliKey> [--scope ...]
 ### 2.6 全局提示词
 
 ```bash
-aitb prompt list --cli <cliKey>
-aitb prompt create --cli <cliKey> --name "Reviewer" --content-file ./prompt.md
-aitb prompt update --cli <cliKey> --id <promptId> [--name ...] [--content-file ...]
-aitb prompt apply --cli <cliKey> --id <promptId>
-aitb prompt disable --cli <cliKey> [--id <promptId>]
-aitb prompt delete --cli <cliKey> --id <promptId>
+aitoolbox prompt list --cli <cliKey>
+aitoolbox prompt create --cli <cliKey> --name "Reviewer" --content-file ./prompt.md
+aitoolbox prompt update --cli <cliKey> --id <promptId> [--name ...] [--content-file ...]
+aitoolbox prompt apply --cli <cliKey> --id <promptId>
+aitoolbox prompt disable --cli <cliKey> [--id <promptId>]
+aitoolbox prompt delete --cli <cliKey> --id <promptId>
 ```
 
 - `prompt update` 允许只改 `--name` 或只改 `--content-file`；两者必须至少给一个。只改一项时不会覆盖另一项。
@@ -168,19 +168,19 @@ aitb prompt delete --cli <cliKey> --id <promptId>
 ### 2.7 网关
 
 ```bash
-aitb gateway status
-aitb gateway start
-aitb gateway stop
-aitb gateway restart
-aitb gateway logs [--page 0] [--limit 20] [--only-failed] [--cli <cliKey>]
-aitb gateway health
-aitb gateway reset-health
-aitb gateway clis
-aitb gateway engage --cli <cliKey> --mode single --provider <providerId>
-aitb gateway engage --cli <cliKey> --mode failover
-aitb gateway engage --cli <cliKey> --mode aggregate --provider <id1> --provider <id2> [--separator "|"]
-aitb gateway switch --cli <cliKey> --provider <providerId>
-aitb gateway restore --cli <cliKey>
+aitoolbox gateway status
+aitoolbox gateway start
+aitoolbox gateway stop
+aitoolbox gateway restart
+aitoolbox gateway logs [--page 0] [--limit 20] [--only-failed] [--cli <cliKey>]
+aitoolbox gateway health
+aitoolbox gateway reset-health
+aitoolbox gateway clis
+aitoolbox gateway engage --cli <cliKey> --mode single --provider <providerId>
+aitoolbox gateway engage --cli <cliKey> --mode failover
+aitoolbox gateway engage --cli <cliKey> --mode aggregate --provider <id1> --provider <id2> [--separator "|"]
+aitoolbox gateway switch --cli <cliKey> --provider <providerId>
+aitoolbox gateway restore --cli <cliKey>
 ```
 
 - `gateway clis` 返回每个可接管 CLI 的 `mode`、`primaryProviderId`、`aggregate` 与运行状态；先看它再决定 `engage` 还是 `switch`。
@@ -190,7 +190,7 @@ aitb gateway restore --cli <cliKey>
 
 ## 3. `cliKey`、来源类型与能力矩阵
 
-`aitb cli list --json` 是能力的唯一权威来源；下表是 17 个 CLI 的当前矩阵，避免直接调用不支持的能力。
+`aitoolbox cli list --json` 是能力的唯一权威来源；下表是 17 个 CLI 的当前矩阵，避免直接调用不支持的能力。
 
 | `cliKey` | `kind` | `providerCrud` | `modelCrud` | `config` | `configReadOnly` | `prompts` | `apply` | `test` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |

@@ -115,7 +115,7 @@ export const ControlApiSettingsCard: React.FC = () => {
       setCliStatus(next);
       message.success(t('settings.controlApi.cliInstalled'));
     } catch (error) {
-      console.error('Failed to install aitb:', error);
+      console.error('Failed to install aitoolbox:', error);
       message.error(t('settings.controlApi.cliInstallFailed', { error: String(error) }));
     } finally {
       setCliBusy(false);
@@ -129,7 +129,7 @@ export const ControlApiSettingsCard: React.FC = () => {
       setCliStatus(next);
       message.success(t('settings.controlApi.cliRemoved'));
     } catch (error) {
-      console.error('Failed to uninstall aitb:', error);
+      console.error('Failed to uninstall aitoolbox:', error);
       message.error(t('settings.controlApi.cliRemoveFailed', { error: String(error) }));
     } finally {
       setCliBusy(false);

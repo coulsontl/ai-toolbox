@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Live smoke test for the local control API (`aitb`).
+// Live smoke test for the local control API (`aitoolbox`).
 //
 // This is the repeatable part of the "Live E2E 验证 SOP" in
 // `tauri/src/control_api/AGENTS.md`: it talks to a *running* AI Toolbox app
-// through the real `aitb` binary, exercising read-only routes for all 17 CLIs
+// through the real `aitoolbox` binary, exercising read-only routes for all 17 CLIs
 // plus the gateway lifecycle.
 //
 // Safety:
@@ -16,9 +16,9 @@
 //
 // Usage:
 //   node scripts/control-api-live-e2e.mjs --live
-//   AITB_BIN=/path/to/aitb node scripts/control-api-live-e2e.mjs --live
+//   AITOOLBOX_BIN=/path/to/aitoolbox node scripts/control-api-live-e2e.mjs --live
 //
-// The default binary is `cli/target/debug/aitb(.exe)` next to this repo.
+// The default binary is `cli/target/debug/aitoolbox(.exe)` next to this repo.
 
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -31,14 +31,14 @@ if (!live) {
   process.exit(0);
 }
 
-const aitb =
-  process.env.AITB_BIN ??
-  path.join(projectRoot, 'cli', 'target', 'debug', process.platform === 'win32' ? 'aitb.exe' : 'aitb');
+const aitoolbox =
+  process.env.AITOOLBOX_BIN ??
+  path.join(projectRoot, 'cli', 'target', 'debug', process.platform === 'win32' ? 'aitoolbox.exe' : 'aitoolbox');
 
 let failures = 0;
 
 function run(args, { timeout = 60_000 } = {}) {
-  const result = spawnSync(aitb, [...args, '--json'], {
+  const result = spawnSync(aitoolbox, [...args, '--json'], {
     encoding: 'utf8',
     timeout,
     windowsHide: true,

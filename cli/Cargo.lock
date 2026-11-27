@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "aitb"
+name = "aitoolbox"
 version = "1.2.4"
 dependencies = [
  "clap",

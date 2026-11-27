@@ -2,7 +2,7 @@
 
 ## 一句话职责
 
-- `tauri/src/control_api/` 是仅绑定 `127.0.0.1` 的本地 Agent 控制面：HTTP 路由、Bearer 鉴权、L0/L1/L2 风险分级、桌面授权等待、按 CLI 分发到既有 Tauri 命令、凭据脱敏，以及 `aitb` 安装/状态命令。
+- `tauri/src/control_api/` 是仅绑定 `127.0.0.1` 的本地 Agent 控制面：HTTP 路由、Bearer 鉴权、L0/L1/L2 风险分级、桌面授权等待、按 CLI 分发到既有 Tauri 命令、凭据脱敏，以及 `aitoolbox` 安装/状态命令。
 - 它不重新实现任何 CLI 配置写入逻辑；所有 provider/model/config/prompt/gateway/plugin 操作都通过 `app.state::<T>()` 调用既有 `#[tauri::command]` 实现。
 
 ## Source of Truth
@@ -33,14 +33,14 @@
 
 ## Live E2E 验证 SOP（真实应用）
 
-单测只能证明“路由调用了正确的函数”，证明不了授权弹窗、takeover 恢复/重接管、备份、WSL/SSH 同步、托盘事件这些真实副作用。任何新增或修改的 `aitb` 命令（含 `aitb` 参数、HTTP 路由、`cli_dispatch` 分支）在合并前，都必须按内置 Skill 对**正在运行的 debug 应用**做一轮 E2E；只跑单测不算完成。
+单测只能证明“路由调用了正确的函数”，证明不了授权弹窗、takeover 恢复/重接管、备份、WSL/SSH 同步、托盘事件这些真实副作用。任何新增或修改的 `aitoolbox` 命令（含 `aitoolbox` 参数、HTTP 路由、`cli_dispatch` 分支）在合并前，都必须按内置 Skill 对**正在运行的 debug 应用**做一轮 E2E；只跑单测不算完成。
 
 ### 1. 备份（先于任何写操作）
 
-- 在项目外建带时间戳的备份目录，例如 `%TEMP%\aitb-e2e-20261128-1530\`（macOS/Linux 用 `$TMPDIR`）。
+- 在项目外建带时间戳的备份目录，例如 `%TEMP%\aitoolbox-e2e-20261128-1530\`（macOS/Linux 用 `$TMPDIR`）。
 - 备份 AI Toolbox 自己的数据：SQLite 数据库文件（含 `-wal`/`-shm`）、控制面发现文件相关设置、插件数据目录、`proxy-gateway/` 清单（`cli-proxy/*/manifest.json`、aggregate 草稿）。
 - 备份本轮会触碰的每个 CLI 配置文件及其目录（Claude `~/.claude/settings.json`、Codex `~/.codex/config.toml`/`auth.json`、Gemini、Grok、Kimi 等）；保留原路径相对结构，恢复时才能核对。
-- 记录测试前快照：文件 SHA-256、`aitb gateway clis --json`、`aitb cli list --json`、关键 provider/model 的 `aitb ... --json` 输出（输出里的 `***` 原样保存即可，不要额外去取真实 Key）。
+- 记录测试前快照：文件 SHA-256、`aitoolbox gateway clis --json`、`aitoolbox cli list --json`、关键 provider/model 的 `aitoolbox ... --json` 输出（输出里的 `***` 原样保存即可，不要额外去取真实 Key）。
 
 ### 2. 每个用例先写四件事，再执行
 
@@ -48,14 +48,14 @@
 | --- | --- |
 | 现状 | 当前 CLI 是否被接管、主 provider、aggregate/failover 清单、配置文件路径与关键字段 |
 | 预期 | 命令成功后的 DB/文件/网关/事件各应变成什么；失败时返回哪个稳定 code |
-| 验证 | 用哪条 `aitb` 只读命令、哪个文件 diff、哪条日志/事件来证明；不能只看退出码 |
+| 验证 | 用哪条 `aitoolbox` 只读命令、哪个文件 diff、哪条日志/事件来证明；不能只看退出码 |
 | 回滚 | 若结果不符，先执行哪条命令/恢复哪个文件；需要用户操作时明确写出来 |
 
 案例模板与各能力域的具体清单见 [`e2e-checklist.md`](e2e-checklist.md)。没有四要素就不要执行写命令。
 
 ### 3. 硬性禁令
 
-- **禁止用 `claudecode` 做写测试**：`provider create/update/apply/delete`、`model add/delete/default`、`config set/extract`、`gateway engage/switch/restore` 一律不得对 `claudecode` 执行；只允许 `aitb provider list/get`、`aitb model list`、`aitb config get`、`aitb cli paths` 等只读操作。Paseo 的 Claude Code 子代理依赖这份配置，写坏会让当前会话和其他代理一起掉线。
+- **禁止用 `claudecode` 做写测试**：`provider create/update/apply/delete`、`model add/delete/default`、`config set/extract`、`gateway engage/switch/restore` 一律不得对 `claudecode` 执行；只允许 `aitoolbox provider list/get`、`aitoolbox model list`、`aitoolbox config get`、`aitoolbox cli paths` 等只读操作。Paseo 的 Claude Code 子代理依赖这份配置，写坏会让当前会话和其他代理一起掉线。
 - 其余 CLI 的写测试也要先确认没有别的 agent/用户正在使用；拿不准就先问。
 - 不得用真实生产 Key 做“能不能写进去”的试验；需要新 provider 时用合成数据（见下）。
 
@@ -68,9 +68,9 @@
 ### 5. 收尾（缺一不可）
 
 1. 按备份恢复所有被改文件与 SQLite；逐项对比测试前快照（文件哈希、`gateway clis`、provider/model 列表）。
-2. 删除合成数据；确认 `aitb gateway clis` 回到测试前状态（该 direct 的已 restore，该接管的已按原清单重新 engage）。
+2. 删除合成数据；确认 `aitoolbox gateway clis` 回到测试前状态（该 direct 的已 restore，该接管的已按原清单重新 engage）。
 3. 把控制面 `approval_mode` 重置为默认 `always_ask`（设置页或 `control_api` 设置行），避免留下 `auto_approve`。
-4. 重启/刷新应用后跑 `aitb status --json` 与一轮只读命令，确认发现文件、端口、权限正常。
+4. 重启/刷新应用后跑 `aitoolbox status --json` 与一轮只读命令，确认发现文件、端口、权限正常。
 5. 在测试记录里写清：执行了哪些用例、哪些通过、哪些未验证、备份目录位置。
 
 ### 6. 沉淀为自动化
@@ -81,7 +81,7 @@ E2E 中发现的有价值场景（真实 takeover 后的 create/update、aggrega
 
 ```mermaid
 sequenceDiagram
-  participant Agent as aitb / Agent
+  participant Agent as aitoolbox / Agent
   participant Srv as hyper (127.0.0.1)
   participant Routes as routes*
   participant Gate as approve_write
@@ -120,7 +120,7 @@ sequenceDiagram
 - **Stop 保护来自后端**：`gateway.stop` 在仍有 CLI 被接管时会报错；不要为了“让 CLI 成功”在路由层跳过检查。接管/恢复本身是 L2，必须弹窗。
 - **Host/Origin 防护不能放宽**：只接受 `Host: 127.0.0.1:<port>` / `localhost:<port>`，任何 `Origin` 头直接 403；Bearer 比较必须常量时间。不要加入 CORS 或“开发模式例外”。
 - **发现文件删除要认 pid**：`remove_discovery_file_if_owned` 只删除属于当前进程的文件；测试/多实例时不要直接 `remove_file`。
-- **CLI 安装路径**：Windows 写 HKCU `Environment\Path` 时必须保留 `REG_EXPAND_SZ` 的类型与 UTF-16 编码；解码现有值要裁掉尾部 `\0`，否则最后一个 PATH 项会带空字符。不要用 `setx`（会截断）或把 PATH 写成 `REG_SZ`。Unix 安装写标记注释 + `export PATH="..."` 两行，卸载必须两行一起删（只删注释会留下死 export）。找不到 `aitb` 二进制时返回明确错误，不要把应用自身复制/改名。
+- **CLI 安装路径**：Windows 写 HKCU `Environment\Path` 时必须保留 `REG_EXPAND_SZ` 的类型与 UTF-16 编码；解码现有值要裁掉尾部 `\0`，否则最后一个 PATH 项会带空字符。不要用 `setx`（会截断）或把 PATH 写成 `REG_SZ`。Unix 安装写标记注释 + `export PATH="..."` 两行，卸载必须两行一起删（只删注释会留下死 export）。找不到 `aitoolbox` 二进制时返回明确错误，不要把应用自身复制/改名。
 - **授权超时与策略切换竞态**：超时分支必须先从 hub 移除再发 `control-api-approval-expired`，否则前端允许按钮会打到一个已死的 channel。停止控制面或切到 `read_only` 时必须 `ApprovalHub::cancel_all()` 并广播 expired；前端收到 `resolved: false` 只提示过期，不要重试 resolve。
 - **插件页面路由会在 reload 后过期**：`page_server.sync_enabled_plugins` 不仅检查插件启用/page 是否存在，还比较入口文件名和解析后的 `service_port`；任一变化就撤销旧 token，让下次打开重新签发。否则新清单会继续用旧目录/旧 CSP 端口服务。
 
@@ -129,7 +129,7 @@ sequenceDiagram
 - 依赖 `db/`（`SqliteDbState`、`DbTable::Settings`）、`coding/<cli>/commands` 与 `types`、`coding/proxy_gateway/{commands,types}`、`plugins/{commands,store,installer}`、`coding/skills/builtin.rs`（内置技能嵌入 `references/control-cli.md`）、`app_paths::resolved_data_dir`。
 - 被 `lib.rs` 托管（`ControlApiState` + `start_if_enabled` + `RunEvent::Exit` 清理）并转发 `control_api_*` 命令。
 - 前端契约：`web/services/controlApi.ts`、`web/features/settings/components/ControlApiSettingsCard.tsx`、`web/components/common/ControlApiApprovalModal.tsx`。字段名（settings snake_case，status camelCase）是公开契约，改动要同步前端与 `references/control-cli.md`。
-- `aitb`（`cli/`）消费发现文件和 HTTP 契约；退出码 0/2/3/4/5 是 Agent 依赖的稳定接口，不要改语义。
+- `aitoolbox`（`cli/`）消费发现文件和 HTTP 契约；退出码 0/2/3/4/5 是 Agent 依赖的稳定接口，不要改语义。
 
 ## 最小验证
 
@@ -138,4 +138,4 @@ sequenceDiagram
 - `cd tauri && cargo check`
 - `cd cli && cargo test --offline`
 - `pnpm run test:control-api-reuse`（含脚本自检）
-- 手工：设置页开关 → `aitb status --json`；创建 provider 触发弹窗 → 拒绝看退出码 4 → 允许后 GET 确认已写入；`GET` 响应中搜索真实 Key 确认不存在；`aitb config get` 的掩码原样 PATCH 后 GET 确认 Key 未变。涉及写操作的完整回归按上面的 Live E2E SOP 执行。
+- 手工：设置页开关 → `aitoolbox status --json`；创建 provider 触发弹窗 → 拒绝看退出码 4 → 允许后 GET 确认已写入；`GET` 响应中搜索真实 Key 确认不存在；`aitoolbox config get` 的掩码原样 PATCH 后 GET 确认 Key 未变。涉及写操作的完整回归按上面的 Live E2E SOP 执行。

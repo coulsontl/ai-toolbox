@@ -26,7 +26,7 @@ This document provides essential information for AI coding agents working on thi
 12. 不要把上一条误用到产品运行时 prompt 文件上。当前仓库里的 OpenCode / Codex 运行时 prompt 文件名就是 `AGENTS.md`，Claude Code 运行时 prompt 文件名是 `CLAUDE.md`；它们属于真实业务数据，备份、恢复、WSL/SSH 同步和页面交互都依赖这些文件，不能按“仅 agent 文档”排除。
 13. 修改 `web/**` 中任何可见 UI、样式、布局、组件视觉、交互密度、空态、图标、颜色、字号、间距或弹窗表单前，必须先完整阅读根目录 `DESIGN.md`。没有读取 `DESIGN.md` 就不得设计方案、不得写前端 UI 代码、不得声称遵循项目设计系统。
 14. 新增或修改 CLI 供应商卡片时，必须使用 `web/features/coding/shared/providerCardVariants/` 中已固定的三种样式之一，不得再新建 per-CLI 卡片布局。**「卡片视图」（`shared/providerCardView/`）不是第四种样式**：三种样式按 provider 模型形状选型（语义差异），卡片视图按用户选的显示密度切换（呈现差异），映射层把同一份 `providerCardState` / `actions` 喂给两者。选型依据是该 CLI 的 provider 模型形状（是否有模型目录、是否有单一 active provider），不是个人偏好；三种样式的适用条件写在 `providerCardVariants/index.ts` 的表里。共享卡片的通用改动（间距、按钮、拖拽、选中态）改在变体组件内，一处生效于所有使用该样式的 CLI；只在某个 CLI 卡片里改这些会让样式重新分叉。**本规则由 `scripts/verify-provider-card-layout.mjs`（`pnpm run test:provider-card-layout`）机械守护**：每个 `*ProviderCard.tsx` 都不得自己 `useSortable` / 自己渲染 `<Card>` / 自己写 `ManagementCheckbox`；`PENDING_MIGRATION` 已于 2026-10-20 清空（最后三家 claudedesktop / geminicli / grok 迁完），此后新出现的未迁移文件直接报错。
-15. **`aitb` CLI / Control API zero-duplicate-flow iron law.** `tauri/src/control_api/` and `cli/` are adapters, never a second implementation. Do not re-implement config parsing/writing (JSON/JSONC/TOML/YAML, merge vs replace, secret preservation), provider create/update/apply or model add/delete/set-default semantics, gateway takeover orchestration (restore → write → re-engage, aggregate replay), self-loop/base-URL checks, provider-family channel hashing, or credential storage/IO there. Call the existing backend Service or Tauri command instead. If the only complete implementation currently lives in the frontend, first sink it into Rust and expose it from both sides (for example `proxy_gateway::provider_switch::{apply_or_switch_provider, with_gateway_reattach, begin_provider_write, finish_provider_write}`), then let both the desktop page and the control API call that one path. Never feed a redacted DTO (`***` placeholders) into an internal business function; redaction belongs at the response boundary only, and raw credentials are read from the source of truth inside the backend. Any new or changed control-plane command must update the built-in `ai-toolbox` Skill (`tauri/resources/builtin_skills/ai-toolbox/`) in the same change, and the change must pass `pnpm run test:control-api-reuse` plus the route contract tests (`cargo test --lib control_api`). **This rule is mechanically guarded by `scripts/verify-control-api-reuse.mjs`**: it forbids direct file writes in control-plane files (except the PATH installer and discovery writer), forbids TOML/YAML parsing or merging inside `tauri/src/control_api/` outside the response-boundary redactor, forbids bypassing `provider_switch` for the six gateway-managed CLIs, forbids duplicate family-hash/SHA-256 implementations, and fails when `cli/src/args.rs` and the built-in Skill disagree in either direction. Real-app behavior is part of the contract: every new or changed `aitb` command must also pass the Live E2E SOP in `tauri/src/control_api/AGENTS.md` against a running debug app, using the built-in Skill. Unit tests alone cannot prove approval prompts, takeover re-engagement, backups, or config side effects.
+15. **`aitoolbox` CLI / Control API zero-duplicate-flow iron law.** `tauri/src/control_api/` and `cli/` are adapters, never a second implementation. Do not re-implement config parsing/writing (JSON/JSONC/TOML/YAML, merge vs replace, secret preservation), provider create/update/apply or model add/delete/set-default semantics, gateway takeover orchestration (restore → write → re-engage, aggregate replay), self-loop/base-URL checks, provider-family channel hashing, or credential storage/IO there. Call the existing backend Service or Tauri command instead. If the only complete implementation currently lives in the frontend, first sink it into Rust and expose it from both sides (for example `proxy_gateway::provider_switch::{apply_or_switch_provider, with_gateway_reattach, begin_provider_write, finish_provider_write}`), then let both the desktop page and the control API call that one path. Never feed a redacted DTO (`***` placeholders) into an internal business function; redaction belongs at the response boundary only, and raw credentials are read from the source of truth inside the backend. Any new or changed control-plane command must update the built-in `ai-toolbox` Skill (`tauri/resources/builtin_skills/ai-toolbox/`) in the same change, and the change must pass `pnpm run test:control-api-reuse` plus the route contract tests (`cargo test --lib control_api`). **This rule is mechanically guarded by `scripts/verify-control-api-reuse.mjs`**: it forbids direct file writes in control-plane files (except the PATH installer and discovery writer), forbids TOML/YAML parsing or merging inside `tauri/src/control_api/` outside the response-boundary redactor, forbids bypassing `provider_switch` for the six gateway-managed CLIs, forbids duplicate family-hash/SHA-256 implementations, and fails when `cli/src/args.rs` and the built-in Skill disagree in either direction. Real-app behavior is part of the contract: every new or changed `aitoolbox` command must also pass the Live E2E SOP in `tauri/src/control_api/AGENTS.md` against a running debug app, using the built-in Skill. Unit tests alone cannot prove approval prompts, takeover re-engagement, backups, or config side effects.
 
 ### Template
 
@@ -102,18 +102,18 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/settings/` | 应用设置存储、adapter 全量替换语义、CLI 路径覆盖与托盘联动 |
 | `tauri/src/settings/backup/` | 备份恢复（本地/WebDAV/GitHub-Gitee 仓库）、可选加密、自动备份与恢复后续链路 |
 | `tauri/src/plugins/` | Magpie 兼容插件宿主：SQLite v38 `plugin_entity`、多市场源注册、按需 Bun Provider 宿主、`rquickjs` 网关中间件与 17 CLI 集成桥接 |
-| `tauri/src/control_api/` | 本机 Agent 控制面：loopback HTTP、Bearer 鉴权、L0/L1/L2 授权弹窗、按 CLI 复用既有命令、凭据脱敏与 `aitb` 安装 |
+| `tauri/src/control_api/` | 本机 Agent 控制面：loopback HTTP、Bearer 鉴权、L0/L1/L2 授权弹窗、按 CLI 复用既有命令、凭据脱敏与 `aitoolbox` 安装 |
 | `tauri/src/coding/image/` | Image 后端渠道配置、任务、资产落盘、图片 API 调用与备份联动 |
 
 后续新增模块级 `AGENTS.md` 时，继续在此表追加，不在根文档其他位置零散登记。
 
-## Local Control API / aitb
+## Local Control API / aitoolbox
 
 - 控制面只监听 `127.0.0.1:0`，所有请求必须带随机 Bearer Token；`Host` / `Origin` 防护不得放宽。Token 只在私有发现文件和内存中，HTTP 响应、前端设置页、审批弹窗与日志都不得出现明文。
 - 所有 `control_api_*` Tauri 命令必须走 `control_api::invoke_handler`（`#[inline(never)]`），不要合并进 `lib.rs` 根 `generate_handler!`；原因与 `plugins_*` 相同（Windows MSVC 1 MiB 主线程栈）。
 - 写操作必须经过 `approve_write` 的 L1/L2 分级与 `ApprovalHub`；默认 `always_ask`。不要在路由层绕过授权，也不要放宽 gateway stop 的接管保护。
 - 控制面不实现第二套 CLI 配置解析器：provider/model/config/prompt 操作必须调用既有 Tauri 命令（`app.state::<T>()`）。公开响应统一走 `redact`，PATCH 必须保留未传的 Key；TOML/YAML 中的 `***` 不得写回。
-- `cli/` 中的 `aitb` 是独立 crate，只通过发现文件 + HTTP 访问控制面；退出码 `0/2/3/4/5` 是 Agent 契约。
+- `cli/` 中的 `aitoolbox` 是独立 crate，只通过发现文件 + HTTP 访问控制面；退出码 `0/2/3/4/5` 是 Agent 契约。
 
 ## Gateway 协议转换维护入口
 
@@ -199,7 +199,7 @@ ai-toolbox/
 │   │   ├── control_api/    # Local Agent Control API (loopback HTTP + approvals)
 │   │   └── settings/       # Settings modules
 │   └── Cargo.toml          # Rust dependencies
-├── cli/                    # Standalone `aitb` CLI (no Tauri dependency)
+├── cli/                    # Standalone `aitoolbox` CLI (no Tauri dependency)
 └── package.json            # Frontend dependencies
 ```
 
@@ -250,7 +250,7 @@ cd tauri && cargo fmt
 cd tauri && cargo clippy
 ```
 
-### Standalone CLI (`aitb`)
+### Standalone CLI (`aitoolbox`)
 
 ```bash
 # Build and test the loopback control-plane client
@@ -273,7 +273,7 @@ cd tauri && cargo test
 # Run single Rust test
 cd tauri && cargo test test_name
 
-# Control API / plugin / aitb focused suites
+# Control API / plugin / aitoolbox focused suites
 cd tauri && cargo test --lib control_api --jobs 2
 cd tauri && cargo test --lib plugins:: --jobs 2
 cd cli && cargo test --offline

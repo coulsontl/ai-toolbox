@@ -8,7 +8,7 @@
 
 1. **独立本机控制面 HTTP API（`tauri/src/control_api/`）**：绑定 `127.0.0.1:0`，每次启动生成随机 Bearer Token，写入 `0600` 权限发现文件 `~/.ai-toolbox/control.json`。
 2. **默认需授权的安全确认机制（可在设置页修改）**：支持四档策略（`always_ask` 默认所有写操作弹窗授权、`ask_high_risk` 仅高危操作弹窗、`auto_approve` 自动允许本机 Agent、`read_only` 仅只读）以及本地插件热重载快捷免弹窗开关。
-3. **轻量化独立 CLI（`aitb`）**：零 Tauri/WebView 依赖，内部读取 `control.json` 自动携带 Token（Token 永不进入 Agent 对话上下文），统一支持 `--json` 与标准退出码；设置页提供「安装 CLI 到 PATH」一键入口。
+3. **轻量化独立 CLI（`aitoolbox`）**：零 Tauri/WebView 依赖，内部读取 `control.json` 自动携带 Token（Token 永不进入 Agent 对话上下文），统一支持 `--json` 与标准退出码；设置页提供「安装 CLI 到 PATH」一键入口。
 4. **全量复用现有后端 Service 层**：覆盖 **插件生命周期与热重载**、**各 CLI 渠道与模型 CRUD/测试/应用**、**各 CLI 全局配置文件（Common Config / Other Settings / Global Prompt / Runtime Paths）**、**Proxy Gateway 状态/日志/健康/接管**。
 5. **内置 `ai-toolbox` Skill 升级**：从「点按钮说明书」升级为「Agent 行动 SOP + 故障排查表」。
 
@@ -42,9 +42,9 @@
 
 ```text
 Coding Agent / Terminal
-   │  (aitb <group> <action> --json)
+   │  (aitoolbox <group> <action> --json)
    ▼
-独立薄 CLI 二进制 (cli/ -> aitb)
+独立薄 CLI 二进制 (cli/ -> aitoolbox)
    │  读取 ~/.ai-toolbox/control.json (0600)
    │  HTTP 127.0.0.1:<random_port> + Authorization: Bearer <token>
    ▼
@@ -186,13 +186,13 @@ pub struct ControlApiSettings {
 
 ---
 
-## 5. 独立轻 CLI（`cli/` → `aitb`）设计
+## 5. 独立轻 CLI（`cli/` → `aitoolbox`）设计
 
 - 独立轻 crate `cli/`（不依赖 Tauri/WebView，使用 `clap` + 轻量 HTTP client + `serde_json`）；
 - 读取 `~/.ai-toolbox/control.json`（或 `AI_TOOLBOX_CONTROL_FILE`）自动带 Token，不打印 Token；
 - 支持 `status`、`plugin ...`、`cli ...`、`provider ...`（含 `--api-key-env` / `--api-key-stdin`）、`model ...`、`config ...`、`prompt ...`、`gateway ...`、`--json`、`--timeout`（默认 75s）；
 - 退出码：`0` 成功、`2` 参数错误、`3` 应用未运行/控制面关闭、`4` 权限拒绝/用户取消或超时、`5` 执行错误；
-- 后端提供 `control_api_cli_status` / `control_api_install_cli` / `control_api_uninstall_cli` 支持设置页一键安装/卸载 `aitb` 到 PATH。
+- 后端提供 `control_api_cli_status` / `control_api_install_cli` / `control_api_uninstall_cli` 支持设置页一键安装/卸载 `aitoolbox` 到 PATH。
 
 ---
 
@@ -202,7 +202,7 @@ pub struct ControlApiSettings {
    - 启用开关 + 监听状态 Tag + 发现文件路径（绝不显示 Token）；
    - 授权策略选择（默认 `always_ask`，支持切 `ask_high_risk` / `auto_approve` / `read_only`）；
    - 本地开发插件热重载免弹窗开关；
-   - `aitb` CLI 安装状态与一键安装/移除按钮；
+   - `aitoolbox` CLI 安装状态与一键安装/移除按钮；
    - 中英文 i18n 完整同步，遵循 `DESIGN.md` 颜色 token、布局密度、按钮留白规范。
 2. **全局授权确认弹窗（`ControlApiApprovalModal`）**：
    - 挂载到顶层布局，监听 `control-api-approval-request` / `control-api-approval-expired`；
@@ -213,8 +213,8 @@ pub struct ControlApiSettings {
 ## 7. 内置 Skill 升级
 
 更新 `tauri/resources/builtin_skills/ai-toolbox/`：
-1. `SKILL.md`：升级为 Agent 行动 SOP（先查 `aitb status --json`、优先通过 `aitb` 完成操作与验收、说明授权确认与退出码 4、禁止绕过 CLI 改 DB/受管文件、安全红线）；
-2. `references/plugins.md`：将本地调试升级为 `编写/构建 → aitb plugin install → aitb plugin reload → inspect/logs/middleware status → link-cli/test` 全自动闭环，补充 Symptom → Check 故障表；
+1. `SKILL.md`：升级为 Agent 行动 SOP（先查 `aitoolbox status --json`、优先通过 `aitoolbox` 完成操作与验收、说明授权确认与退出码 4、禁止绕过 CLI 改 DB/受管文件、安全红线）；
+2. `references/plugins.md`：将本地调试升级为 `编写/构建 → aitoolbox plugin install → aitoolbox plugin reload → inspect/logs/middleware status → link-cli/test` 全自动闭环，补充 Symptom → Check 故障表；
 3. 新增 `references/control-cli.md`：精简命令树、`cliKey`/协议/`scope` 枚举与退出码速查；并确认 `tauri/src/coding/skills/builtin.rs` 同步包含该文件。
 
 ---
@@ -223,6 +223,6 @@ pub struct ControlApiSettings {
 
 - **Milestone 1**：插件 Service 复用与原子 `reload_plugins` + `tauri/src/control_api/`（settings/approval/redact/server/routes_plugins/commands/invoke_handler）+ 单元测试与真实 HTTP 集成测试。
 - **Milestone 2**：`cli_dispatch.rs`（17 CLI 渠道/模型/全局配置文件/全局提示词/路径复用分发）+ `routes_gateway.rs` + DB/文件型代表 CLI 集成测试（脱敏、patch 保 Key、codebuddy 只读、gateway stop 保护）。
-- **Milestone 3**：独立轻 crate `cli/`（`aitb`）+ PATH 安装/卸载命令 + CLI 单测与 mock HTTP 测试。
+- **Milestone 3**：独立轻 crate `cli/`（`aitoolbox`）+ PATH 安装/卸载命令 + CLI 单测与 mock HTTP 测试。
 - **Milestone 4**：前端设置分区 + 全局授权弹窗 + i18n + 内置 Skill 更新 + `tauri/src/control_api/AGENTS.md` 及根/模块 `AGENTS.md` 更新。
 - **Milestone 5**：全量验收（`cargo test --lib control_api`、`cargo test --lib plugins::`、`cd cli && cargo test`、`cargo check`、`pnpm typecheck`、`pnpm test`、`pnpm build`）并按模块粒度提交到 `feat/agent-control-api`（不 push）。

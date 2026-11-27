@@ -1,6 +1,6 @@
 //! Discovery file written next to the user's home directory.
 //!
-//! The file is the only hand-off between the desktop app and `aitb`: the CLI
+//! The file is the only hand-off between the desktop app and `aitoolbox`: the CLI
 //! reads the loopback URL and bearer token from it. It never appears in API
 //! responses or logs.
 

@@ -477,39 +477,39 @@ Bridge 会自动设置：
 
 同时设置 `document.documentElement.dataset.theme` 为 `light` / `dark`，并注入低优先级基础样式。页面应优先使用这些变量，不要硬编码亮色或暗色。
 
-## 6. 本地调试闭环（Agent 优先用 `aitb`）
+## 6. 本地调试闭环（Agent 优先用 `aitoolbox`）
 
 ### 6.1 编写 → 安装 → 热重载 → 验收
 
 ```bash
 # 1) 写代码：页面/Provider/中间件完成后，确认 package.json 清单
 # 2) 安装本地目录（原地引用，不复制源码）
-aitb plugin install /absolute/path/to/my-plugin --json
+aitoolbox plugin install /absolute/path/to/my-plugin --json
 
 # 3) 改完代码后热重载：重扫清单 → 刷中间件 → 同步页面服务 → 必要时重启 Bun host
-aitb plugin reload my-plugin-id --json
+aitoolbox plugin reload my-plugin-id --json
 # 或只重载全部
-aitb plugin reload --json
+aitoolbox plugin reload --json
 
 # 4) 检查宿主状态
-aitb plugin list --json
-aitb plugin get my-plugin-id --json
-aitb plugin logs --limit 200 --json
-aitb plugin middleware --json
+aitoolbox plugin list --json
+aitoolbox plugin get my-plugin-id --json
+aitoolbox plugin logs --limit 200 --json
+aitoolbox plugin middleware --json
 
 # 5) Provider 插件：检查账号 → 刷新模型 → 添加到 CLI
-aitb plugin providers --json
-aitb plugin account-check my-provider --json
-aitb plugin account-usage my-provider --json
-aitb plugin refresh-models --json
-aitb plugin link-cli my-provider --json-body ./link-cli.json
+aitoolbox plugin providers --json
+aitoolbox plugin account-check my-provider --json
+aitoolbox plugin account-usage my-provider --json
+aitoolbox plugin refresh-models --json
+aitoolbox plugin link-cli my-provider --json-body ./link-cli.json
 
 # 6) 跑到 CLI 侧验收
-aitb provider list --cli codex --json
-aitb provider test --cli codex --id <providerId> --json
+aitoolbox provider list --cli codex --json
+aitoolbox provider test --cli codex --id <providerId> --json
 ```
 
-`link-cli.json` 的最小形态（`pluginSpec` 必须与 `aitb plugin providers --json` 里的插件 spec 一致；URL 路径 provider 与 body 的 `providerId` 不一致会 400）：
+`link-cli.json` 的最小形态（`pluginSpec` 必须与 `aitoolbox plugin providers --json` 里的插件 spec 一致；URL 路径 provider 与 body 的 `providerId` 不一致会 400）：
 
 ```json
 {
@@ -534,16 +534,16 @@ aitb provider test --cli codex --id <providerId> --json
 
 | 现象 | 优先检查 | 修复 |
 | --- | --- | --- |
-| 插件列表里没有刚写的插件 | `aitb plugin list`；manifest `magpie` 字段是否合法；目录是否含 `package.json` | 修正 manifest 后 `aitb plugin reload` |
-| 页面 404 / 白屏 | `aitb plugin logs`；页面 `file` 是否在插件根内、扩展名是否为 `.html` | 修正路径/文件后 reload |
+| 插件列表里没有刚写的插件 | `aitoolbox plugin list`；manifest `magpie` 字段是否合法；目录是否含 `package.json` | 修正 manifest 后 `aitoolbox plugin reload` |
+| 页面 404 / 白屏 | `aitoolbox plugin logs`；页面 `file` 是否在插件根内、扩展名是否为 `.html` | 修正路径/文件后 reload |
 | 页面 Bridge 报权限错误 | `package.json` 的 `permissions` 是否声明对应 scope | 补权限并 reload |
-| 中间件完全没生效 | `aitb plugin middleware` 是否显示 running；插件是否启用；`events` 导出是否过滤掉了目标事件 | 启用/reload；检查 hook 导出与事件名 |
-| 中间件超时或报错 | `aitb plugin logs`；单次调用是否超过 250ms / 32MiB | 缩减逻辑或打包依赖；失败是 fail-open，不会中断请求 |
-| Provider 登录失败 | `aitb plugin account-check <provider>`；OAuth 回调/设备码是否过期 | 重新登录；不要手工改 `plugin-auth.json` |
-| Provider 模型列表为空 | `aitb plugin refresh-models`；`auth.loader` 的 baseURL/apiKey；`provider.models` 返回值 | 修正 loader 或模型 hook 后 reload |
-| 添加到 CLI 后仍不通 | `aitb provider list --cli <key>`；`aitb gateway clis --json` 看目标 CLI 是否已被接管；Base URL 是否指向网关 | 直接 `aitb provider test`（后端用原始凭据）；不要先 `restore`，否则会丢 aggregate 配置 |
-| 请求日志里看不到插件流量 | 网关是否启动；客户端是否真的经网关；插件 Provider 是否被选中 | `aitb gateway status`、`aitb gateway logs` |
-| 修改代码后行为没变 | 是否执行了 `aitb plugin reload`；Bun host 是否被复用 | reload 指定 id；必要时 disable→enable |
+| 中间件完全没生效 | `aitoolbox plugin middleware` 是否显示 running；插件是否启用；`events` 导出是否过滤掉了目标事件 | 启用/reload；检查 hook 导出与事件名 |
+| 中间件超时或报错 | `aitoolbox plugin logs`；单次调用是否超过 250ms / 32MiB | 缩减逻辑或打包依赖；失败是 fail-open，不会中断请求 |
+| Provider 登录失败 | `aitoolbox plugin account-check <provider>`；OAuth 回调/设备码是否过期 | 重新登录；不要手工改 `plugin-auth.json` |
+| Provider 模型列表为空 | `aitoolbox plugin refresh-models`；`auth.loader` 的 baseURL/apiKey；`provider.models` 返回值 | 修正 loader 或模型 hook 后 reload |
+| 添加到 CLI 后仍不通 | `aitoolbox provider list --cli <key>`；`aitoolbox gateway clis --json` 看目标 CLI 是否已被接管；Base URL 是否指向网关 | 直接 `aitoolbox provider test`（后端用原始凭据）；不要先 `restore`，否则会丢 aggregate 配置 |
+| 请求日志里看不到插件流量 | 网关是否启动；客户端是否真的经网关；插件 Provider 是否被选中 | `aitoolbox gateway status`、`aitoolbox gateway logs` |
+| 修改代码后行为没变 | 是否执行了 `aitoolbox plugin reload`；Bun host 是否被复用 | reload 指定 id；必要时 disable→enable |
 
 ### 6.3 安全边界
 

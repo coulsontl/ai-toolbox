@@ -2404,7 +2404,7 @@ async fn update_family_provider(
     _body: Value,
 ) -> ApiResult<Value> {
     // Channel identity is (baseUrl, apiKey); changing either creates a new
-    // channel. Returning 200 here made `aitb provider update` look successful
+    // channel. Returning 200 here made `aitoolbox provider update` look successful
     // while nothing changed, so the contract is an explicit refusal.
     Err(ApiError::new(
         405,

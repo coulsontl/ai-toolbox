@@ -1,5 +1,5 @@
 /**
- * Guards the "control API and aitb are adapters, never a second
+ * Guards the "control API and aitoolbox are adapters, never a second
  * implementation" rule (AGENTS.md Hard Rule 15).
  *
  * The control plane is the easiest place to grow a shadow implementation: a
@@ -23,7 +23,7 @@
  * 4. No family channel hash may be reimplemented here (`Sha256` or a local
  *    `fn channel_id`); call `workbuddy_family::channel::channel_id`.
  * 5. Every command in `cli/src/args.rs` must be documented in the built-in
- *    Skill, and every documented `aitb <command> <subcommand>` must exist.
+ *    Skill, and every documented `aitoolbox <command> <subcommand>` must exist.
  *
  * The harness always runs `runSelfTests()` first: the scan is fed small
  * positive/negative fixtures, so a broken regex or a scan path that silently
@@ -46,7 +46,7 @@ const skillPath = path.join(
   'control-cli.md',
 );
 
-/** `aitb` install rewrites the user PATH; the discovery file is the server's own state. */
+/** `aitoolbox` install rewrites the user PATH; the discovery file is the server's own state. */
 const INTENTIONAL_FILE_WRITERS = new Set(['commands.rs', 'discovery.rs']);
 /** Redaction at the response boundary must understand TOML/YAML to mask values. */
 const REDACTION_BOUNDARY = new Set(['redact.rs']);
@@ -242,13 +242,13 @@ function expectedCommands(source) {
   return expected;
 }
 
-/** `aitb <command> [<subcommand>]` tokens documented in the Skill. */
+/** `aitoolbox <command> [<subcommand>]` tokens documented in the Skill. */
 function documentedCommands(source) {
   const documented = new Map();
-  // `[ \t]`, not `\s`: prose that ends one line with `aitb status` and starts
-  // the next with `aitb ...` must not read as `aitb status aitb`.
+  // `[ \t]`, not `\s`: prose that ends one line with `aitoolbox status` and starts
+  // the next with `aitoolbox ...` must not read as `aitoolbox status aitoolbox`.
   for (const match of source.matchAll(
-    /\baitb[ \t]+([a-z][a-z-]*)(?:[ \t]+([a-z][a-z-]*))?/g,
+    /\baitoolbox[ \t]+([a-z][a-z-]*)(?:[ \t]+([a-z][a-z-]*))?/g,
   )) {
     const [, command, subcommand] = match;
     documented.set(`${command} ${subcommand ?? ''}`.trim(), { command, subcommand });
@@ -268,7 +268,7 @@ function checkDocTree(argsSource, skillSource) {
       failures.push({
         file: 'tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md',
         line: 1,
-        text: `aitb ${command}`,
+        text: `aitoolbox ${command}`,
         what: 'documents a top-level command that args.rs does not define',
         fix: 'add the command to cli/src/args.rs or fix the Skill',
       });
@@ -278,7 +278,7 @@ function checkDocTree(argsSource, skillSource) {
       failures.push({
         file: 'tauri/resources/builtin_skills/ai-toolbox/references/control-cli.md',
         line: 1,
-        text: `aitb ${command} ${subcommand}`,
+        text: `aitoolbox ${command} ${subcommand}`,
         what: 'documents a subcommand that args.rs does not define under that command',
         fix: 'add the subcommand to cli/src/args.rs or fix the Skill',
       });
@@ -290,7 +290,7 @@ function checkDocTree(argsSource, skillSource) {
       failures.push({
         file: 'cli/src/args.rs',
         line: 1,
-        text: `aitb ${command}`,
+        text: `aitoolbox ${command}`,
         what: 'defines a command the built-in Skill does not document',
         fix: 'document it in references/control-cli.md (and SKILL.md if it changes the workflow)',
       });
@@ -362,7 +362,7 @@ function runSelfTests() {
     'the args.rs tree parser must follow nested subcommand enums',
   );
 
-  const completeSkill = 'aitb status\naitb demo list\naitb demo fetch-models\n';
+  const completeSkill = 'aitoolbox status\naitoolbox demo list\naitoolbox demo fetch-models\n';
   assert(
     checkDocTree(fixtureArgs, completeSkill).length === 0,
     'a fully documented tree must pass both directions',
@@ -370,19 +370,19 @@ function runSelfTests() {
   assert(
     checkDocTree(
       fixtureArgs,
-      'aitb status\naitb demo list\naitb demo fetch-models\naitb demo delete\n',
-    ).some(failure => failure.text === 'aitb demo delete'),
+      'aitoolbox status\naitoolbox demo list\naitoolbox demo fetch-models\naitoolbox demo delete\n',
+    ).some(failure => failure.text === 'aitoolbox demo delete'),
     'a documented ghost subcommand must be flagged',
   );
   assert(
-    checkDocTree(fixtureArgs, 'aitb status\naitb demo list\n').some(
-      failure => failure.text === 'aitb demo fetch-models',
+    checkDocTree(fixtureArgs, 'aitoolbox status\naitoolbox demo list\n').some(
+      failure => failure.text === 'aitoolbox demo fetch-models',
     ),
     'an undocumented args.rs command must be flagged',
   );
   assert(
-    checkDocTree(fixtureArgs, 'aitb status\naitb demo list\naitb demo fetch-models\naitb ghost\n').some(
-      failure => failure.text === 'aitb ghost',
+    checkDocTree(fixtureArgs, 'aitoolbox status\naitoolbox demo list\naitoolbox demo fetch-models\naitoolbox ghost\n').some(
+      failure => failure.text === 'aitoolbox ghost',
     ),
     'a documented ghost top-level command must be flagged',
   );
@@ -457,7 +457,7 @@ failures.push(...checkDocTree(argsSource, skillSource));
 
 if (failures.length > 0) {
   console.error(
-    'Control API / aitb must reuse existing flows (AGENTS.md Hard Rule 15).\n',
+    'Control API / aitoolbox must reuse existing flows (AGENTS.md Hard Rule 15).\n',
   );
   for (const failure of failures) {
     console.error(`  ${failure.file}:${failure.line} — ${failure.what}`);

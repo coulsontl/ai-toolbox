@@ -81,14 +81,14 @@ pub async fn control_api_uninstall_cli() -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// `aitb` installation
+// `aitoolbox` installation
 // ---------------------------------------------------------------------------
 
 fn binary_name() -> &'static str {
     if cfg!(windows) {
-        "aitb.exe"
+        "aitoolbox.exe"
     } else {
-        "aitb"
+        "aitoolbox"
     }
 }
 
@@ -111,11 +111,11 @@ fn install_path() -> Result<PathBuf, String> {
     Ok(install_dir()?.join(binary_name()))
 }
 
-/// Looks for a build of `aitb` in the usual places: next to the desktop app,
-/// in a repo-local `cli/target/{release,debug}`, or an explicit override.
+/// Looks for a build of `aitoolbox` in the usual places: next to the desktop
+/// app, in a repo-local `cli/target/{release,debug}`, or an explicit override.
 fn find_cli_binary() -> Option<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(explicit) = std::env::var("AI_TOOLBOX_AITB_BINARY") {
+    if let Ok(explicit) = std::env::var("AI_TOOLBOX_CLI_BINARY") {
         if !explicit.trim().is_empty() {
             candidates.push(PathBuf::from(explicit));
         }
@@ -123,7 +123,7 @@ fn find_cli_binary() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(binary_name()));
-            candidates.push(dir.join("aitb").join(binary_name()));
+            candidates.push(dir.join("aitoolbox").join(binary_name()));
         }
         let mut ancestor = exe.parent();
         for _ in 0..5 {
@@ -174,7 +174,7 @@ fn cli_status() -> Value {
 
 fn install_cli() -> Result<(), String> {
     let source = find_cli_binary().ok_or_else(|| {
-        "aitb was not found. Build it first with `cargo build --release --manifest-path cli/Cargo.toml`."
+        "aitoolbox was not found. Build it first with `cargo build --release --manifest-path cli/Cargo.toml`."
             .to_string()
     })?;
     let dir = install_dir()?;
@@ -480,8 +480,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn utf16_path_decoding_drops_a_trailing_nul_terminator() {
-        let mut bytes = encode_utf16le("C:\\Tools\\aitb");
+        let mut bytes = encode_utf16le("C:\\Tools\\aitoolbox");
         bytes.extend_from_slice(&[0, 0]);
-        assert_eq!(decode_utf16le(&bytes), "C:\\Tools\\aitb");
+        assert_eq!(decode_utf16le(&bytes), "C:\\Tools\\aitoolbox");
     }
 }

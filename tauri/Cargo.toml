@@ -104,7 +104,7 @@ image = { version = "0.25.9", default-features = false, features = ["png", "jpeg
 [target.'cfg(windows)'.dependencies]
 junction = "1.1"
 windows-native-keyring-store = "1.1"
-# Appends/removes the `aitb` install directory on the per-user PATH without
+# Appends/removes the `aitoolbox` install directory on the per-user PATH without
 # rewriting REG_EXPAND_SZ entries as REG_SZ.
 winreg = "0.55"
 # `GetGUIThreadInfo` tells the tray refresh whether its popup menu is open, so a

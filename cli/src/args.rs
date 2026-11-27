@@ -1,4 +1,4 @@
-//! Command-line surface for `aitb`.
+//! Command-line surface for `aitoolbox`.
 
 use std::path::PathBuf;
 
@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "aitb",
+    name = "aitoolbox",
     version,
     about = "Local Agent Control API client for AI Toolbox",
     long_about = "Talk to the running AI Toolbox desktop app through its loopback control API. The bearer token is read from ~/.ai-toolbox/control.json (or AI_TOOLBOX_CONTROL_FILE) and is never printed."
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn parses_global_flags_after_the_subcommand() {
         let parsed = Cli::try_parse_from([
-            "aitb",
+            "aitoolbox",
             "provider",
             "list",
             "--cli",
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn default_timeout_covers_the_desktop_approval_window() {
-        let parsed = Cli::try_parse_from(["aitb", "status"]).unwrap();
+        let parsed = Cli::try_parse_from(["aitoolbox", "status"]).unwrap();
         assert!(
             parsed.timeout >= 120,
             "the default timeout must outlast a 60s approval wait plus overhead"
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn parses_gateway_clis_and_switch() {
-        let parsed = Cli::try_parse_from(["aitb", "gateway", "clis"]).unwrap();
+        let parsed = Cli::try_parse_from(["aitoolbox", "gateway", "clis"]).unwrap();
         assert!(matches!(
             parsed.command,
             Command::Gateway {
@@ -465,7 +465,13 @@ mod tests {
             }
         ));
         let parsed = Cli::try_parse_from([
-            "aitb", "gateway", "switch", "--cli", "codex", "--provider", "p1",
+            "aitoolbox",
+            "gateway",
+            "switch",
+            "--cli",
+            "codex",
+            "--provider",
+            "p1",
         ])
         .unwrap();
         assert!(matches!(
@@ -479,7 +485,7 @@ mod tests {
     #[test]
     fn api_key_sources_are_mutually_exclusive() {
         assert!(Cli::try_parse_from([
-            "aitb",
+            "aitoolbox",
             "provider",
             "create",
             "--cli",

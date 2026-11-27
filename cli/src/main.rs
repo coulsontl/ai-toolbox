@@ -36,7 +36,7 @@ fn main() {
                     })
                 );
             } else {
-                eprintln!("aitb: {}", failure.message());
+                eprintln!("aitoolbox: {}", failure.message());
             }
             std::process::exit(code);
         }
@@ -854,7 +854,7 @@ fn check_cli_key(raw: &str) -> Result<(), Failure> {
         Ok(())
     } else {
         Err(Failure::Usage(format!(
-            "Unknown CLI key '{raw}'. Run `aitb cli list` to see the supported keys."
+            "Unknown CLI key '{raw}'. Run `aitoolbox cli list` to see the supported keys."
         )))
     }
 }
@@ -976,12 +976,12 @@ mod tests {
 
     #[test]
     fn provider_body_reads_api_key_from_the_environment() {
-        std::env::set_var("AITB_TEST_KEY", "sk-test");
+        std::env::set_var("AITOOLBOX_TEST_KEY", "sk-test");
         let fields = ProviderFields {
             name: Some("Demo".to_string()),
             base_url: Some("https://example.test".to_string()),
             model: Some("demo-model".to_string()),
-            api_key_env: Some("AITB_TEST_KEY".to_string()),
+            api_key_env: Some("AITOOLBOX_TEST_KEY".to_string()),
             api_key_stdin: false,
             json_body: None,
         };
@@ -1038,7 +1038,15 @@ mod tests {
     #[test]
     fn command_parse_accepts_quoted_paths() {
         let parsed = Cli::try_parse_from([
-            "aitb", "config", "set", "--cli", "codex", "--file", "-", "--mode", "replace",
+            "aitoolbox",
+            "config",
+            "set",
+            "--cli",
+            "codex",
+            "--file",
+            "-",
+            "--mode",
+            "replace",
         ])
         .unwrap();
         assert!(matches!(

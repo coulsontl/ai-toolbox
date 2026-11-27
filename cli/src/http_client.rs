@@ -1,7 +1,7 @@
 //! Minimal blocking HTTP/1.1 client for the loopback control API.
 //!
 //! The API is plain HTTP on 127.0.0.1 and every response is small JSON, so a
-//! hand-rolled client keeps `aitb` dependency-light. `Connection: close` makes
+//! hand-rolled client keeps `aitoolbox` dependency-light. `Connection: close` makes
 //! reading to EOF a complete response read.
 
 use std::io::{Read, Write};

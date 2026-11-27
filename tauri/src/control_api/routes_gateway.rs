@@ -362,7 +362,7 @@ async fn switch_primary(context: &ServerContext, body: Value) -> ApiResult<Value
     Ok(redacted(serde_json::to_value(status)?))
 }
 
-/// `aitb gateway logs --cli claudecode` uses the coding-tab spelling; usage
+/// `aitoolbox gateway logs --cli claudecode` uses the coding-tab spelling; usage
 /// statistics and the log filter use the gateway tool spelling.
 fn gateway_usage_tool(cli_key: &str) -> ApiResult<GatewayUsageTool> {
     let canonical = match cli_key {

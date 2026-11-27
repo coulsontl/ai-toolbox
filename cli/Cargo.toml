@@ -1,12 +1,12 @@
 [package]
-name = "aitb"
+name = "aitoolbox"
 version = "1.2.4"
 edition = "2021"
 description = "Lightweight command-line client for the AI Toolbox local Agent Control API"
 license = "MIT"
 
 [[bin]]
-name = "aitb"
+name = "aitoolbox"
 path = "src/main.rs"
 
 [dependencies]

@@ -65,7 +65,7 @@ sequenceDiagram
 - `visibleTabs` 现在可能包含 `gateway`、`image` 和 `miniBrowser`。它们只控制顶栏 `网关` / `Image` / `浏览器` 入口是否显示，不是可同步 runtime 模块；WSL/SSH 的 `skipModules`、模块状态和 mappings 仍只围绕 coding runtime（OpenCode / Claude Code / Codex / Grok CLI / OpenClaw / Gemini CLI）+ WSL/SSH 自身语义，不要把 `gateway`、`image` 或 `miniBrowser` 塞进去。
 - “模块显示”右侧那一行（`GeneralSettingsPage.tsx::OTHER_TABS`）的 chips 顺序要和顶栏工具条顺序一致，新增入口在这里追加即可，`handleOtherTabToggle` 只做 append/remove，不参与左侧编码工具的 `reorderMode`。`miniBrowser` 是**可选开通**项：它只控制 `MainLayout` 里的内置浏览器入口，没有自己的路由，也**不能**加进后端默认 `visible_tabs`（`tauri/src/settings/types.rs`）或 `adapter.rs` 的历史默认基线——历史默认只用于“整份匹配就全量替换”，一旦写进基线，用户显式关掉的浏览器入口会在下次读取时被加回来。默认不显示由「两边默认值都不含该 key」保证，边界回归见 `web/test/components/layout/MainLayout/index.test.ts`。
 - 同步文案翻译要走 `syncMessageTranslator`，不要在组件里硬编码后端错误文本。
-- 控制面授权弹窗 `ControlApiApprovalModal` 挂在 `providers.tsx` 全局（必须始终监听 `control-api-approval-request` / `control-api-approval-expired`），不能只在设置页挂载；否则用户在任意 Tab 都可能错过 CLI 的授权请求。设置卡片只负责开关、策略、发现文件路径和 `aitb` 安装状态，不显示 Token，也不直接调用 HTTP。
+- 控制面授权弹窗 `ControlApiApprovalModal` 挂在 `providers.tsx` 全局（必须始终监听 `control-api-approval-request` / `control-api-approval-expired`），不能只在设置页挂载；否则用户在任意 Tab 都可能错过 CLI 的授权请求。设置卡片只负责开关、策略、发现文件路径和 `aitoolbox` 安装状态，不显示 Token，也不直接调用 HTTP。
 - 控制面写设置后后端会热启停监听：关闭开关必须真正停止服务并删除发现文件；重新开启失败时要显示错误并刷新状态，不能假装保存成功。
 - Skills 目标既可能是链接，也可能是带归属标记的复制目录；警告统一称“同步目标”，翻译解析仍兼容已持久化的旧“链接”警告。
 - Skills 警告需要先按完整文案解析，再处理通用的 `; ` 错误拼接；技能名/路径本身允许分号和引号，命令诊断可能包含换行，不能先拆分或使用不匹配换行的表达式。`lastSyncWarnings` 表示最近一次 Skills 同步，普通文件/MCP 同步不清空它；实时警告 Alert 移除后，旧的实时警告清理逻辑可以保留但不再有可见影响。

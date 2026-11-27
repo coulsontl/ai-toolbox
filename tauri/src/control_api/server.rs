@@ -171,7 +171,7 @@ async fn route_request(
         .unwrap_or_default();
     if provided_token.is_empty() || !token_matches(&token, provided_token) {
         return Err(ApiError::unauthorized(
-            "Missing or invalid local control token; run `aitb` so it can read the discovery file",
+            "Missing or invalid local control token; run `aitoolbox` so it can read the discovery file",
         ));
     }
 

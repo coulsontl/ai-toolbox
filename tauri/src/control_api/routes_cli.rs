@@ -1177,7 +1177,7 @@ async fn merge_other_settings(
         _ => Value::Object(Map::new()),
     };
     // These CLIs store YAML on disk, so accepting a YAML document is the
-    // natural input shape. `aitb config set --file x.yml` sends the file as a
+    // natural input shape. `aitoolbox config set --file x.yml` sends the file as a
     // string.
     let incoming = config_patch::coerce_object_input(
         incoming,
@@ -1226,7 +1226,7 @@ fn has_config_body(value: &Value) -> bool {
 
 /// dsh 0.1.7+ keeps live config in `profiles/<profile>/cordis.patch.yml`; the
 /// module deliberately refuses to rewrite its unrelated plugin rows. That is a
-/// capability boundary, not a 500, so `aitb` must report `unsupported`.
+/// capability boundary, not a 500, so `aitoolbox` must report `unsupported`.
 fn dsh_other_settings_error(error: String) -> ApiError {
     if error.contains("cordis.patch.yml") {
         ApiError::new(400, "unsupported", error)

@@ -18,7 +18,7 @@ pub const MASK: &str = "***";
 
 /// Accepts the shape the CLI sends for a config body and returns a JSON object.
 ///
-/// A JSON string is the common case (`aitb config set --file config.json`).
+/// A JSON string is the common case (`aitoolbox config set --file config.json`).
 /// YAML-backed CLIs also accept a YAML document because that is the file format
 /// the user edits by hand.
 pub fn coerce_object_input(

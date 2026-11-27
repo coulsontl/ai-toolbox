@@ -1,4 +1,4 @@
-# `aitb` Live E2E 用例清单
+# `aitoolbox` Live E2E 用例清单
 
 配套规则见 [`AGENTS.md`](AGENTS.md) 的「Live E2E 验证 SOP」。本文件只提供可复用的用例模板：每个用例执行前先填「现状 / 预期 / 验证 / 回滚」，填不出来就不要执行写命令。
 
@@ -6,13 +6,13 @@
 
 | 检查 | 做法 |
 | --- | --- |
-| 应用与 CLI 版本 | `aitb status --json` 确认 `enabled`、`running`、`version`；安装的是当前构建的 `aitb` |
-| 网关状态 | `aitb gateway clis --json` 保存快照；确认哪些 CLI 处于 single/failover/aggregate |
-| CLI 能力 | `aitb cli list --json` 保存快照；只测该 CLI 声明支持的能力 |
+| 应用与 CLI 版本 | `aitoolbox status --json` 确认 `enabled`、`running`、`version`；安装的是当前构建的 `aitoolbox` |
+| 网关状态 | `aitoolbox gateway clis --json` 保存快照；确认哪些 CLI 处于 single/failover/aggregate |
+| CLI 能力 | `aitoolbox cli list --json` 保存快照；只测该 CLI 声明支持的能力 |
 | 基线数据 | 保存将要触碰的 provider/model/config/prompt 的 `--json` 输出 |
 | 文件基线 | 对将触碰的配置文件算 SHA-256，并复制到备份目录 |
 | 数据库基线 | 复制 SQLite 主文件及 `-wal`/`-shm`；记录文件大小与修改时间 |
-| 备份目录 | 项目外的时间戳目录，例如 `%TEMP%\aitb-e2e-20261128-1530\` |
+| 备份目录 | 项目外的时间戳目录，例如 `%TEMP%\aitoolbox-e2e-20261128-1530\` |
 | 授权模式 | 确认当前 `approvalMode`；只在本轮需要时临时调整，收尾必须恢复 `always_ask` |
 
 > **禁止用 `claudecode` 做任何写测试。** 只读用例（`provider list/get`、`model list`、`config get`、`cli paths`）可以执行。原因见 SOP：Paseo 的 Claude Code 子代理依赖这份配置。
@@ -25,19 +25,19 @@
 
 | 用例 / 操作 | 现状（执行前） | 预期（成功与失败） | 验证（不只退出码） | 回滚（不符时） |
 | --- | --- | --- | --- | --- |
-| 示例：`aitb provider create ... --json-body <file>` | CLI 未接管；provider 数 N；config 文件哈希 H0 | 退出 0；DB 多一行；文件不变；无 `config-changed` 之外的副作用 | `aitb provider get --json`；`provider list` 计数 N+1；文件哈希 H0 | 删除合成 provider；恢复 DB/文件备份；核对 `provider list` 回到 N |
+| 示例：`aitoolbox provider create ... --json-body <file>` | CLI 未接管；provider 数 N；config 文件哈希 H0 | 退出 0；DB 多一行；文件不变；无 `config-changed` 之外的副作用 | `aitoolbox provider get --json`；`provider list` 计数 N+1；文件哈希 H0 | 删除合成 provider；恢复 DB/文件备份；核对 `provider list` 回到 N |
 | 示例：同上的拒绝路径 | 授权弹窗出现 | 退出 4；`error.code=approval_denied`；无任何写入 | 退出码 + `--json` body；provider 数仍为 N；文件哈希 H0 | 无需回滚；确认无残留 |
 
 ## 2. 只读与授权（所有域共用）
 
 | 用例 / 操作 | 现状 | 预期 | 验证 | 回滚 |
 | --- | --- | --- | --- | --- |
-| `aitb status --json` | 应用运行、控制面开启 | 退出 0；含 `enabled/running/url/discoveryFile/approvalMode`；无 token | 输出字段；`grep` 不到 token/明文 Key | 无需 |
-| `aitb cli list --json` | — | 17 个 CLI；能力矩阵与 Skill §3 一致 | 对比 `providerCrud/modelCrud/config/prompts/apply/test` | 无需 |
-| `aitb cli paths --cli <cli>` | 已知配置路径 | 返回真实路径；文件存在性符合现状 | 对比文件系统 | 无需 |
+| `aitoolbox status --json` | 应用运行、控制面开启 | 退出 0；含 `enabled/running/url/discoveryFile/approvalMode`；无 token | 输出字段；`grep` 不到 token/明文 Key | 无需 |
+| `aitoolbox cli list --json` | — | 17 个 CLI；能力矩阵与 Skill §3 一致 | 对比 `providerCrud/modelCrud/config/prompts/apply/test` | 无需 |
+| `aitoolbox cli paths --cli <cli>` | 已知配置路径 | 返回真实路径；文件存在性符合现状 | 对比文件系统 | 无需 |
 | 拒绝授权（任一 L1 写） | `approvalMode=always_ask` | 退出 4；`approval_denied`；弹窗关闭；无写入 | 退出码/JSON；文件哈希与 DB 快照 | 无需 |
 | 等待超时 | `approvalTimeoutSecs` 调小到 15 | 退出 4；`approval_timeout`；弹窗变为过期 | 退出码/JSON；前端无残留审批卡片 | 恢复原超时 |
-| CLI 本地超时 | `approvalTimeoutSecs=15`，`aitb --timeout 2` 发写请求 | 退出 4；`request_timeout`；不能是 `app_not_running`/退出 3 | 退出码/JSON；服务端弹窗随后过期 | 无需 |
+| CLI 本地超时 | `approvalTimeoutSecs=15`，`aitoolbox --timeout 2` 发写请求 | 退出 4；`request_timeout`；不能是 `app_not_running`/退出 3 | 退出码/JSON；服务端弹窗随后过期 | 无需 |
 | `read_only` 模式写操作 | 设置切 `read_only` | 退出 4；`error.code=read_only`；后端未执行 | 退出码/JSON；文件与 DB 未变 | 恢复原模式 |
 | 不支持能力 | 如 `antigravity provider create` | 退出 4 或 5；`unsupported`（400），不是 `read_only` | `--json` 的 code/status | 无需 |
 
@@ -119,7 +119,7 @@
 | 用例 / 操作 | 现状 | 预期 | 验证 | 回滚 |
 | --- | --- | --- | --- | --- |
 | `gateway status` / `health` / `logs` / `clis` | 记录状态 | 只读；status 含 running/port；logs 分页过滤正确；clis 含 mode/primary/aggregate | 输出对比；无明文凭据 | 无需 |
-| `gateway start` | 已停止 | 启动成功；端口监听；`aitb status` 正常 | `gateway status`；端口；日志 | `gateway stop` |
+| `gateway start` | 已停止 | 启动成功；端口监听；`aitoolbox status` 正常 | `gateway status`；端口；日志 | `gateway stop` |
 | `gateway stop`（有接管） | 至少一个 CLI 被接管 | 后端拒绝；接管状态不变 | 退出码/JSON；`gateway clis` | 无需；先 restore 再 stop |
 | `gateway restart` | 运行中 | 热重启；端口/日志重置；接管保持 | `gateway status`；`gateway clis` | 再 restart；必要时 stop/start |
 | `gateway reset-health` | 有冷却条目 | 冷却清空；路由恢复 | `gateway health` | 无需（可重新触发） |
@@ -136,8 +136,8 @@
 - [ ] 所有被测文件已按备份恢复，SHA-256 与测试前一致（预期会变的文件除外，且已说明原因）。
 - [ ] SQLite 已恢复或差异已逐条解释；`-wal`/`-shm` 未遗留异常。
 - [ ] 合成 provider/model/prompt/插件/网关清单已删除。
-- [ ] `aitb gateway clis --json` 与测试前快照一致（模式、primary、aggregate）。
+- [ ] `aitoolbox gateway clis --json` 与测试前快照一致（模式、primary、aggregate）。
 - [ ] `approval_mode` 已恢复 `always_ask`。
-- [ ] 应用重启后 `aitb status --json` 与只读命令正常。
+- [ ] 应用重启后 `aitoolbox status --json` 与只读命令正常。
 - [ ] 记录已执行/通过/未验证的用例，以及备份目录位置。
 - [ ] 有价值的新场景已补成 Rust/CLI/脚本回归测试。

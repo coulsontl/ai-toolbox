@@ -1,20 +1,20 @@
 ---
 name: ai-toolbox
-description: AI Toolbox 桌面应用的内置使用指南与 Agent 行动手册。当用户提到 AI Toolbox、aitb 命令、本地控制 API / control API、Coding CLI 供应商与模型配置、Proxy Gateway 接管或故障切换、Magpie 插件、Skills/MCP 同步、WSL/SSH 同步、备份恢复时，先读本技能。也适用于排障：aitb 退出码 3/4/5、approval_denied、approval_timeout、read_only、unsupported、gateway 端口占用或插件模型连不通。
+description: AI Toolbox 桌面应用的内置使用指南与 Agent 行动手册。当用户提到 AI Toolbox、aitoolbox 命令、本地控制 API / control API、Coding CLI 供应商与模型配置、Proxy Gateway 接管或故障切换、Magpie 插件、Skills/MCP 同步、WSL/SSH 同步、备份恢复时，先读本技能。也适用于排障：aitoolbox 退出码 3/4/5、approval_denied、approval_timeout、read_only、unsupported、gateway 端口占用或插件模型连不通。
 ---
 
 # AI Toolbox 使用指南
 
 AI Toolbox 是面向 AI 编程工具的个人配置工作台。它把分散在各 CLI 里的供应商、模型、提示词、Skills、MCP 和会话集中到一处管理，并可在本机启动统一代理网关。
 
-本技能是随应用版本发布的内置文档，只读且不可删除。**Agent 优先通过 `aitb` 操作 AI Toolbox**，不要直接改数据库、受管配置文件或内部 IPC。
+本技能是随应用版本发布的内置文档，只读且不可删除。**Agent 优先通过 `aitoolbox` 操作 AI Toolbox**，不要直接改数据库、受管配置文件或内部 IPC。
 
 ## 1. Agent 行动 SOP
 
 ### 1.1 先确认控制面可用
 
 ```bash
-aitb status --json
+aitoolbox status --json
 ```
 
 - 返回 `running: true` 才继续。
@@ -24,14 +24,14 @@ aitb status --json
 ### 1.2 再确认能力边界
 
 ```bash
-aitb cli list --json
+aitoolbox cli list --json
 ```
 
 关注目标 CLI 的 `providerCrud`、`modelCrud`、`config`、`configReadOnly`、`prompts`、`apply`、`test`。Antigravity 没有自定义渠道；CodeBuddy 的全局配置只读；WorkBuddy 没有全局配置文件；OpenClaw / WorkBuddy 没有提示词方案。返回 `unsupported` 是能力边界，换 CLI 或换命令，不要当成授权失败重试。
 
-### 1.3 通过 `aitb` 执行并验收
+### 1.3 通过 `aitoolbox` 执行并验收
 
-- 查询：`aitb provider list --cli codex --json`、`aitb config get --cli codex --json`、`aitb cli paths --cli codex --json` 等。
+- 查询：`aitoolbox provider list --cli codex --json`、`aitoolbox config get --cli codex --json`、`aitoolbox cli paths --cli codex --json` 等。
 - 写入：新增/修改供应商 → `apply` → `provider test`；改全局配置 → `config set` 后再 `config get` 核对；提示词 → `prompt apply` 后检查 `isApplied`。
 - 网关：`gateway status` / `gateway clis` → `engage` 或 `switch` → `gateway logs --only-failed`；停止前先 `restore`。
 - 已被网关接管的 CLI 不要手工 `restore` 再改供应商：直接 `provider update` / `provider apply` / `model add`，后端会恢复直连、写入、再按原模式重新接管。
@@ -57,14 +57,14 @@ aitb cli list --json
 
 | 能力 | 能做什么 | 用户通常在哪里操作 |
 | --- | --- | --- |
-| Coding CLI 配置管理 | 统一管理 17 个 Coding CLI 的供应商、模型、官方账号、全局提示词、插件和根目录 | 左侧对应 CLI 的 Tab，或 `aitb` |
-| Proxy Gateway | 在本机启动多协议代理网关，接管 Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI / Antigravity / OpenCode / WorkBuddy / CodeBuddy 等客户端，做协议转换、故障切换、请求日志和用量统计 | `Gateway` Tab，或 `aitb gateway` |
+| Coding CLI 配置管理 | 统一管理 17 个 Coding CLI 的供应商、模型、官方账号、全局提示词、插件和根目录 | 左侧对应 CLI 的 Tab，或 `aitoolbox` |
+| Proxy Gateway | 在本机启动多协议代理网关，接管 Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI / Antigravity / OpenCode / WorkBuddy / CodeBuddy 等客户端，做协议转换、故障切换、请求日志和用量统计 | `Gateway` Tab，或 `aitoolbox gateway` |
 | Skills 中央仓库 | 从 Git 仓库或本地目录安装 Skill，保存在中央仓库，再按工具同步；支持 Universal 公共目录、自动发现、分组、标签和批量操作 | `Skills` Tab |
 | MCP 管理 | 集中维护 MCP Server，导入导出、分组、收藏，并同步到多个支持 MCP 的工具 | `MCP` Tab |
 | 会话管理 | 浏览、搜索、重命名、导入、导出和删除各 CLI 的会话记录 | 各 CLI Tab 的会话区或 `Session` 入口 |
 | WSL / SSH 同步 | 把本机配置、MCP 和 Skills 同步到 WSL 或远程 SSH 主机 | `Settings` → WSL / SSH |
 | 备份恢复 | 本地、WebDAV、GitHub/Gitee 私有仓库备份，可加密、可自动执行 | `Settings` → 备份 |
-| 插件体系 | 安装 Magpie / OpenCode 兼容插件，提供 Provider 渠道、Gateway 中间件和自定义页面 | `Plugins` / 插件中心，或 `aitb plugin` |
+| 插件体系 | 安装 Magpie / OpenCode 兼容插件，提供 Provider 渠道、Gateway 中间件和自定义页面 | `Plugins` / 插件中心，或 `aitoolbox plugin` |
 | 本地控制 API | 让本机 Agent 通过 `127.0.0.1` + Bearer Token 调用同一套配置能力，写操作默认弹窗授权 | `Settings` → Agent 集成 |
 | 系统托盘 | 不打开主窗口即可切换常用供应商、模型、提示词、MCP 和 Skills | 托盘菜单 |
 | 深链接 | 通过 `aitoolbox://` 导入或分享供应商配置 | 浏览器 / 聊天应用 |
@@ -78,12 +78,12 @@ aitb cli list --json
 3. 保存后在供应商卡片上点击「启用 / 应用」，AI Toolbox 会按该 CLI 的原生配置格式写入，并保留未知字段。
 4. 需要跨工具复用时，用供应商卡片的分享/深链接功能，而不是手工复制多份配置。
 
-用 `aitb` 时：
+用 `aitoolbox` 时：
 
 ```bash
-aitb provider create --cli codex --name "Demo" --base-url https://api.example.com/v1 --model demo-model --api-key-env DEMO_KEY
-aitb provider apply --cli codex --id <providerId>
-aitb provider test --cli codex --id <providerId>
+aitoolbox provider create --cli codex --name "Demo" --base-url https://api.example.com/v1 --model demo-model --api-key-env DEMO_KEY
+aitoolbox provider apply --cli codex --id <providerId>
+aitoolbox provider test --cli codex --id <providerId>
 ```
 
 注意：
@@ -113,7 +113,7 @@ http://127.0.0.1:37123
 
 Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI 风格客户端使用 `/v1` 或 `/v1/chat/completions`；Gemini 风格客户端使用 `/v1beta`。
 
-用 `aitb` 时：`aitb gateway status`、`aitb gateway clis --json`、`aitb gateway engage --cli codex --mode failover`、`aitb gateway switch --cli codex --provider <id>`、`aitb gateway logs --only-failed`。`gateway clis` 的 `mode`/`primaryProviderId`/`aggregate` 是当前接管的事实源；切换主 Provider 用 `switch`，不会丢 aggregate 配置。`stop` 前必须先 `restore` 所有被接管的 CLI。
+用 `aitoolbox` 时：`aitoolbox gateway status`、`aitoolbox gateway clis --json`、`aitoolbox gateway engage --cli codex --mode failover`、`aitoolbox gateway switch --cli codex --provider <id>`、`aitoolbox gateway logs --only-failed`。`gateway clis` 的 `mode`/`primaryProviderId`/`aggregate` 是当前接管的事实源；切换主 Provider 用 `switch`，不会丢 aggregate 配置。`stop` 前必须先 `restore` 所有被接管的 CLI。
 
 ### 3.3 官方账号切换与额度查看
 
@@ -154,11 +154,11 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 - 恢复后建议重启应用，让托盘、WSL/SSH 和网关重新读取配置。
 - 跨机器恢复时，路径会尽量按 `~/...`、`%APPDATA%/...` 这类可迁移形式解析；旧机器的绝对用户路径不保证可用。
 
-### 3.8 本地控制面与 `aitb`
+### 3.8 本地控制面与 `aitoolbox`
 
 - 默认开启，只监听 `127.0.0.1:0`（随机端口），令牌写入私有 `control.json`；设置页只显示状态、策略和安装入口，**永远不显示 token**。
 - 默认「每次都询问」：写操作会在桌面弹窗等待用户确认；`approvalTimeoutSecs` 默认 60 秒（可设 15–300），CLI 的 `--timeout` 要大于它。
-- 安装：设置页「Agent 集成 → aitb 命令行 → 安装到 PATH」，或直接运行仓库构建出的 `aitb`。安装后重开终端；`command not found` 通常是 PATH 未刷新，`unknown subcommand` 通常是旧二进制，重新安装即可。
+- 安装：设置页「Agent 集成 → aitoolbox 命令行 → 安装到 PATH」，或直接运行仓库构建出的 `aitoolbox`。安装后重开终端；`command not found` 通常是 PATH 未刷新，`unknown subcommand` 通常是旧二进制，重新安装即可。
 - 常用命令与退出码见 §1 和 `references/control-cli.md`，这里不再重复。
 
 ## 4. 常见问题排查
@@ -170,12 +170,12 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 - 检查是否有防火墙/安全软件拦截 `127.0.0.1` 本地监听。
 - 看 Gateway 的运行日志和请求明细；后台的 usage 记录事件只刷新数据，不代表失败。
 - 接管后 CLI 报 401/403 时，先确认对应供应商的 Key 和 Base URL，再确认网关是否真的启动。
-- `gateway stop` 报「仍有 CLI 被接管」时，先 `aitb gateway restore --cli <key>`，不要强杀进程。
+- `gateway stop` 报「仍有 CLI 被接管」时，先 `aitoolbox gateway restore --cli <key>`，不要强杀进程。
 
 ### 4.2 插件里的模型连不通
 
 - 在插件中心打开对应 Provider，先确认账号状态为已登录。
-- 点「检查 / 连通性测试」，确认模型列表能拉到；或 `aitb plugin account-check <provider>`。
+- 点「检查 / 连通性测试」，确认模型列表能拉到；或 `aitoolbox plugin account-check <provider>`。
 - 如果 Provider 插件声明的模型 `npm` 与上游协议不匹配，网关会按声明的协议转发；检查 `npm` 映射是否正确：
   - `@ai-sdk/anthropic` → Anthropic Messages
   - `@ai-sdk/openai` → OpenAI Responses
@@ -184,13 +184,13 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 - OAuth 账号过期时，先让插件后台续期或重新登录；不要手工改 `plugin-auth.json`。
 - 只有「添加到 CLI」后仍不通，检查该 CLI 是否已被网关接管，以及它是否读取了正确的配置文件。
 
-### 4.3 控制面 / aitb 不工作
+### 4.3 控制面 / aitoolbox 不工作
 
-- `command not found`：`aitb` 未安装或 PATH 未刷新；`unknown subcommand` / 参数与文档不一致：旧二进制，重新安装后重跑 `aitb status --json`。
-- `aitb status` 退出码 `3`：应用未启动、控制面关闭或发现文件失效。先在设置里确认「启用本地控制 API」为开，再看 `url` 是否非空。
+- `command not found`：`aitoolbox` 未安装或 PATH 未刷新；`unknown subcommand` / 参数与文档不一致：旧二进制，重新安装后重跑 `aitoolbox status --json`。
+- `aitoolbox status` 退出码 `3`：应用未启动、控制面关闭或发现文件失效。先在设置里确认「启用本地控制 API」为开，再看 `url` 是否非空。
 - 退出码 `4` 按 `--json` 的 `error.code` 处理：`approval_denied` / `approval_timeout` 等待用户，`request_timeout` 把 `--timeout` 调到 `approvalTimeoutSecs` 以上再试，`read_only` 请用户改授权模式，`unsupported` 换能力；**统一不要重试轰炸**。
 - 退出码 `5`：看 `error.code`（`bad_request`、`not_found`、`conflict`、`method_not_allowed`、`internal_error`），修正目标后重试一次。
-- 出现 `Host` / `Origin` 403 是安全防护，不要尝试伪造请求头；用 `aitb` 或本机工具访问。
+- 出现 `Host` / `Origin` 403 是安全防护，不要尝试伪造请求头；用 `aitoolbox` 或本机工具访问。
 - 发现文件路径以设置页显示为准；不要 `cat` 它，也不要把内容粘到聊天里。
 
 ### 4.4 Windows 路径与 WSL Direct
@@ -216,8 +216,8 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 ## 5. 给 AI Agent 的操作原则
 
-- 先 `aitb status --json`，再 `aitb cli list --json`；不确定字段时先 GET 观察现状。
-- 优先使用 `aitb` 的现有命令和原生 helper；不要凭记忆猜字段，不要直接写数据库或受管文件。
+- 先 `aitoolbox status --json`，再 `aitoolbox cli list --json`；不确定字段时先 GET 观察现状。
+- 优先使用 `aitoolbox` 的现有命令和原生 helper；不要凭记忆猜字段，不要直接写数据库或受管文件。
 - 任何写工具目录的操作都要先确认「源是中央仓库 / 配置源」，不要把工具运行时目录当成源。
 - 不要读取、打印或提交用户的 API Key、OAuth token、`plugin-auth.json` 明文或发现文件 token。
 - 修改配置前先备份目标文件；优先使用各 CLI 的原生写入 helper，保留未知字段、注释和顺序。
@@ -226,5 +226,5 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 ## 6. 参考文档
 
-- `references/control-cli.md`：`aitb` 完整命令树、`cliKey`/scope 枚举、授权风险等级、退出码与安全红线。
+- `references/control-cli.md`：`aitoolbox` 完整命令树、`cliKey`/scope 枚举、授权风险等级、退出码与安全红线。
 - `references/plugins.md`：插件类型、清单、Bridge API、中间件沙箱、Provider 宿主、市场 `registry.json` 与本地热调试闭环。

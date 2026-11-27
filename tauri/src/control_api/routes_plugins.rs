@@ -39,7 +39,7 @@ pub async fn dispatch(
                 .map_err(ApiError::from)?;
             Ok(redacted(listing))
         }
-        // Global refresh route: `aitb plugin refresh-models` posts here.
+        // Global refresh route: `aitoolbox plugin refresh-models` posts here.
         (&Method::POST, "providers")
             if segments.get(2).map(String::as_str) == Some("refresh-models") =>
         {
@@ -312,7 +312,7 @@ async fn dispatch_nested(
     }
 }
 
-/// `aitb plugin remove --purge-data` sends a query parameter; older callers
+/// `aitoolbox plugin remove --purge-data` sends a query parameter; older callers
 /// send a JSON body. Query wins when both are present.
 fn purge_data_requested(query: &HashMap<String, String>, body: &Value) -> bool {
     query
