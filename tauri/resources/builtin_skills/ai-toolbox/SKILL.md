@@ -18,7 +18,7 @@ aitoolbox status --json
 ```
 
 - 返回 `running: true` 才继续。
-- 退出码 `3` 表示应用没启动、控制面被关闭或令牌失效。请用户在「设置 → Agent 集成（本地控制）」中启用，不要尝试自己读取/复制发现文件里的 token。
+- 退出码 `3` 表示应用没启动、控制面被关闭或令牌失效。请用户在「设置 → Agent 集成（本地控制）」中启用；默认不要读取/复制发现文件里的 token，只有本机找不到任何 `aitoolbox` 二进制时，才按 §3.9 的受限降级方式在内存中读取。
 - 需要完整命令树、退出码与 `cliKey` 枚举时，读 `references/control-cli.md`。
 
 ### 1.2 再确认能力边界
@@ -49,7 +49,7 @@ aitoolbox cli list --json
 
 ### 1.5 绝对不要做
 
-- 不要直接读写 SQLite、`~/.ai-toolbox/control.json`、`plugin-auth.json` 或各 CLI 的受管配置文件来绕过授权。
+- 不要直接读写 SQLite、`~/.ai-toolbox/control.json`、`plugin-auth.json` 或各 CLI 的受管配置文件来绕过授权。唯一例外是 §3.9 的受限降级：仅在内存中读取发现文件的 `url`/`token` 发起临时排障请求，不写回、不回显。
 - 不要读取、打印或提交用户的 API Key、OAuth token、Cookie 或私钥明文。
 - 不要把发现文件里的 token 写进 URL、环境变量示例、脚本或仓库。
 - 不要在用户未确认的情况下卸载插件、删除供应商、停止网关或切换到 `auto_approve`。
@@ -159,8 +159,25 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 
 - 默认开启，只监听 `127.0.0.1:0`（随机端口），令牌写入私有 `control.json`；设置页只显示状态、策略和安装入口，**永远不显示 token**。
 - 默认「每次都询问」：写操作会在桌面弹窗等待用户确认；`approvalTimeoutSecs` 默认 60 秒（可设 15–300），CLI 的 `--timeout` 要大于它。
-- 安装：设置页「Agent 集成 → aitoolbox 命令行 → 安装到 PATH」，或直接运行仓库构建出的 `aitoolbox`。安装后重开终端；`command not found` 通常是 PATH 未刷新，`unknown subcommand` 通常是旧二进制，重新安装即可。
+- 安装：设置页「Agent 集成 → aitoolbox 命令行 → 安装到 PATH」，或直接运行仓库构建出的 `aitoolbox`。安装后重开终端；`command not found` 通常是 PATH 未刷新，`unknown subcommand` 通常是旧二进制，重新安装即可。安装过一次后，桌面端升级会在启动时自动把已安装的 `aitoolbox` 同步为新版本，不需要每次升级后重新安装。
 - 常用命令与退出码见 §1 和 `references/control-cli.md`，这里不再重复。
+
+### 3.9 本机没有 `aitoolbox` 命令时
+
+`command not found` 只说明命令不在 PATH 中，不代表控制面没启动，也不要先让用户重装应用。按以下顺序处理：
+
+1. **先按常见落点直接用绝对路径调用**（不修改 PATH）：
+   - Windows：`%LOCALAPPDATA%\AI Toolbox\bin\aitoolbox.exe`；或桌面端可执行文件同目录的 `aitoolbox.exe`。
+   - macOS：`~/.local/bin/aitoolbox`；或 `/Applications/AI Toolbox.app/Contents/MacOS/aitoolbox`。
+   - Linux：`~/.local/bin/aitoolbox`；或 `/usr/bin/aitoolbox`。
+   - 本地开发仓：`cli/target/release/aitoolbox`、`cli/target/debug/aitoolbox`（Windows 带 `.exe`）。
+
+   找到后先用 `<绝对路径> status --json` 验证，后续命令沿用同一路径。
+2. **只是 PATH 未刷新时**：请用户在桌面端「设置 → Agent 集成（本地控制）」点一次「安装 aitoolbox 到 PATH」，然后重开终端。安装成功后，以后升级桌面端会自动同步更新已安装的 `aitoolbox`，无需重复安装。
+3. **本机确实找不到任何 `aitoolbox` 二进制时**，才使用受限降级：仅在内存中读取发现文件（默认 `~/.ai-toolbox/control.json`，可用 `AI_TOOLBOX_CONTROL_FILE` 覆盖）中的 `url` 与 `token`；发现文件没有独立的 `port` 字段，端口从 `url`（`http://127.0.0.1:<port>`）解析。然后直接请求 `http://127.0.0.1:<port>/v1/...`，带上 `Authorization: Bearer <token>`。
+   - **严禁打印、回显、写日志或提交 token 明文**，也不要把 token 放进 URL、argv、环境变量示例或脚本；用一次性脚本从文件读取并只发送请求头。
+   - 不要带 `Origin` 请求头（会被 403），`Host` 必须是 `127.0.0.1:<port>` 或 `localhost:<port>`。
+   - 该方式只用于临时排障，长期使用仍应安装 `aitoolbox`。
 
 ## 4. 常见问题排查
 
@@ -194,7 +211,7 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 - 退出码 `4` 按 `--json` 的 `error.code` 处理：`approval_denied` / `approval_timeout` 等待用户，`request_timeout` 把 `--timeout` 调到 `approvalTimeoutSecs` 以上再试，`read_only` 请用户改授权模式，`unsupported` 换能力；**统一不要重试轰炸**。
 - 退出码 `5`：看 `error.code`（`bad_request`、`not_found`、`conflict`、`method_not_allowed`、`internal_error`），修正目标后重试一次。
 - 出现 `Host` / `Origin` 403 是安全防护，不要尝试伪造请求头；用 `aitoolbox` 或本机工具访问。
-- 发现文件路径以设置页显示为准；不要 `cat` 它，也不要把内容粘到聊天里。
+- 发现文件路径以设置页显示为准；不要 `cat` 它，也不要把内容粘到聊天里。只有 §3.9 的受限降级才在内存中读取 `url`/`token`，且不回显。
 
 ### 4.4 Windows 路径与 WSL Direct
 
@@ -222,7 +239,7 @@ Anthropic 风格客户端使用 `http://127.0.0.1:37123/v1/messages`；OpenAI �
 - 先 `aitoolbox status --json`，再 `aitoolbox cli list --json`；不确定字段时先 GET 观察现状。
 - 优先使用 `aitoolbox` 的现有命令和原生 helper；不要凭记忆猜字段，不要直接写数据库或受管文件。
 - 任何写工具目录的操作都要先确认「源是中央仓库 / 配置源」，不要把工具运行时目录当成源。
-- 不要读取、打印或提交用户的 API Key、OAuth token、`plugin-auth.json` 明文或发现文件 token。
+- 不要打印或提交用户的 API Key、OAuth token、`plugin-auth.json` 明文或发现文件 token；发现文件 token 只允许在 §3.9 的降级场景中于内存内使用。
 - 修改配置前先备份目标文件；优先使用各 CLI 的原生写入 helper，保留未知字段、注释和顺序。
 - 遇到授权弹窗，等待用户决定；用户拒绝后不要用其他路径绕过。
 - 遇到不确定的行为，先在 UI 里复现并查看 Gateway 日志/请求明细，再定位到后端模块。

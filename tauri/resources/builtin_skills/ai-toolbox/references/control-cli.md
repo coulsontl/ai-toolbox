@@ -11,7 +11,7 @@ aitoolbox status --json
 - 成功：返回 `enabled`、`running`、`url`、`discoveryFile`、`approvalMode` 等字段。
 - 退出码 `3`：应用没启动、控制面被关闭、发现文件缺失或令牌失效。先让用户在「设置 → Agent 集成（本地控制）」中启用服务。
 - 发现文件默认是 `~/.ai-toolbox/control.json`，可用 `AI_TOOLBOX_CONTROL_FILE` 或 `--control-file` 覆盖。
-- **不要 `cat` 发现文件，也不要在命令、日志或提交里输出 `token`。** 只通过 `aitoolbox` 间接使用。
+- **不要 `cat` 发现文件，也不要在命令、日志或提交里输出 `token`。** 正常情况只通过 `aitoolbox` 间接使用；仅在本机没有 `aitoolbox` 时按 §1.1 的受限降级处理。
 
 全局参数：
 
@@ -21,7 +21,23 @@ aitoolbox [--json] [--timeout 120] [--control-file PATH] <command>
 
 `--json` 输出机器可读结果；写操作默认等待桌面授权。`--timeout` 必须大于设置页的 `approvalTimeoutSecs`（默认 60 秒），否则本地 socket 会先超时、CLI 看不到真实的授权结果。120 秒是默认值；把 `--timeout` 调小不会缩短桌面弹窗，只会让 CLI 提前放弃。
 
-`aitoolbox` 未安装或版本过旧时：`command not found` 说明还没在「设置 → Agent 集成」安装 CLI；`unknown subcommand` / 参数与本文不一致说明安装的是旧二进制，先在设置页重新安装，再执行 `aitoolbox status --json` 核对 `version`。
+### 1.1 `aitoolbox` 不在 PATH 时
+
+`command not found` 只说明命令不在 PATH 中，不代表控制面没启动；不要先让用户重装应用。
+
+1. 先按常见落点用绝对路径调用：
+   - Windows：`%LOCALAPPDATA%\AI Toolbox\bin\aitoolbox.exe`；或桌面端安装目录同级的 `aitoolbox.exe`。
+   - macOS：`~/.local/bin/aitoolbox`；或 `/Applications/AI Toolbox.app/Contents/MacOS/aitoolbox`。
+   - Linux：`~/.local/bin/aitoolbox`；或 `/usr/bin/aitoolbox`。
+   - 本地开发仓：`cli/target/release/aitoolbox`、`cli/target/debug/aitoolbox`（Windows 带 `.exe`）。
+
+   找到后先跑 `<绝对路径> status --json` 验证，后续命令沿用同一路径。
+2. 只是 PATH 未刷新：请用户在「设置 → Agent 集成（本地控制）」点一次「安装 aitoolbox 到 PATH」，然后重开终端。安装过一次后，桌面端升级启动时会自动同步已安装的 `aitoolbox`，不需要重复安装。`unknown subcommand` / 参数与本文不一致说明装的是旧二进制，重新安装或使用升级后自动同步的版本。
+3. 本机确实找不到任何 `aitoolbox` 二进制时，才用受限降级直连控制面：
+   - 仅在内存中读取发现文件（默认 `~/.ai-toolbox/control.json`，可用 `AI_TOOLBOX_CONTROL_FILE` 覆盖）的 `url` 与 `token`；文件里**没有**独立的 `port` 字段，端口从 `url`（`http://127.0.0.1:<port>`）解析。
+   - 请求 `http://127.0.0.1:<port>/v1/...`，带 `Authorization: Bearer <token>`；不要带 `Origin`，`Host` 必须是 `127.0.0.1:<port>` 或 `localhost:<port>`。请求体是 JSON（没有 body 的 GET 可省略）。
+   - **严禁打印、回显、写日志或提交 token 明文**；不要把 token 放进 URL、argv、环境变量示例或脚本，用一次性脚本从文件读取并只放入请求头。
+   - 该方式只用于临时排障；长期使用仍应安装 `aitoolbox`。
 
 ## 2. 命令树
 
@@ -261,7 +277,7 @@ aitoolbox gateway restore --cli <cliKey>
 - L1（可逆写法）：新增/修改供应商、模型、配置、提示词、应用配置、切换网关主 Provider。
 - L2（高风险）：删除供应商、停止网关、接管/恢复 CLI、卸载插件、远程安装插件。
 - `read_only` 模式下所有写操作直接返回 403；停止控制面或切到 `read_only` 时挂起弹窗会立即过期，CLI 得到退出码 4。
-- 不要尝试通过直接改 SQLite、`control.json`、CLI 配置文件或调用内部 IPC 来绕过授权。授权是用户对信任边界的决定。
+- 不要尝试通过直接改 SQLite、CLI 配置文件或调用内部 IPC 来绕过授权。`control.json` 只在 §1.1 的降级场景中于内存内读取 `url`/`token`，不写回、不回显。授权是用户对信任边界的决定。
 
 ## 5. 相关端点（排障时看）
 
@@ -310,7 +326,7 @@ DELETE /v1/plugins/:id?purgeData=true
 
 ## 6. 安全红线
 
-- 不读取/打印发现文件的 `token`，不把 token 放进 argv、URL、日志或提交。
+- 不打印发现文件的 `token`，不把 token 放进 argv、URL、日志或提交；仅 §1.1 的降级场景可在内存内读取并使用。
 - 不在命令输出里暴露 API Key / OAuth token；GET 结果里的 `***` 是掩码，不是可写值。
 - 安装远程插件、删除供应商、启停网关前，先向用户说明影响；等待桌面确认，不要代点。
 - 插件凭据只由宿主管理，不要手工改 `plugin-auth.json` 或数据库。

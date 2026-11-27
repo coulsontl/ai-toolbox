@@ -132,6 +132,15 @@ impl ControlApiState {
 
 /// Starts the listener when enabled. Returns `true` when this call started it.
 pub async fn start_if_enabled(state: &ControlApiState) -> Result<bool, String> {
+    // Keep an already-installed `aitoolbox` in step with the desktop version.
+    // The copy runs on the blocking pool and is fire-and-forget: a locked or
+    // read-only binary only logs a warning, it never delays startup.
+    tauri::async_runtime::spawn_blocking(|| {
+        if let Err(error) = commands::sync_installed_cli_if_present() {
+            log::warn!("Failed to sync the installed aitoolbox CLI: {error}");
+        }
+    });
+
     let settings = state.context.settings();
     if !settings.enabled || state.is_running() {
         return Ok(false);

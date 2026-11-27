@@ -122,6 +122,7 @@ sequenceDiagram
 - **发现文件删除要认 pid**：`remove_discovery_file_if_owned` 只删除属于当前进程的文件；测试/多实例时不要直接 `remove_file`。
 - **CLI 安装路径**：Windows 写 HKCU `Environment\Path` 时必须保留 `REG_EXPAND_SZ` 的类型与 UTF-16 编码；解码现有值要裁掉尾部 `\0`，否则最后一个 PATH 项会带空字符。不要用 `setx`（会截断）或把 PATH 写成 `REG_SZ`。Unix 安装写标记注释 + `export PATH="..."` 两行，卸载必须两行一起删（只删注释会留下死 export）。找不到 `aitoolbox` 二进制时返回明确错误，不要把应用自身复制/改名。
 - **发布包的 sidecar 位置**：`aitoolbox` 以 `bundle.externalBin` 随安装包分发，Tauri 会把它放在主程序同目录（Windows 安装目录、macOS `Contents/MacOS`、Linux deb/rpm 与 AppImage 的 `usr/bin`）。`find_cli_binary()` 的「exe 同目录」候选就是这条路径，不要为了安装包再加环境变量或硬编码 `/usr/bin`。
+- **已安装 CLI 的自动同步**：`sync_installed_cli_if_present()` 只在 `install_path()` 已存在时动作，**绝不**为未安装用户创建文件或修改 PATH/shell rc；启动时经 `spawn_blocking` fire-and-forget 调用，失败只 `log::warn`，不能阻塞桌面端启动。内容比较先比长度再比字节；更新走同目录临时文件 + rename（Unix 保持 `0o755`），目标被占用时返回 Err。
 - **授权超时与策略切换竞态**：超时分支必须先从 hub 移除再发 `control-api-approval-expired`，否则前端允许按钮会打到一个已死的 channel。停止控制面或切到 `read_only` 时必须 `ApprovalHub::cancel_all()` 并广播 expired；前端收到 `resolved: false` 只提示过期，不要重试 resolve。
 - **插件页面路由会在 reload 后过期**：`page_server.sync_enabled_plugins` 不仅检查插件启用/page 是否存在，还比较入口文件名和解析后的 `service_port`；任一变化就撤销旧 token，让下次打开重新签发。否则新清单会继续用旧目录/旧 CSP 端口服务。
 

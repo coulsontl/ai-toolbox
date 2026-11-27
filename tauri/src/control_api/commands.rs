@@ -200,6 +200,107 @@ fn install_cli() -> Result<(), String> {
     Ok(())
 }
 
+/// Copies the bundled/build CLI over an already-installed one.
+///
+/// Deliberately scoped to users who installed the CLI themselves: when the
+/// install target does not exist this is a no-op and never creates files or
+/// touches PATH/shell rc. Any failure (including a target locked by a running
+/// process) is returned to the caller so it can log and continue; desktop
+/// startup must never block or fail on this.
+pub fn sync_installed_cli_if_present() -> Result<bool, String> {
+    let target = install_path()?;
+    if !target.is_file() {
+        return Ok(false);
+    }
+    let Some(source) = find_cli_binary() else {
+        return Ok(false);
+    };
+    sync_cli_file(&source, &target)
+}
+
+/// Testable core of [`sync_installed_cli_if_present`]. Returns `true` when the
+/// target was replaced.
+fn sync_cli_file(source: &Path, target: &Path) -> Result<bool, String> {
+    if !target.is_file() || !source.is_file() {
+        return Ok(false);
+    }
+    if paths_refer_to_same_file(source, target) {
+        return Ok(false);
+    }
+    if files_have_same_contents(source, target)? {
+        return Ok(false);
+    }
+    replace_file_atomically(source, target)?;
+    Ok(true)
+}
+
+fn paths_refer_to_same_file(left: &Path, right: &Path) -> bool {
+    let (Ok(left), Ok(right)) = (left.canonicalize(), right.canonicalize()) else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+/// Compares the length first so the common "same build" case does not read
+/// both binaries.
+fn files_have_same_contents(source: &Path, target: &Path) -> Result<bool, String> {
+    let source_len = std::fs::metadata(source)
+        .map_err(|error| format!("Failed to read {}: {error}", source.display()))?
+        .len();
+    let target_len = std::fs::metadata(target)
+        .map_err(|error| format!("Failed to read {}: {error}", target.display()))?
+        .len();
+    if source_len != target_len {
+        return Ok(false);
+    }
+    let source_bytes = std::fs::read(source)
+        .map_err(|error| format!("Failed to read {}: {error}", source.display()))?;
+    let target_bytes = std::fs::read(target)
+        .map_err(|error| format!("Failed to read {}: {error}", target.display()))?;
+    Ok(source_bytes == target_bytes)
+}
+
+/// Same-directory temp file + rename, so a failed copy never leaves a
+/// half-written CLI behind. Unix installs must stay executable (0o755).
+fn replace_file_atomically(source: &Path, target: &Path) -> Result<(), String> {
+    let directory = target
+        .parent()
+        .ok_or_else(|| format!("Cannot resolve the directory of {}", target.display()))?;
+    let file_name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| binary_name().to_string());
+    let temp = directory.join(format!(".{file_name}.sync-{}", std::process::id()));
+
+    let replaced: std::io::Result<()> = (|| {
+        std::fs::copy(source, &temp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::rename(&temp, target)?;
+        Ok(())
+    })();
+    if let Err(error) = replaced {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!(
+            "Failed to update {} from {}: {error}",
+            target.display(),
+            source.display()
+        ));
+    }
+    Ok(())
+}
+
 fn uninstall_cli() -> Result<(), String> {
     let path = install_path()?;
     if path.exists() {
@@ -453,6 +554,67 @@ mod tests {
         // On a clean checkout `cli/target` may not exist; the function must
         // simply return None rather than erroring.
         let _ = find_cli_binary();
+    }
+
+    fn temp_cli_pair(
+        source: &[u8],
+        target: Option<&[u8]>,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let source_path = directory.path().join("aitoolbox-source");
+        let target_path = directory.path().join("aitoolbox");
+        std::fs::write(&source_path, source).unwrap();
+        if let Some(contents) = target {
+            std::fs::write(&target_path, contents).unwrap();
+        }
+        (directory, source_path, target_path)
+    }
+
+    #[test]
+    fn sync_cli_file_does_nothing_when_the_cli_is_not_installed() {
+        let (_directory, source, target) = temp_cli_pair(b"new-build", None);
+        assert!(!sync_cli_file(&source, &target).unwrap());
+        assert!(
+            !target.exists(),
+            "the sync must never create the install target"
+        );
+    }
+
+    #[test]
+    fn sync_cli_file_skips_identical_contents() {
+        let (_directory, source, target) = temp_cli_pair(b"same-build", Some(b"same-build"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        assert!(!sync_cli_file(&source, &target).unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"same-build");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // A replacement would have rewritten the mode to 0o755.
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn sync_cli_file_replaces_a_stale_target() {
+        let (_directory, source, target) = temp_cli_pair(b"new-build", Some(b"old-build"));
+        assert!(sync_cli_file(&source, &target).unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new-build");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
     }
 
     #[test]
