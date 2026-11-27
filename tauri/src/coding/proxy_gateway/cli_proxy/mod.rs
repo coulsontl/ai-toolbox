@@ -642,9 +642,15 @@ pub async fn engage_single_cli(
         return Err("Start the proxy gateway before enabling Gateway proxy".to_string());
     }
     let primary_provider = load_proxyable_provider(db, cli_key, &primary_provider_id).await?;
+    let settings = settings::load_settings_from_sqlite_state(db)?;
+    crate::coding::proxy_gateway::self_loop::ensure_takeover_provider_not_gateway_self_loop(
+        &primary_provider.base_url,
+        primary_provider.plugin_provider.is_some(),
+        gateway_status,
+        &settings,
+    )?;
 
     let mut targets = resolve_targets(db, cli_key).await?;
-    let settings = settings::load_settings_from_sqlite_state(db)?;
     let effective_origin =
         resolve_effective_base_origin(base_origin, targets.is_wsl_direct, &settings.wsl_host);
     let mut manifest = prepare_manifest(
@@ -720,6 +726,7 @@ pub async fn engage_aggregate_cli(
 
     // Every selected site must be a proxyable provider right now, otherwise the
     // manifest would name candidates that the runtime rejects on every request.
+    let gateway_settings = settings::load_settings_from_sqlite_state(db)?;
     let available = load_candidate_providers(db, cli_key).await?;
     let mut ordered_ids = Vec::with_capacity(provider_ids.len());
     let mut ordered_providers = Vec::with_capacity(provider_ids.len());
@@ -736,6 +743,12 @@ pub async fn engage_aggregate_cli(
                 "Site '{id}' is not available for Gateway proxy. {NO_PROXYABLE_PROVIDER_MESSAGE}"
             ));
         };
+        crate::coding::proxy_gateway::self_loop::ensure_takeover_provider_not_gateway_self_loop(
+            &provider.base_url,
+            provider.plugin_provider.is_some(),
+            gateway_status,
+            &gateway_settings,
+        )?;
         ordered_ids.push(provider.id.clone());
         ordered_providers.push(provider.clone());
     }
@@ -1188,6 +1201,13 @@ pub async fn engage_failover_cli(
     if manifest.mode == GatewayProxyMode::Single {
         let primary_provider =
             load_proxyable_provider(db, cli_key, &manifest.primary_provider_id).await?;
+        let gateway_settings = settings::load_settings_from_sqlite_state(db)?;
+        crate::coding::proxy_gateway::self_loop::ensure_takeover_provider_not_gateway_self_loop(
+            &primary_provider.base_url,
+            primary_provider.plugin_provider.is_some(),
+            gateway_status,
+            &gateway_settings,
+        )?;
         let mut targets = resolve_targets(db, cli_key).await?;
         let codex_auth_backup_content =
             codex_auth_backup_content_for_cli(paths, cli_key, &manifest)?;

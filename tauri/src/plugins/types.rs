@@ -284,6 +284,8 @@ pub struct PluginAccountMetaRecord {
     pub sort_index: i64,
     #[serde(default = "empty_json_object")]
     pub quota: Value,
+    #[serde(default)]
+    pub quota_updated_at: Option<String>,
     #[serde(default = "empty_json_object")]
     pub checkin: Value,
     /// Whether the background pass checks this account in once a day.
@@ -320,6 +322,7 @@ impl Default for PluginAccountMetaRecord {
             enabled: true,
             sort_index: 0,
             quota: empty_json_object(),
+            quota_updated_at: None,
             checkin: empty_json_object(),
             auto_checkin: false,
             last_checkin_day: None,

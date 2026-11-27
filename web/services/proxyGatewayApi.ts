@@ -558,6 +558,10 @@ export interface GatewayRequestLogDetail extends GatewayRequestLogSummary {
   request_headers: Record<string, string> | null;
   request_body: string | null;
   upstream_request_body: string | null;
+  /** Redacted headers actually sent upstream; absent on older logs and session rows. */
+  upstream_request_headers?: Record<string, string> | null;
+  /** Final request body after provider-level plugin rewrites; absent when no plugin ran. */
+  plugin_request_body?: string | null;
   response_headers: Record<string, string> | null;
   upstream_response_body: string | null;
   response_body: string | null;

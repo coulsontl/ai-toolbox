@@ -64,19 +64,77 @@ pub struct RequestInfo {
     pub caller: Option<JsonValue>,
 }
 
+/// Where a middleware actually changed the traffic of one request.
+///
+/// `onEvent` rewrites (replace or drop) belong to [`Self::Response`]: they
+/// are part of the same reply the client receives.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum MiddlewareRewriteStage {
+    Request,
+    Provider,
+    Response,
+}
+
 /// `ctx.state` carried across every hook of one request, per middleware.
 ///
 /// Magpie gives each module a state object that survives `onRequest` →
 /// `onProvider` → `onEvent` → `onResponse`; the hooks run in short-lived
 /// runtimes here, so the object is serialized between calls.
+///
+/// It also records which middleware actually rewrote the payload at each
+/// stage, in call order and without duplicates, so a request can report
+/// `request_rewrites` / `provider_rewrites` / `response_rewrites`.
 #[derive(Clone, Debug, Default)]
 pub struct MiddlewareState {
     values: Arc<StdMutex<BTreeMap<String, JsonValue>>>,
+    rewrites: Arc<StdMutex<BTreeMap<MiddlewareRewriteStage, Vec<String>>>>,
 }
 
 impl MiddlewareState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Display names of the middleware that changed the payload at `stage`,
+    /// in the order they ran.
+    pub fn rewrites_for(&self, stage: MiddlewareRewriteStage) -> Vec<String> {
+        self.rewrites
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&stage)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn request_rewrites(&self) -> Vec<String> {
+        self.rewrites_for(MiddlewareRewriteStage::Request)
+    }
+
+    pub fn provider_rewrites(&self) -> Vec<String> {
+        self.rewrites_for(MiddlewareRewriteStage::Provider)
+    }
+
+    pub fn response_rewrites(&self) -> Vec<String> {
+        self.rewrites_for(MiddlewareRewriteStage::Response)
+    }
+
+    fn record_rewrite(&self, stage: MiddlewareRewriteStage, module: &LoadedMiddleware) {
+        self.record_rewrite_label(stage, &rewrite_label(module));
+    }
+
+    fn record_rewrite_label(&self, stage: MiddlewareRewriteStage, label: &str) {
+        let label = label.trim();
+        if label.is_empty() {
+            return;
+        }
+        let mut rewrites = self
+            .rewrites
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entries = rewrites.entry(stage).or_default();
+        if !entries.iter().any(|entry| entry == label) {
+            entries.push(label.to_string());
+        }
     }
 
     fn plugin_state(&self, plugin_id: &str) -> JsonValue {
@@ -494,6 +552,9 @@ impl MiddlewareRuntime {
                         }
                         JsHookValue::Object(mut next) => {
                             protect_stream_field(&module, &original_stream, &mut next);
+                            if next != value {
+                                state.record_rewrite(MiddlewareRewriteStage::Request, &module);
+                            }
                             value = next;
                         }
                     }
@@ -545,7 +606,12 @@ impl MiddlewareRuntime {
                         state.set_plugin_state(&module.plugin_id, next_state);
                     }
                     match output.value {
-                        JsHookValue::Object(next) => value = next,
+                        JsHookValue::Object(next) => {
+                            if next != value {
+                                state.record_rewrite(MiddlewareRewriteStage::Provider, &module);
+                            }
+                            value = next;
+                        }
                         JsHookValue::Undefined => {}
                         JsHookValue::Null => module
                             .stats
@@ -591,7 +657,12 @@ impl MiddlewareRuntime {
                         state.set_plugin_state(&module.plugin_id, next_state);
                     }
                     match output.value {
-                        JsHookValue::Object(next) => value = next,
+                        JsHookValue::Object(next) => {
+                            if next != value {
+                                state.record_rewrite(MiddlewareRewriteStage::Response, &module);
+                            }
+                            value = next;
+                        }
                         JsHookValue::Undefined => {}
                         JsHookValue::Null => module.stats.record_failure(
                             "onResponse returned null; a whole reply can't be dropped",
@@ -639,10 +710,16 @@ impl MiddlewareRuntime {
                     }
                     match output.value {
                         JsHookValue::Undefined => {}
-                        JsHookValue::Null => return EventOutcome::Drop,
+                        JsHookValue::Null => {
+                            state.record_rewrite(MiddlewareRewriteStage::Response, &module);
+                            return EventOutcome::Drop;
+                        }
                         JsHookValue::Object(next) => {
-                            value = next;
-                            changed = true;
+                            if next != value {
+                                state.record_rewrite(MiddlewareRewriteStage::Response, &module);
+                                value = next;
+                                changed = true;
+                            }
                         }
                     }
                 }
@@ -683,15 +760,20 @@ impl MiddlewareRuntime {
             let worker_module = module.clone();
             let worker_state = state.clone();
             let worker_info = info_json.clone();
+            let label = rewrite_label(&module);
             tokio::task::spawn_blocking(move || {
                 run_event_session(worker_module, worker_info, worker_state, rx);
             });
             workers.push(EventWorker {
                 tx,
                 events: module.hooks.events.clone(),
+                label,
             });
         }
-        Some(EventSession { workers })
+        Some(EventSession {
+            workers,
+            state: state.clone(),
+        })
     }
 
     /// Queue one usage row. Never waits for a hook; a full queue drops the
@@ -762,6 +844,17 @@ fn display_name(record: &InstalledPluginRecord) -> String {
         record.package_name.clone()
     } else {
         record.display_name.clone()
+    }
+}
+
+/// What a rewrite is reported under: the plugin's display name, falling back
+/// to its package spec when the display name is empty.
+fn rewrite_label(module: &LoadedMiddleware) -> String {
+    let name = module.name.trim();
+    if name.is_empty() {
+        module.spec.trim().to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -1412,6 +1505,8 @@ struct EventWorker {
     tx: mpsc::Sender<EventJob>,
     /// `None` = every event; `Some([])` = none.
     events: Option<Vec<String>>,
+    /// Display name recorded when this worker rewrites or drops a frame.
+    label: String,
 }
 
 impl EventWorker {
@@ -1439,6 +1534,9 @@ impl EventWorker {
 /// 1000 times; now it compiles once and re-arms the deadline per frame.
 pub struct EventSession {
     workers: Vec<EventWorker>,
+    /// Records every worker that replaced or dropped a frame; the same
+    /// object the request's other hooks report their rewrites through.
+    state: MiddlewareState,
 }
 
 impl EventSession {
@@ -1461,8 +1559,14 @@ impl EventSession {
             };
             match worker.call(text).await {
                 Ok(None) => {}
-                Ok(Some(JsonValue::Null)) => return EventOutcome::Drop,
+                Ok(Some(JsonValue::Null)) => {
+                    self.state
+                        .record_rewrite_label(MiddlewareRewriteStage::Response, &worker.label);
+                    return EventOutcome::Drop;
+                }
                 Ok(Some(next)) => {
+                    self.state
+                        .record_rewrite_label(MiddlewareRewriteStage::Response, &worker.label);
                     value = next;
                     changed = true;
                 }
@@ -1890,6 +1994,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn on_event_only_records_a_rewrite_when_the_object_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = r#"
+            export function onEvent(data) {
+                if (data.touch) data.touched = true
+                return data
+            }
+        "#;
+        let entry = write_plugin(root.path(), "unchanged-events", source);
+        let (_db, runtime) = runtime_with(root.path().join("data").as_path(), &entry, source);
+        runtime.reload().await;
+
+        // Returning the object unchanged is not a rewrite.
+        let unchanged_state = MiddlewareState::new();
+        assert_eq!(
+            runtime
+                .run_on_event(
+                    "content_block_delta",
+                    br#"{"a":1}"#,
+                    &info(),
+                    &unchanged_state,
+                )
+                .await,
+            EventOutcome::Keep
+        );
+        assert!(unchanged_state.response_rewrites().is_empty());
+
+        // Changing a field still records exactly one response rewrite.
+        let changed_state = MiddlewareState::new();
+        assert!(matches!(
+            runtime
+                .run_on_event(
+                    "content_block_delta",
+                    br#"{"touch":true}"#,
+                    &info(),
+                    &changed_state,
+                )
+                .await,
+            EventOutcome::Replace(_)
+        ));
+        assert_eq!(changed_state.response_rewrites().len(), 1);
+    }
+
+    #[tokio::test]
     async fn ctx_state_survives_between_hooks_of_one_request() {
         let root = tempfile::tempdir().unwrap();
         let source = r#"
@@ -1938,6 +2086,113 @@ mod tests {
             .await;
         let value: JsonValue = serde_json::from_slice(&body).unwrap();
         assert!(value.get("n").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_middleware_that_changes_nothing_records_no_rewrites() {
+        let root = tempfile::tempdir().unwrap();
+        let source = r#"
+            export function onRequest(body) { return undefined }
+            export function onProvider(body) { return undefined }
+            export function onEvent(data) { return undefined }
+            export function onResponse(body) { return undefined }
+        "#;
+        let entry = write_plugin(root.path(), "passive", source);
+        let (_db, runtime) = runtime_with(root.path().join("data").as_path(), &entry, source);
+        runtime.reload().await;
+
+        let state = MiddlewareState::new();
+        runtime
+            .run_on_request(br#"{"model":"m"}"#, &info(), &state)
+            .await;
+        runtime
+            .run_on_provider(
+                br#"{"model":"m"}"#,
+                &info(),
+                &ProviderTarget::default(),
+                &state,
+            )
+            .await;
+        runtime
+            .run_on_response(br#"{"ok":true}"#, &info(), 200, &state)
+            .await;
+        assert_eq!(
+            runtime
+                .run_on_event("message", br#"{"a":1}"#, &info(), &state)
+                .await,
+            EventOutcome::Keep
+        );
+
+        assert!(state.request_rewrites().is_empty());
+        assert!(state.provider_rewrites().is_empty());
+        assert!(state.response_rewrites().is_empty());
+    }
+
+    #[tokio::test]
+    async fn each_stage_records_its_rewriting_middleware_once() {
+        let root = tempfile::tempdir().unwrap();
+        let source = r#"
+            export function onRequest(body) { body.stage = "request"; return body }
+            export function onProvider(body) { body.stage = "provider"; return body }
+            export function onEvent(data) {
+                if (data.drop) return null
+                data.stage = "event"
+                return data
+            }
+            export function onResponse(body) { body.stage = "response"; return body }
+        "#;
+        let entry = write_plugin(root.path(), "writer", source);
+        let (_db, runtime) = runtime_with(root.path().join("data").as_path(), &entry, source);
+        runtime.reload().await;
+        let expected = vec!["Demo".to_string()];
+
+        let state = MiddlewareState::new();
+        runtime
+            .run_on_request(br#"{"model":"m"}"#, &info(), &state)
+            .await;
+        assert_eq!(state.request_rewrites(), expected);
+        assert!(state.provider_rewrites().is_empty());
+
+        runtime
+            .run_on_provider(
+                br#"{"model":"m"}"#,
+                &info(),
+                &ProviderTarget::default(),
+                &state,
+            )
+            .await;
+        assert_eq!(state.provider_rewrites(), expected);
+
+        // onEvent (both replace and drop) belongs to the response stage, and
+        // repeated frames must not append the same plugin twice.
+        let session = runtime
+            .open_event_session(&info(), &state)
+            .await
+            .expect("event session");
+        for _ in 0..2 {
+            assert!(matches!(
+                session.run_frame("message", br#"{"a":1}"#).await,
+                EventOutcome::Replace(_)
+            ));
+        }
+        assert_eq!(
+            session.run_frame("message", br#"{"drop":true}"#).await,
+            EventOutcome::Drop
+        );
+        runtime
+            .run_on_response(br#"{"ok":true}"#, &info(), 200, &state)
+            .await;
+        assert_eq!(state.response_rewrites(), expected);
+
+        // `run_on_event` (no session) records the same stage as well.
+        let direct = MiddlewareState::new();
+        assert!(matches!(
+            runtime
+                .run_on_event("message", br#"{"a":1}"#, &info(), &direct)
+                .await,
+            EventOutcome::Replace(_)
+        ));
+        assert_eq!(direct.response_rewrites(), expected);
     }
 
     #[tokio::test]

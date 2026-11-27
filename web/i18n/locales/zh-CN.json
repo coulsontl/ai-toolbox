@@ -230,8 +230,10 @@
         "notStored": "未保存该明细。可在网关设置中开启对应记录项。",
         "requestHeaders": "Request Headers",
         "responseHeaders": "Response Headers",
+        "upstreamRequestHeaders": "发往上游请求头（已脱敏）",
         "receivedBody": "收到的请求体（原始）",
-        "upstreamBody": "实际发出的请求体（整流/转换后）",
+        "upstreamBody": "实际发出的请求体（整流/转换/中间件改写后）",
+        "pluginBody": "插件最终发出的请求体",
         "lines": "{{count}} 行",
         "expand": "展开",
         "collapse": "收起",
@@ -311,6 +313,12 @@
           "declared": "已声明",
           "forwarded": "已转发",
           "used": "已调用"
+        },
+        "rewriteKinds": {
+          "pluginMiddlewareRequest": "插件改写请求",
+          "pluginMiddlewareProvider": "插件改写上游请求",
+          "pluginMiddlewareResponse": "插件改写响应",
+          "pluginProviderFetch": "渠道插件二次改写"
         },
         "compaction": {
           "native": "原生压缩",
@@ -6576,6 +6584,7 @@
       "usageEmpty": "尚未读取额度",
       "usageLoadFailed": "额度读取失败：{{error}}",
       "usageError": "额度提示：{{error}}",
+      "usageRefreshFailedCached": "刷新失败，当前显示为缓存数据",
       "usageUntil": "有效期至 {{time}}",
       "signInExpired": "登录凭据已过期，请重新登录",
       "walletBalance": "余额 {{balance}}",

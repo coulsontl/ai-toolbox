@@ -36,8 +36,20 @@ export const PLUGIN_TABS: PluginsTabConfig[] = [
 
 export const DEFAULT_PLUGINS_PATH = PLUGIN_TABS[0].path;
 
+let lastPluginsPath = DEFAULT_PLUGINS_PATH;
+
 export const isPluginsPath = (pathname: string) =>
   pathname === '/plugins' || pathname.startsWith('/plugins/');
+
+/** Remember the last concrete `/plugins/...` sub-route visited in this session. */
+export const rememberLastPluginsPath = (pathWithSearch: string) => {
+  const pathname = pathWithSearch.split(/[?#]/, 1)[0] ?? '';
+  if (pathname !== '/plugins' && pathname.startsWith('/plugins/')) {
+    lastPluginsPath = pathWithSearch;
+  }
+};
+
+export const getLastPluginsPath = () => lastPluginsPath;
 
 export const resolvePluginsTabFromPath = (pathname: string): PluginsPageTab => {
   const matchedTab = PLUGIN_TABS.find(

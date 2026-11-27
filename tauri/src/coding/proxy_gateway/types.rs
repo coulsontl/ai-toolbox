@@ -1554,6 +1554,15 @@ pub struct GatewayRequestLogDetail {
     pub request_body: Option<String>,
     #[serde(default)]
     pub upstream_request_body: Option<String>,
+    /// Headers the gateway (or a plugin provider's host) actually sent
+    /// upstream. Detail-only: already redacted before it is written to JSONL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_request_headers: Option<BTreeMap<String, String>>,
+    /// Body a plugin provider really sent when it differs from the gateway's
+    /// own upstream body (for example an SDK-added field). Detail-only and
+    /// governed by `store_request_body` like any other request body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_request_body: Option<String>,
     pub response_headers: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub upstream_response_body: Option<String>,

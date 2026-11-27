@@ -859,6 +859,7 @@ const MAX_DISPLAY_BODY_BYTES: usize = 256 * 1024;
 fn truncate_bodies_for_display(mut detail: GatewayRequestLogDetail) -> GatewayRequestLogDetail {
     detail.request_body = truncate_body_text(detail.request_body.take());
     detail.upstream_request_body = truncate_body_text(detail.upstream_request_body.take());
+    detail.plugin_request_body = truncate_body_text(detail.plugin_request_body.take());
     detail.response_body = truncate_body_text(detail.response_body.take());
     detail.upstream_response_body = truncate_body_text(detail.upstream_response_body.take());
     detail
@@ -917,8 +918,10 @@ fn build_request_log_detail_export(detail: &GatewayRequestLogDetail) -> Value {
         },
         "request": {
             "headers": redact_header_map(detail.request_headers.as_ref()),
+            "upstream_headers": redact_header_map(detail.upstream_request_headers.as_ref()),
             "body_before_conversion": redact_body(detail.request_body.as_deref()),
-            "body_after_conversion": redact_body(detail.upstream_request_body.as_deref())
+            "body_after_conversion": redact_body(detail.upstream_request_body.as_deref()),
+            "plugin_body": redact_body(detail.plugin_request_body.as_deref())
         },
         "response": {
             "headers": redact_header_map(detail.response_headers.as_ref()),
@@ -1335,6 +1338,8 @@ mod tests {
             request_headers: None,
             request_body: None,
             upstream_request_body: None,
+            upstream_request_headers: None,
+            plugin_request_body: None,
             response_headers: None,
             upstream_response_body: None,
             response_body: None,

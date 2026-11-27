@@ -832,7 +832,8 @@ const ClaudeDesktopPage: React.FC = () => {
       await refreshTrayMenu();
     } catch (error) {
       console.error('Failed to save Claude Desktop provider:', error);
-      message.error(t('common.error'));
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
       throw error;
     }
   };

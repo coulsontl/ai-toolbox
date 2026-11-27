@@ -647,6 +647,14 @@ pub async fn create_claude_provider_inner<R: tauri::Runtime>(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&db, &provider.settings_config, None).await?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        state,
+        Some(app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Claude,
+        &provider.category,
+        &normalized_settings_config,
+        provider.meta.as_ref(),
+    )?;
     let extra_settings_config = normalize_extra_settings_config_for_storage(
         &provider.category,
         provider.extra_settings_config.as_deref(),
@@ -703,6 +711,14 @@ pub async fn update_claude_provider(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&db, &provider.settings_config, None).await?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Claude,
+        &provider.category,
+        &normalized_settings_config,
+        provider.meta.as_ref(),
+    )?;
     let extra_settings_config = normalize_extra_settings_config_for_storage(
         &provider.category,
         Some(&provider.extra_settings_config),

@@ -215,6 +215,14 @@ pub async fn create_kimi_provider<R: tauri::Runtime>(
     provider: KimiProviderInput,
 ) -> Result<KimiProvider, String> {
     validate_provider_settings(&provider.settings_config, &provider.category)?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Kimi,
+        &provider.category,
+        &provider.settings_config,
+        provider.meta.as_ref(),
+    )?;
     let db = state.db();
     let now = Local::now().to_rfc3339();
     let sort_index = match provider.sort_index {
@@ -305,6 +313,14 @@ pub async fn update_kimi_provider(
     provider: KimiProvider,
 ) -> Result<KimiProvider, String> {
     validate_provider_settings(&provider.settings_config, &provider.category)?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Kimi,
+        &provider.category,
+        &provider.settings_config,
+        provider.meta.as_ref(),
+    )?;
     if provider.id == KIMI_LOCAL_PROVIDER_ID {
         return Err("Local Kimi provider must be saved before it can be updated".to_string());
     }

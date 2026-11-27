@@ -5134,6 +5134,14 @@ pub async fn create_codex_provider_inner<R: tauri::Runtime>(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&db, &provider.settings_config, None).await?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        state,
+        Some(app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Codex,
+        &provider.category,
+        &normalized_settings_config,
+        provider.meta.as_ref(),
+    )?;
 
     let now = Local::now().to_rfc3339();
     let content = CodexProviderContent {
@@ -5188,6 +5196,14 @@ pub async fn update_codex_provider(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&db, &provider.settings_config, None).await?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Codex,
+        &provider.category,
+        &normalized_settings_config,
+        provider.meta.as_ref(),
+    )?;
 
     // Use the id from frontend (pure string id without table prefix)
     let id = provider.id.clone();

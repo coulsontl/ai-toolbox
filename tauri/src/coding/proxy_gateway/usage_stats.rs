@@ -3115,6 +3115,8 @@ pub fn request_log_detail_from_summary(
                     request_headers: None,
                     request_body: None,
                     upstream_request_body: None,
+                    upstream_request_headers: None,
+                    plugin_request_body: None,
                     response_headers: None,
                     upstream_response_body: None,
                     response_body: None,
@@ -3427,6 +3429,8 @@ mod tests {
             upstream_request_body: Some(
                 "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}".to_string(),
             ),
+            upstream_request_headers: None,
+            plugin_request_body: None,
             response_headers: Some(BTreeMap::from([(
                 "content-type".to_string(),
                 "application/json".to_string(),

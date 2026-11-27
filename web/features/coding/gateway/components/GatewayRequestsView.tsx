@@ -89,6 +89,18 @@ const AUX_TASK_LABEL_KEYS: Record<GatewayAuxTaskKind, string> = {
   other: 'gateway.page.requests.auxTask.other',
 };
 
+/**
+ * Plugin rewrites reach the detail as stable machine kinds. Only these four
+ * have localized labels; every other kind keeps rendering raw, because the
+ * detail view is used for diagnosis and unknown values must stay visible.
+ */
+const REWRITE_KIND_LABEL_KEYS: Record<string, string> = {
+  plugin_middleware_request: 'gateway.page.requests.rewriteKinds.pluginMiddlewareRequest',
+  plugin_middleware_provider: 'gateway.page.requests.rewriteKinds.pluginMiddlewareProvider',
+  plugin_middleware_response: 'gateway.page.requests.rewriteKinds.pluginMiddlewareResponse',
+  plugin_provider_fetch: 'gateway.page.requests.rewriteKinds.pluginProviderFetch',
+};
+
 const EXPORT_NOTICE_DURATION_MS = 3000;
 /** A rebuild is minutes long; one second keeps the phase label responsive. */
 const REBUILD_POLL_INTERVAL_MS = 1000;
@@ -970,12 +982,15 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             <>
               <span>{t('gateway.page.requests.observations.rewrites')}</span>
               <div className={styles.detailStack}>
-                {detail.rewrites!.map((rewrite, index) => (
-                  <strong key={`${rewrite.kind}-${index}`} title={rewrite.detail ?? undefined}>
-                    {rewrite.kind}
-                    {rewrite.detail ? <span className={styles.detailSubtitle}> · {rewrite.detail}</span> : null}
-                  </strong>
-                ))}
+                {detail.rewrites!.map((rewrite, index) => {
+                  const rewriteLabelKey = REWRITE_KIND_LABEL_KEYS[rewrite.kind];
+                  return (
+                    <strong key={`${rewrite.kind}-${index}`} title={rewrite.detail ?? undefined}>
+                      {rewriteLabelKey ? t(rewriteLabelKey) : rewrite.kind}
+                      {rewrite.detail ? <span className={styles.detailSubtitle}> · {rewrite.detail}</span> : null}
+                    </strong>
+                  );
+                })}
               </div>
             </>
           )}
@@ -985,20 +1000,37 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
 
     if (activeDetailTab === 'body') {
       const showUpstreamBody = shouldShowBodyComparison(detail.upstream_request_body, detail.request_body);
-      if (showUpstreamBody) {
-        return (
-          <div className={styles.detailStack}>
-            <span className={styles.detailSubtitle}>{t('gateway.page.requests.receivedBody')}</span>
-            <CollapsiblePre content={detail.request_body} fallback={detailEmptyMessage} />
-            <span className={styles.detailSubtitle}>{t('gateway.page.requests.upstreamBody')}</span>
-            <CollapsiblePre content={detail.upstream_request_body} fallback={detailEmptyMessage} />
-          </div>
-        );
+      // The provider plugin receives whatever stage ran last, so its output is
+      // only worth a segment when it differs from that effective body.
+      const effectiveUpstreamBody = detail.upstream_request_body ?? detail.request_body;
+      const showPluginBody = detail.plugin_request_body != null
+        && detail.plugin_request_body !== effectiveUpstreamBody;
+      if (!showUpstreamBody && !showPluginBody) {
+        return <CollapsiblePre content={detail.request_body} fallback={detailEmptyMessage} />;
       }
-      return <CollapsiblePre content={detail.request_body} fallback={detailEmptyMessage} />;
+      return (
+        <div className={styles.detailStack}>
+          <span className={styles.detailSubtitle}>{t('gateway.page.requests.receivedBody')}</span>
+          <CollapsiblePre content={detail.request_body} fallback={detailEmptyMessage} />
+          {showUpstreamBody && (
+            <>
+              <span className={styles.detailSubtitle}>{t('gateway.page.requests.upstreamBody')}</span>
+              <CollapsiblePre content={detail.upstream_request_body} fallback={detailEmptyMessage} />
+            </>
+          )}
+          {showPluginBody && (
+            <>
+              <span className={styles.detailSubtitle}>{t('gateway.page.requests.pluginBody')}</span>
+              <CollapsiblePre content={detail.plugin_request_body} fallback={detailEmptyMessage} />
+            </>
+          )}
+        </div>
+      );
     }
 
     if (activeDetailTab === 'headers') {
+      const hasUpstreamRequestHeaders = detail.upstream_request_headers != null
+        && Object.keys(detail.upstream_request_headers).length > 0;
       return (
         <div className={styles.detailStack}>
           <span className={styles.detailSubtitle}>{t(detail.transport === 'websocket' ? 'gateway.page.requests.websocket.requestHeaders' : 'gateway.page.requests.requestHeaders')}</span>
@@ -1006,6 +1038,15 @@ const GatewayRequestsView: React.FC<GatewayRequestsViewProps> = ({ refreshKey = 
             content={stringifyDetailValue(detail.request_headers) || null}
             fallback={detailEmptyMessage}
           />
+          {hasUpstreamRequestHeaders && (
+            <>
+              <span className={styles.detailSubtitle}>{t('gateway.page.requests.upstreamRequestHeaders')}</span>
+              <CollapsiblePre
+                content={stringifyDetailValue(detail.upstream_request_headers) || null}
+                fallback={detailEmptyMessage}
+              />
+            </>
+          )}
           <span className={styles.detailSubtitle}>{t(detail.transport === 'websocket' ? 'gateway.page.requests.websocket.responseHeaders' : 'gateway.page.requests.responseHeaders')}</span>
           <CollapsiblePre
             content={stringifyDetailValue(detail.response_headers) || null}

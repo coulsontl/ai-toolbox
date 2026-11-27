@@ -660,6 +660,40 @@ fn provider_from_record(
     record: Value,
     settings: Option<&ProxyGatewaySettings>,
 ) -> Result<Option<UpstreamProvider>, String> {
+    let mut provider = provider_from_record_inner(cli_key, record, settings)?;
+    if let Some(ref mut upstream) = provider {
+        if upstream.plugin_provider.is_none() {
+            let gateway_addrs = super::super::self_loop::gateway_addrs_from_status_and_settings(
+                None, settings,
+            );
+            if let Some(provider_id) =
+                super::super::self_loop::extract_local_gateway_plugin_provider_id(
+                    &upstream.base_url,
+                    &gateway_addrs,
+                )
+            {
+                upstream.plugin_provider =
+                    Some(crate::plugins::gateway_bridge::PluginProviderRef {
+                        plugin_spec: String::new(),
+                        provider_id,
+                        account_key: None,
+                        account_strategy:
+                            crate::plugins::gateway_bridge::PluginAccountStrategy::AutoRotate,
+                    });
+                // The plugin endpoint is a base URL again: the `##` suffix that
+                // marked it as a full URL must not suppress path appending.
+                upstream.is_full_url = false;
+            }
+        }
+    }
+    Ok(provider)
+}
+
+fn provider_from_record_inner(
+    cli_key: GatewayCliKey,
+    record: Value,
+    settings: Option<&ProxyGatewaySettings>,
+) -> Result<Option<UpstreamProvider>, String> {
     let meta = provider_meta_from_record(cli_key, &record, settings);
     if let Some(plugin_provider) = meta.plugin_provider.clone() {
         return plugin_provider_from_record(cli_key, &record, meta, plugin_provider);
@@ -2123,7 +2157,7 @@ pub(super) fn json_object_string(
         .map(str::to_string)
 }
 
-pub(super) fn codex_base_url_from_config(config_toml: &str) -> Option<String> {
+pub(crate) fn codex_base_url_from_config(config_toml: &str) -> Option<String> {
     super::super::provider_protocol::codex_base_url_from_config(config_toml)
 }
 
@@ -3149,6 +3183,37 @@ base_url = "https://api.openai.com/v1"
             "https://openrouter.example.com/v1/chat/completions"
         );
         assert!(result.is_full_url);
+    }
+
+    #[test]
+    fn local_plugin_route_with_raw_url_suffix_clears_is_full_url() {
+        let settings = ProxyGatewaySettings {
+            listen_host: "127.0.0.1".to_string(),
+            listen_port: 37123,
+            ..ProxyGatewaySettings::default()
+        };
+        let result = provider_from_record(
+            GatewayCliKey::Claude,
+            serde_json::json!({
+                "id": "plugin-local",
+                "name": "Local plugin",
+                "category": "custom",
+                "settings_config": serde_json::json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "http://127.0.0.1:37123/plugin/demo##",
+                        "ANTHROPIC_AUTH_TOKEN": "placeholder"
+                    }
+                }).to_string(),
+                "is_disabled": false
+            }),
+            Some(&settings),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(result.plugin_provider.is_some());
+        assert!(!result.is_full_url);
+        assert_eq!(result.base_url, "http://127.0.0.1:37123/plugin/demo");
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub const MAX_FRAME: usize = 64 * 1024;
 pub const HEAD_MAX: usize = 64 * 1024;
 pub const HEAD_ENTRIES: usize = 256;
 const HEAD_ENTRY_COST: usize = 4;
+/// A captured outbound request body is capped at this many decoded bytes; the
+/// host's own capture cap matches it.
+pub const WIRE_BODY_MAX: usize = 512 * 1024;
 
 pub const STREAM_WINDOW: usize = 512 * 1024;
 pub const FRAME_OVERHEAD: usize = 2048;
@@ -33,6 +36,20 @@ pub const STREAM_BUDGET: usize = 64 * 1024 * 1024;
 pub struct FetchHead {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+}
+
+/// The outbound HTTP request a provider plugin really sent, as the host
+/// captured it on the plugin's behalf (`captureRequest`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturedWireRequest {
+    pub url: String,
+    pub method: String,
+    pub headers: Vec<(String, String)>,
+    /// Decoded body bytes, already cut at `maxBodyBytes`.
+    pub body: Option<Vec<u8>>,
+    /// Original body length before truncation.
+    pub body_bytes: u64,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +92,12 @@ pub enum HostMessage {
     Head {
         id: u64,
         head: FetchHead,
+    },
+    /// A captured outbound request for a fetch that asked for one. It always
+    /// arrives before the fetch's `Head`.
+    WireRequest {
+        id: u64,
+        request: CapturedWireRequest,
     },
     Chunk {
         id: u64,
@@ -135,6 +158,10 @@ pub fn parse_host_line(line: &str) -> HostMessage {
         return match event {
             "head" => match parse_head(object) {
                 Ok(head) => HostMessage::Head { id, head },
+                Err(error) => HostMessage::Invalid(error),
+            },
+            "wire_request" => match parse_wire_request(object) {
+                Ok(request) => HostMessage::WireRequest { id, request },
                 Err(error) => HostMessage::Invalid(error),
             },
             "chunk" => match object.get("data").and_then(Value::as_str) {
@@ -201,6 +228,83 @@ fn parse_head(object: &serde_json::Map<String, Value>) -> Result<FetchHead, Stri
         ));
     }
     Ok(FetchHead { status, headers })
+}
+
+fn parse_wire_request(
+    object: &serde_json::Map<String, Value>,
+) -> Result<CapturedWireRequest, String> {
+    let url = object
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| "wire_request without a url".to_string())?
+        .to_string();
+
+    let method = object
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|method| !method.is_empty())
+        .map(str::to_ascii_uppercase)
+        .unwrap_or_else(|| "GET".to_string());
+
+    let mut headers = Vec::new();
+    if let Some(map) = object.get("headers").and_then(Value::as_object) {
+        if map.len() > HEAD_ENTRIES {
+            return Err(format!(
+                "wire_request carries {} headers; the limit is {HEAD_ENTRIES}",
+                map.len()
+            ));
+        }
+        for (name, value) in map {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            headers.push((name.clone(), value.to_string()));
+        }
+    }
+
+    let body = match object.get("body") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(data)) => {
+            // Reject the obviously oversized before decoding, then check the
+            // decoded length too: base64 is 4 bytes per 3 decoded bytes.
+            if data.len() > WIRE_BODY_MAX.div_ceil(3) * 4 {
+                return Err(format!(
+                    "wire_request body is past the {WIRE_BODY_MAX}-byte limit"
+                ));
+            }
+            let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+                .map_err(|error| format!("wire_request body is not base64: {error}"))?;
+            if bytes.len() > WIRE_BODY_MAX {
+                return Err(format!(
+                    "wire_request body of {} bytes is past the {WIRE_BODY_MAX}-byte limit",
+                    bytes.len()
+                ));
+            }
+            Some(bytes)
+        }
+        Some(_) => return Err("wire_request body is neither base64 nor null".to_string()),
+    };
+
+    let body_bytes = object
+        .get("bodyBytes")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| body.as_ref().map_or(0, |body| body.len() as u64));
+    let truncated = object
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(CapturedWireRequest {
+        url,
+        method,
+        headers,
+        body,
+        body_bytes,
+        truncated,
+    })
 }
 
 fn parse_event(object: &serde_json::Map<String, Value>) -> HostEvent {
@@ -298,6 +402,108 @@ mod tests {
                 data: b"hello".to_vec()
             }
         );
+    }
+
+    #[test]
+    fn parses_a_wire_request_frame() {
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            br#"{"model":"m"}"#,
+        );
+        let line = json!({
+            "id": 4,
+            "event": "wire_request",
+            "url": "https://api.example.com/v1/messages",
+            "method": "post",
+            "headers": { "content-type": "application/json" },
+            "body": encoded,
+            "bodyBytes": 13,
+            "truncated": false,
+        })
+        .to_string();
+        assert_eq!(
+            parse_host_line(&line),
+            HostMessage::WireRequest {
+                id: 4,
+                request: CapturedWireRequest {
+                    url: "https://api.example.com/v1/messages".to_string(),
+                    method: "POST".to_string(),
+                    headers: vec![("content-type".to_string(), "application/json".to_string())],
+                    body: Some(br#"{"model":"m"}"#.to_vec()),
+                    body_bytes: 13,
+                    truncated: false,
+                },
+            }
+        );
+
+        let bodyless = json!({
+            "id": 5,
+            "event": "wire_request",
+            "url": "https://api.example.com/v1/models",
+        })
+        .to_string();
+        assert_eq!(
+            parse_host_line(&bodyless),
+            HostMessage::WireRequest {
+                id: 5,
+                request: CapturedWireRequest {
+                    url: "https://api.example.com/v1/models".to_string(),
+                    method: "GET".to_string(),
+                    headers: Vec::new(),
+                    body: None,
+                    body_bytes: 0,
+                    truncated: false,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn refuses_a_wire_request_past_its_limits() {
+        let oversized = json!({
+            "id": 1,
+            "event": "wire_request",
+            "url": "https://api.example.com/v1/messages",
+            "body": base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                vec![0u8; WIRE_BODY_MAX + 1],
+            ),
+        })
+        .to_string();
+        assert!(matches!(
+            parse_host_line(&oversized),
+            HostMessage::Invalid(_)
+        ));
+
+        let not_base64 = json!({
+            "id": 1,
+            "event": "wire_request",
+            "url": "https://api.example.com/v1/messages",
+            "body": "%%% not base64 %%%",
+        })
+        .to_string();
+        assert!(matches!(
+            parse_host_line(&not_base64),
+            HostMessage::Invalid(_)
+        ));
+
+        let headers: serde_json::Map<String, Value> = (0..=HEAD_ENTRIES)
+            .map(|index| (format!("x-header-{index}"), Value::String("v".to_string())))
+            .collect();
+        let too_many = json!({
+            "id": 1,
+            "event": "wire_request",
+            "url": "https://api.example.com/v1/messages",
+            "headers": headers,
+        })
+        .to_string();
+        assert!(matches!(
+            parse_host_line(&too_many),
+            HostMessage::Invalid(_)
+        ));
+
+        let no_url = json!({ "id": 1, "event": "wire_request", "method": "POST" }).to_string();
+        assert!(matches!(parse_host_line(&no_url), HostMessage::Invalid(_)));
     }
 
     #[test]

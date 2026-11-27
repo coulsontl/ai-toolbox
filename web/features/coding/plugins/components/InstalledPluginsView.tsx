@@ -2,6 +2,7 @@ import React from 'react';
 import { App, Checkbox, Dropdown, Input, Modal, Spin, Switch } from 'antd';
 import {
   PackageCheck,
+  RefreshCw,
   Search,
   Settings2,
   SquareArrowOutUpRight,
@@ -37,6 +38,8 @@ interface InstalledPluginsViewProps {
   accounts: PluginAccountSummary[];
   middlewareStates: MiddlewareStateView[];
   loading: boolean;
+  refreshing?: boolean;
+  onRefresh?: () => void;
   onDataChanged: () => Promise<void>;
   onOpenInstall: () => void;
   onBrowseMarket: () => void;
@@ -50,6 +53,8 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   accounts,
   middlewareStates,
   loading,
+  refreshing = false,
+  onRefresh,
   onDataChanged,
   onOpenInstall,
   onBrowseMarket,
@@ -228,6 +233,21 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
             <PackageCheck size={15} aria-hidden="true" />
             <span>{t('plugins.installed.manualInstall')}</span>
           </button>
+          {onRefresh ? (
+            <button
+              type="button"
+              className={styles.actionButton}
+              disabled={refreshing}
+              onClick={onRefresh}
+            >
+              <RefreshCw
+                size={14}
+                className={refreshing ? styles.spin : undefined}
+                aria-hidden="true"
+              />
+              <span>{t('common.refresh')}</span>
+            </button>
+          ) : null}
         </div>
       </div>
     );
@@ -260,6 +280,21 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
         <span className={styles.totalLabel}>
           {t('plugins.installed.count', { count: filteredPlugins.length })}
         </span>
+        {onRefresh ? (
+          <button
+            type="button"
+            className={styles.actionButton}
+            disabled={refreshing}
+            onClick={onRefresh}
+          >
+            <RefreshCw
+              size={14}
+              className={refreshing ? styles.spin : undefined}
+              aria-hidden="true"
+            />
+            <span>{t('common.refresh')}</span>
+          </button>
+        ) : null}
       </div>
 
       {filteredPlugins.length === 0 ? (
