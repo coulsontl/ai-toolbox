@@ -142,8 +142,22 @@ impl Client {
         })?;
 
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).map_err(|error| {
-            TransportError::Unavailable(format!("Cannot read response: {error}"))
+        stream.read_to_end(&mut raw).map_err(|error| match error.kind() {
+            // A write can sit on the desktop approval prompt longer than the
+            // caller's `--timeout`. That is not "the app is down": surfacing
+            // exit code 3 here sent agents looking for a stopped app while the
+            // approval modal was still open. Keep it in the "needs a decision"
+            // bucket (exit 4) with a dedicated local code.
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                TransportError::Denied(RemoteError::local(
+                    "request_timeout",
+                    format!(
+                        "Timed out after {}s waiting for the control API. A write may be waiting for desktop approval; raise --timeout above the approval timeout.",
+                        self.timeout.as_secs()
+                    ),
+                ))
+            }
+            _ => TransportError::Unavailable(format!("Cannot read response: {error}")),
         })?;
         let response = parse_response(&raw)?;
         classify(response)
@@ -368,6 +382,36 @@ mod tests {
             body: serde_json::json!({"error": {"code": "internal_error", "message": "boom"}}),
         };
         assert!(matches!(classify(failure), Err(TransportError::Failed(_))));
+    }
+
+    #[test]
+    fn a_read_timeout_is_a_request_timeout_not_a_dead_app() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 8192];
+            let _ = stream.read(&mut buffer);
+            // Hold the response past the client's timeout to exercise the
+            // approval-wait case.
+            thread::sleep(Duration::from_secs(2));
+            let body = "{}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        });
+        let client = Client::new("127.0.0.1".to_string(), port, "token".to_string(), 1);
+        match client.request(Method::Get, "/v1/status", None) {
+            Err(TransportError::Denied(error)) => {
+                assert_eq!(error.code, "request_timeout");
+                assert!(error.message.contains("--timeout"));
+            }
+            other => panic!("expected a request timeout, got {other:?}"),
+        }
+        handle.join().unwrap();
     }
 
     #[test]
