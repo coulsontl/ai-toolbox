@@ -283,6 +283,17 @@ fn config_format(cli: &str) -> &'static str {
     }
 }
 
+/// `zcode --scope cli` reads the product-owned `cli/config.json`, which is JSON
+/// even though the common config is TOML. Reporting TOML made agents send TOML
+/// to a JSON-only setter.
+fn config_format_for_scope(cli: &str, scope: &str) -> &'static str {
+    if cli == "zcode" && scope == "cli" {
+        "json"
+    } else {
+        config_format(cli)
+    }
+}
+
 fn config_kind(cli: &str) -> &'static str {
     match cli {
         "pi" | "oh_my_pi" | "omo_native" | "hermes" | "dsh" | "codebuddy" => "other",
@@ -297,7 +308,7 @@ async fn get_config(context: &ServerContext, cli: &str, scope: &str) -> ApiResul
             "Global config file editing",
         ));
     }
-    let format = config_format(cli);
+    let format = config_format_for_scope(cli, scope);
     let mut config_path: Option<String> = None;
     let (config, root_dir, updated_at) = match cli {
         "claudecode" => {
@@ -680,7 +691,14 @@ async fn extract_config_inner(
 /// JSON-shaped configs are parsed (and therefore redacted structurally);
 /// TOML/YAML configs are returned as text so the agent sees the exact file.
 fn parse_config_text(raw: &str, format: &str) -> Value {
-    if format == "toml" || format == "yaml" {
+    if format == "toml" {
+        // Early builds stored an empty TOML config as the JSON literal `{}`,
+        // which is not valid TOML and made every later patch fail. Present it
+        // as an empty document instead.
+        let raw = if raw.trim() == "{}" { "" } else { raw };
+        return Value::String(redact_text(raw));
+    }
+    if format == "yaml" {
         return Value::String(redact_text(raw));
     }
     redact_json_string(raw)
@@ -720,7 +738,7 @@ async fn put_config_inner(
             "Global config file editing",
         ));
     }
-    let format = config_format(cli);
+    let format = config_format_for_scope(cli, scope);
     let mode = body_optional_string(&body, "mode").unwrap_or_else(|| "patch".to_string());
     if mode != "patch" && mode != "replace" {
         return Err(ApiError::bad_request("'mode' must be 'patch' or 'replace'"));
@@ -729,6 +747,13 @@ async fn put_config_inner(
         .get("config")
         .cloned()
         .ok_or_else(|| ApiError::bad_request("'config' is required"))?;
+    // JSON configs round-trip `***` through `fill_redacted`/the merge layer.
+    // TOML/YAML cannot: there the mask must be omitted, not sent back.
+    if matches!(format, "toml" | "yaml") && super::redact::contains_redacted(&incoming) {
+        return Err(ApiError::bad_request(
+            "Masked secrets ('***') cannot be written back; send the full value or omit the key",
+        ));
+    }
     let root_dir = body_optional_string(&body, "rootDir");
     let clear_root_dir = body
         .get("clearRootDir")
@@ -1052,7 +1077,7 @@ async fn put_config_inner(
                 next,
             )
             .await
-            .map_err(internal)?;
+            .map_err(dsh_other_settings_error)?;
         }
         "omo_native" if scope == "omo" => {
             let runtime = crate::coding::omo_native::commands::read_omo_native_runtime_config(
@@ -1199,6 +1224,17 @@ fn has_config_body(value: &Value) -> bool {
     }
 }
 
+/// dsh 0.1.7+ keeps live config in `profiles/<profile>/cordis.patch.yml`; the
+/// module deliberately refuses to rewrite its unrelated plugin rows. That is a
+/// capability boundary, not a 500, so `aitb` must report `unsupported`.
+fn dsh_other_settings_error(error: String) -> ApiError {
+    if error.contains("cordis.patch.yml") {
+        ApiError::new(400, "unsupported", error)
+    } else {
+        internal(error)
+    }
+}
+
 /// Dispatches whole-file patches to the backend's structured merge. JSON stays
 /// local because its masked-patch contract is the control API's own API shape,
 /// not a CLI config-file format.
@@ -1210,6 +1246,8 @@ fn apply_config_patch(
 ) -> ApiResult<String> {
     match format {
         "toml" => {
+            // See `parse_config_text`: legacy empty rows are `{}`, not TOML.
+            let existing = if existing.trim() == "{}" { "" } else { existing };
             config_patch::merge_toml_config_text(existing, incoming, mode).map_err(invalid)
         }
         "yaml" => {
@@ -2030,6 +2068,27 @@ mod tests {
         assert_eq!(config_format("claudecode"), "json");
         assert_eq!(config_kind("codebuddy"), "other");
         assert_eq!(config_kind("claudecode"), "common");
+        // ZCode's CLI-scope file is product-owned JSON, not the TOML common config.
+        assert_eq!(config_format_for_scope("zcode", "cli"), "json");
+        assert_eq!(config_format_for_scope("zcode", "common"), "toml");
+        assert_eq!(config_format_for_scope("codex", "cli"), "toml");
     }
 
+    #[test]
+    fn legacy_empty_toml_config_is_treated_as_an_empty_document() {
+        assert_eq!(parse_config_text("{}", "toml"), json!(""));
+        let patched = apply_config_patch("{}", &json!({"marker": "on"}), "toml", "patch").unwrap();
+        assert!(patched.contains("marker = \"on\""));
+    }
+
+    #[test]
+    fn dsh_profile_patch_refusal_is_reported_as_unsupported() {
+        let error = dsh_other_settings_error(
+            "dsh 0.1.7+ 已把配置迁到 profiles/<profile>/cordis.patch.yml".to_string(),
+        );
+        assert_eq!(error.status, 400);
+        assert_eq!(error.code, "unsupported");
+        let other = dsh_other_settings_error("disk full".to_string());
+        assert_eq!(other.code, "internal_error");
+    }
 }
