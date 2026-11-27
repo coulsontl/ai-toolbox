@@ -1190,6 +1190,27 @@ pub async fn reorder_dsh_providers<R: tauri::Runtime>(
     read_dsh_runtime_config(state).await
 }
 
+/// Drop the managed default-model selection when it points at a provider that
+/// was just removed.
+///
+/// dsh requires `provider` and `model` together, and the provider view is
+/// synthesized from the selection even when the provider itself is gone. Once
+/// the provider is deleted the pair can no longer resolve, so removing the
+/// section lets dsh fall back to its bundled default instead of surfacing a
+/// phantom, unusable provider.
+fn clear_default_model_for_removed_provider(config: &mut Value, provider_key: &str) {
+    let selection_matches = config
+        .get(DSH_DEFAULT_MODEL_SECTION)
+        .and_then(|section| section.get("provider"))
+        .and_then(Value::as_str)
+        == Some(provider_key);
+    if selection_matches {
+        if let Some(object) = config.as_object_mut() {
+            object.remove(DSH_DEFAULT_MODEL_SECTION);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn delete_dsh_runtime_provider(
     state: tauri::State<'_, SqliteDbState>,
@@ -1236,6 +1257,8 @@ pub async fn delete_dsh_runtime_provider(
     if !removed {
         return Err(format!("Provider '{provider_key}' not found"));
     }
+
+    clear_default_model_for_removed_provider(&mut config, provider_key);
 
     write_config_sections(&layer, &config)?;
     emit_config_changed(&app, "window");
@@ -2313,6 +2336,26 @@ mod tests {
         document.set_ref("NOT_PRESENT", None);
         assert!(document.refs.contains_key("OTHER"));
         assert!(!document.refs.contains_key("NOT_PRESENT"));
+    }
+
+    #[test]
+    fn deleting_a_provider_clears_its_default_model_selection() {
+        let mut config = json!({
+            "llm-pi-ai": {"providers": {"custom": {}}},
+            "agent-default-model": {"provider": "custom", "model": "model-a"}
+        });
+        clear_default_model_for_removed_provider(&mut config, "custom");
+        assert!(config.get(DSH_DEFAULT_MODEL_SECTION).is_none());
+        assert!(config.get(DSH_LLM_PI_AI_SECTION).is_some());
+
+        let mut unrelated = json!({
+            "agent-default-model": {"provider": "keep", "model": "model-a"}
+        });
+        clear_default_model_for_removed_provider(&mut unrelated, "custom");
+        assert_eq!(
+            unrelated[DSH_DEFAULT_MODEL_SECTION]["provider"],
+            json!("keep")
+        );
     }
 
     #[test]

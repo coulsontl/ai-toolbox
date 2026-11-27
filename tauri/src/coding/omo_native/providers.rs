@@ -450,6 +450,22 @@ pub async fn reorder_omo_native_providers(
     Ok(())
 }
 
+/// 删除 provider 时同步清掉指向它的默认模型选择。
+///
+/// 只有 `defaultProvider` 命中时才动设置；`defaultModel` 与它是一对，必须
+/// 一起移除，否则 OMO 会把默认模型解析到一个已经不存在的 provider 上。
+fn clear_default_selection_for_removed_provider(settings: &mut Value, provider_key: &str) -> bool {
+    let matches = settings.get("defaultProvider").and_then(Value::as_str) == Some(provider_key);
+    if !matches {
+        return false;
+    }
+    if let Some(object) = settings.as_object_mut() {
+        object.remove("defaultProvider");
+        object.remove("defaultModel");
+    }
+    true
+}
+
 /// 删除 `models.json` 里的 provider 条目（可选一并删除 `auth.json` 的密钥）。
 #[tauri::command]
 pub async fn delete_omo_native_provider(
@@ -476,6 +492,13 @@ pub async fn delete_omo_native_provider(
                 map.remove(&provider_key);
             }
             write_json_object(&auth_path, &auth, true)?;
+        }
+    }
+
+    let settings_path = dir.join(resolve_omo_native_settings_file_name(&dir));
+    if let Some(mut settings) = read_json_object(&settings_path)? {
+        if clear_default_selection_for_removed_provider(&mut settings, &provider_key) {
+            write_json_object(&settings_path, &settings, false)?;
         }
     }
 
@@ -651,6 +674,30 @@ mod tests {
             resolve_omo_native_settings_file_name(dir.path()),
             "settings.jsonc"
         );
+    }
+
+    #[test]
+    fn removing_a_provider_clears_its_default_selection() {
+        let mut settings = json!({
+            "defaultProvider": "demo",
+            "defaultModel": "model-a",
+            "theme": "github-dark"
+        });
+        assert!(clear_default_selection_for_removed_provider(
+            &mut settings,
+            "demo"
+        ));
+        assert!(settings.get("defaultProvider").is_none());
+        assert!(settings.get("defaultModel").is_none());
+        assert_eq!(settings["theme"], json!("github-dark"));
+
+        let mut unrelated = json!({"defaultProvider": "keep", "defaultModel": "model-a"});
+        assert!(!clear_default_selection_for_removed_provider(
+            &mut unrelated,
+            "demo"
+        ));
+        assert_eq!(unrelated["defaultProvider"], json!("keep"));
+        assert_eq!(unrelated["defaultModel"], json!("model-a"));
     }
 
     #[test]

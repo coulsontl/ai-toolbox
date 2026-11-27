@@ -1178,6 +1178,15 @@ pub(crate) fn read_hermes_models_provider_at(
         }))
 }
 
+/// `model.provider` 是否仍指向即将删除的 provider。
+fn model_section_targets_provider(config: &Value, provider_key: &str) -> bool {
+    config
+        .get("model")
+        .and_then(|model| model.get("provider"))
+        .and_then(Value::as_str)
+        == Some(provider_key)
+}
+
 #[tauri::command]
 pub async fn delete_hermes_runtime_provider(
     state: tauri::State<'_, SqliteDbState>,
@@ -1215,11 +1224,14 @@ pub async fn delete_hermes_runtime_provider(
         return read_hermes_runtime_config(state).await;
     }
 
-    write_yaml_sections_with_backup(
-        &app,
-        &config_path,
-        &[("custom_providers", Value::Array(providers))],
-    )?;
+    // The `model` section selects a provider by name; once that provider is
+    // gone, leaving it behind makes Hermes (and the provider list) resolve a
+    // missing provider. An empty mapping clears the selection cleanly.
+    let mut sections: Vec<(&str, Value)> = vec![("custom_providers", Value::Array(providers))];
+    if model_section_targets_provider(&config, provider_key) {
+        sections.push(("model", json!({})));
+    }
+    write_yaml_sections_with_backup(&app, &config_path, &sections)?;
     drop(_guard);
     emit_config_changed(&app, "window");
     read_hermes_runtime_config(state).await
@@ -1927,6 +1939,16 @@ pub async fn launch_hermes_dashboard() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_section_targeting_the_removed_provider_is_detected() {
+        let config = json!({"model": {"provider": "demo", "default": "model-a"}});
+        assert!(model_section_targets_provider(&config, "demo"));
+        assert!(!model_section_targets_provider(&config, "keep"));
+
+        let legacy = json!({"model": "model-a"});
+        assert!(!model_section_targets_provider(&legacy, "demo"));
+    }
 
     /// The list order the user dragged into place is the `custom_providers`
     /// sequence order. It used to be rebuilt through a `BTreeSet`, which sorted

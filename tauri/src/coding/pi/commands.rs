@@ -905,6 +905,22 @@ pub async fn reorder_pi_providers<R: tauri::Runtime>(
     read_pi_runtime_config(state).await
 }
 
+/// 删除 provider 时同步清掉指向它的默认模型选择。
+///
+/// `defaultProvider` / `defaultModel` 是一对；只删 provider 会留下悬空选择，
+/// 运行时会把一个不存在的 key 当作当前 provider。
+fn clear_default_selection_for_removed_provider(settings: &mut Value, provider_key: &str) -> bool {
+    let matches = settings.get("defaultProvider").and_then(Value::as_str) == Some(provider_key);
+    if !matches {
+        return false;
+    }
+    if let Some(object) = settings.as_object_mut() {
+        object.remove("defaultProvider");
+        object.remove("defaultModel");
+    }
+    true
+}
+
 #[tauri::command]
 pub async fn delete_pi_runtime_provider(
     state: tauri::State<'_, SqliteDbState>,
@@ -929,10 +945,19 @@ pub async fn delete_pi_runtime_provider(
     if matches!(scope, PiDeleteScope::ProviderConfig | PiDeleteScope::Both) {
         let models_path = get_pi_models_path_async(&db).await?;
         let mut models = read_json_object_or_empty(&models_path)?;
+        let mut removed = false;
         if let Some(providers) = models.get_mut("providers").and_then(Value::as_object_mut) {
-            providers.remove(provider_key);
+            removed = providers.remove(provider_key).is_some();
         }
         write_json_object(&models_path, &models)?;
+
+        if removed {
+            let settings_path = get_pi_settings_path_async(&db).await?;
+            let mut settings = read_json_object_or_empty(&settings_path)?;
+            if clear_default_selection_for_removed_provider(&mut settings, provider_key) {
+                write_json_object(&settings_path, &settings)?;
+            }
+        }
     }
 
     emit_config_changed(&app, "window");
@@ -1256,6 +1281,29 @@ pub async fn save_pi_local_prompt_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_a_provider_clears_its_default_selection() {
+        let mut settings = json!({
+            "defaultProvider": "demo",
+            "defaultModel": "model-a",
+            "defaultThinkingLevel": "high"
+        });
+        assert!(clear_default_selection_for_removed_provider(
+            &mut settings,
+            "demo"
+        ));
+        assert!(settings.get("defaultProvider").is_none());
+        assert!(settings.get("defaultModel").is_none());
+        assert_eq!(settings["defaultThinkingLevel"], json!("high"));
+
+        let mut unrelated = json!({"defaultProvider": "keep", "defaultModel": "model-a"});
+        assert!(!clear_default_selection_for_removed_provider(
+            &mut unrelated,
+            "demo"
+        ));
+        assert_eq!(unrelated["defaultProvider"], json!("keep"));
+    }
 
     /// The models map is the sequence the user drags, so it leads; auth-only
     /// keys follow and a dangling default comes last.

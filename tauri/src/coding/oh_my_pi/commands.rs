@@ -1220,13 +1220,44 @@ pub async fn delete_omp_runtime_provider(
     let db = state.db();
     let models_path = get_omp_models_path_async(&db).await?;
     let mut models = read_yaml_object_or_empty(&models_path)?;
+    let mut removed = false;
     if let Some(providers) = models.get_mut("providers").and_then(Value::as_object_mut) {
-        providers.remove(provider_key);
+        removed = providers.remove(provider_key).is_some();
     }
     write_yaml_object(&models_path, &models)?;
 
+    if removed {
+        let config_path = get_omp_config_path_async(&db).await?;
+        let mut settings = read_yaml_object_or_empty(&config_path)?;
+        if clear_default_model_role_for_removed_provider(&mut settings, provider_key) {
+            write_yaml_object(&config_path, &settings)?;
+        }
+    }
+
     emit_config_changed(&app, "window");
     read_omp_runtime_config(state).await
+}
+
+/// 删除 provider 后清掉 `modelRoles.default` 中指向它的选择。
+///
+/// 该值是 `provider/model[:level]`；只删 provider 会让视图继续用这个已经不存在的
+/// key 合成一条 missing-provider 记录，运行时也会解析失败。
+fn clear_default_model_role_for_removed_provider(
+    settings: &mut Value,
+    provider_key: &str,
+) -> bool {
+    let Some(roles) = settings.get_mut("modelRoles").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    let provider = roles
+        .get(OMP_MODEL_ROLE_KEY)
+        .and_then(Value::as_str)
+        .and_then(|role| split_provider_model(role).0);
+    if provider.as_deref() != Some(provider_key) {
+        return false;
+    }
+    roles.remove(OMP_MODEL_ROLE_KEY);
+    true
 }
 
 fn prompt_order() -> Result<OrderSpec, String> {
@@ -1557,6 +1588,28 @@ pub async fn save_omp_local_prompt_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleting_a_provider_clears_its_default_model_role() {
+        let mut settings = json!({
+            "modelRoles": {"default": "demo/model-a:high", "other": "keep/model-b"},
+            "defaultThinkingLevel": "max"
+        });
+        assert!(clear_default_model_role_for_removed_provider(
+            &mut settings,
+            "demo"
+        ));
+        assert!(settings["modelRoles"].get("default").is_none());
+        assert_eq!(settings["modelRoles"]["other"], json!("keep/model-b"));
+        assert_eq!(settings["defaultThinkingLevel"], json!("max"));
+
+        let mut unrelated = json!({"modelRoles": {"default": "keep/model-a"}});
+        assert!(!clear_default_model_role_for_removed_provider(
+            &mut unrelated,
+            "demo"
+        ));
+        assert_eq!(unrelated["modelRoles"]["default"], json!("keep/model-a"));
+    }
 
     /// `models.yml`'s key order is what the user drags; the OAuth route stays
     /// pinned first, everything else follows the file, and a dangling default
