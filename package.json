@@ -24,6 +24,7 @@
     "test": "pnpm run test:web && pnpm run test:form-modal-layout && pnpm run test:provider-card-layout && pnpm run test:css-module-classes && pnpm run test:official-accounts-shared && pnpm run test:control-api-reuse",
     "test:web": "node ./scripts/run-web-tests.mjs",
     "test:control-api-reuse": "node ./scripts/verify-control-api-reuse.mjs",
+    "test:control-api-live": "node ./scripts/control-api-live-e2e.mjs",
     "test:css-module-classes": "node ./scripts/verify-css-module-classes.mjs",
     "test:form-modal-layout": "node ./scripts/verify-form-modal-layout.mjs",
     "test:official-accounts-shared": "node ./scripts/verify-official-accounts-shared.mjs",
