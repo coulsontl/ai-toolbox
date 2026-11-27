@@ -82,8 +82,8 @@ use tokio::net::{TcpListener, TcpStream as TokioTcpStream};
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_CONCURRENT_CONNECTIONS: u32 = 128;
 const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(30);
-const RESTART_BIND_RETRY_ATTEMPTS: u32 = 4;
-const RESTART_BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
+const RESTART_BIND_RETRY_ATTEMPTS: u32 = 10;
+const RESTART_BIND_RETRY_DELAY: Duration = Duration::from_millis(100);
 const BUSY_RESPONSE_BODY: &[u8] = br#"{"error":"gateway_busy","message":"too many connections"}"#;
 
 fn bind_gateway_listener_with_retry(

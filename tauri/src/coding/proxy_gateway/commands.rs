@@ -226,20 +226,32 @@ pub async fn proxy_gateway_stop(
 /// disengaging CLIs first.
 #[tauri::command]
 pub async fn proxy_gateway_restart(
-    gateway_state: tauri::State<'_, ProxyGatewayState>,
-    sqlite_state: tauri::State<'_, SqliteDbState>,
-    db_state: tauri::State<'_, SqliteDbState>,
     app: tauri::AppHandle,
 ) -> Result<ProxyGatewayStatus, String> {
     let paths = proxy_gateway_paths(&app)?;
-    // Restart may stop the old runtime before rebinding. Always report the final
-    // running bit so listeners refresh even when restart fails mid-way.
-    let (restart_result, running) = {
-        let mut manager = gateway_state
-            .manager
-            .lock()
-            .map_err(|_| "Proxy gateway manager lock poisoned".to_string())?;
-        match manager.restart_with_context_and_app(db_state.db().clone(), paths, app.clone()) {
+    let db = {
+        use tauri::Manager;
+        app.state::<SqliteDbState>().db().clone()
+    };
+    // The manager's stop path aborts the gateway task and immediately rebinds.
+    // Running that blocking restart on an async worker prevented the aborted
+    // task from being dropped in time (Windows kept the listening port bound),
+    // so the restart always failed and left the gateway stopped. The blocking
+    // pool lets the async runtime finish the abort while the retry loop waits.
+    let app_for_task = app.clone();
+    let (restart_result, running) = tauri::async_runtime::spawn_blocking(move || {
+        use tauri::Manager;
+        let gateway_state = app_for_task.state::<ProxyGatewayState>();
+        let mut manager = match gateway_state.manager.lock() {
+            Ok(manager) => manager,
+            Err(_) => {
+                return (
+                    Err("Proxy gateway manager lock poisoned".to_string()),
+                    false,
+                )
+            }
+        };
+        match manager.restart_with_context_and_app(db, paths, app_for_task.clone()) {
             Ok(status) => {
                 let running = status.running;
                 (Ok(status), running)
@@ -249,10 +261,14 @@ pub async fn proxy_gateway_restart(
                 (Err(error), running)
             }
         }
-    };
+    })
+    .await
+    .map_err(|error| format!("Gateway restart task failed: {error}"))?;
 
     if restart_result.is_ok() {
         // Restart keeps the service running; preserve auto-restore marker.
+        use tauri::Manager;
+        let sqlite_state = app.state::<SqliteDbState>();
         let mut settings = settings::load_settings_from_sqlite_state(&sqlite_state)?;
         if !settings.enabled_on_startup {
             settings.enabled_on_startup = true;

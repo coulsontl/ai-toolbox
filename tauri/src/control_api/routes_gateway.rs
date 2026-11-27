@@ -81,7 +81,7 @@ pub async fn dispatch(
                 context.app.clone(),
             )
             .await
-            .map_err(ApiError::from)?;
+            .map_err(gateway_stop_error)?;
             Ok(redacted(serde_json::to_value(status)?))
         }
         (&Method::POST, "restart") => {
@@ -94,14 +94,10 @@ pub async fn dispatch(
                 false,
             )
             .await?;
-            let status = gateway_commands::proxy_gateway_restart(
-                gateway_state(context),
-                sqlite_state(context),
-                sqlite_state(context),
-                context.app.clone(),
-            )
-            .await
-            .map_err(ApiError::from)?;
+            let status =
+                gateway_commands::proxy_gateway_restart(context.app.clone())
+                    .await
+                    .map_err(ApiError::from)?;
             Ok(redacted(serde_json::to_value(status)?))
         }
         (&Method::GET, "logs") => {
@@ -402,6 +398,16 @@ impl ParseGatewayCli for String {
     }
 }
 
+/// `gateway.stop` refuses while a CLI is still taken over. That is a normal
+/// precondition conflict, not an internal failure, so it gets its own code.
+fn gateway_stop_error(error: String) -> ApiError {
+    if error.contains("Restore gateway-taken-over CLIs") {
+        ApiError::conflict(error)
+    } else {
+        ApiError::from(error)
+    }
+}
+
 fn gateway_state(context: &ServerContext) -> tauri::State<'_, ProxyGatewayState> {
     context.app.state::<ProxyGatewayState>()
 }
@@ -420,6 +426,16 @@ fn redacted(value: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_stop_precondition_is_a_conflict_not_an_internal_error() {
+        let error = gateway_stop_error(
+            "Restore gateway-taken-over CLIs to direct mode before stopping the gateway".to_string(),
+        );
+        assert_eq!(error.status, 409);
+        assert_eq!(error.code, "conflict");
+        assert_eq!(gateway_stop_error("disk full".to_string()).status, 500);
+    }
 
     #[test]
     fn gateway_logs_cli_keys_map_to_the_usage_tool_spelling() {
