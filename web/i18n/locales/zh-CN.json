@@ -6606,6 +6606,8 @@
       "accountTypeApi": "API Key",
       "expiresAt": "凭据有效期至 {{time}}",
       "expired": "凭据已过期",
+      "enabledLabel": "启用",
+      "enabledHint": "启用后参与网关路由与后台维护；停用后不再调用该账号。",
       "enabledToggle": "启用或停用该账号",
       "toggleAccountSuccess": "账号状态已更新",
       "actionFailed": "操作失败：{{error}}",

@@ -388,22 +388,49 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
   margin-left: auto;
 }
 
-.autoCheckinControl {
+.switchGroup {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 4px;
-  color: var(--color-text-tertiary);
-  font-size: 10px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.switchControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
   white-space: nowrap;
 }
 
-.autoCheckinLabel {
-  line-height: 1.2;
+.switchControlDisabled {
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+
+.switchLabel {
+  line-height: 1.3;
+}
+
+.controlsDivider {
+  width: 1px;
+  height: 16px;
+  flex: 0 0 auto;
+  background: var(--color-border);
+}
+
+.iconActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .accountCheckinMeta {

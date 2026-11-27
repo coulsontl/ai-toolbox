@@ -6609,6 +6609,8 @@
       "accountTypeApi": "API Key",
       "expiresAt": "Credentials valid until {{time}}",
       "expired": "Credentials expired",
+      "enabledLabel": "Enabled",
+      "enabledHint": "When enabled, this account participates in gateway routing and background maintenance.",
       "enabledToggle": "Enable or disable this account",
       "toggleAccountSuccess": "Account state updated",
       "actionFailed": "Action failed: {{error}}",

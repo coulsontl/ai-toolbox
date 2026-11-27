@@ -795,93 +795,115 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                             </span>
                           </div>
                           <div className={styles.accountControls}>
-                            <Switch
-                              size="small"
-                              checked={account.enabled}
-                              loading={accountBusy}
-                              disabled={accountBusy}
-                              aria-label={t('plugins.accounts.enabledToggle')}
-                              onChange={(checked) =>
-                                void handleAccountToggle(account, checked)}
-                            />
-                            {selectedProvider.checkin ? (
-                              <Tooltip
-                                title={
-                                  account.enabled
-                                    ? t('plugins.accounts.autoCheckinHint')
-                                    : t('plugins.accounts.autoCheckinDisabled')
-                                }
-                              >
-                                <span className={styles.autoCheckinControl}>
-                                  <span className={styles.autoCheckinLabel}>
-                                    {t('plugins.accounts.autoCheckin')}
+                            <div className={styles.switchGroup}>
+                              <Tooltip title={t('plugins.accounts.enabledHint')}>
+                                <label
+                                  className={`${styles.switchControl} ${
+                                    accountBusy ? styles.switchControlDisabled : ''
+                                  }`}
+                                >
+                                  <span className={styles.switchLabel}>
+                                    {t('plugins.accounts.enabledLabel')}
                                   </span>
                                   <Switch
                                     size="small"
-                                    checked={Boolean(account.autoCheckin)}
-                                    loading={autoCheckinBusyKey === account.account}
-                                    disabled={
-                                      !account.enabled
-                                      || autoCheckinBusyKey === account.account
-                                    }
-                                    aria-label={t('plugins.accounts.autoCheckin')}
+                                    checked={account.enabled}
+                                    loading={accountBusy}
+                                    disabled={accountBusy}
+                                    aria-label={t('plugins.accounts.enabledToggle')}
                                     onChange={(checked) =>
-                                      void handleAutoCheckinToggle(account, checked)}
+                                      void handleAccountToggle(account, checked)}
                                   />
-                                </span>
+                                </label>
                               </Tooltip>
-                            ) : null}
-                            <Tooltip title={t('plugins.accounts.check')}>
-                              <button
-                                type="button"
-                                className={styles.iconButton}
-                                aria-label={t('plugins.accounts.check')}
-                                disabled={checkBusyAccount === account.account}
-                                onClick={() => void handleCheck(account)}
-                              >
-                                {checkBusyAccount === account.account ? (
-                                  <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-                                ) : (
-                                  <PlugZap size={14} aria-hidden="true" />
-                                )}
-                              </button>
-                            </Tooltip>
-                            {selectedProvider.usage ? (
-                              <Tooltip title={t('plugins.accounts.refreshUsage')}>
+                              {selectedProvider.checkin ? (
+                                <Tooltip
+                                  title={
+                                    account.enabled
+                                      ? t('plugins.accounts.autoCheckinHint')
+                                      : t('plugins.accounts.autoCheckinDisabled')
+                                  }
+                                >
+                                  <label
+                                    className={`${styles.switchControl} ${
+                                      !account.enabled || autoCheckinBusyKey === account.account
+                                        ? styles.switchControlDisabled
+                                        : ''
+                                    }`}
+                                  >
+                                    <span className={styles.switchLabel}>
+                                      {t('plugins.accounts.autoCheckin')}
+                                    </span>
+                                    <Switch
+                                      size="small"
+                                      checked={Boolean(account.autoCheckin)}
+                                      loading={autoCheckinBusyKey === account.account}
+                                      disabled={
+                                        !account.enabled
+                                        || autoCheckinBusyKey === account.account
+                                      }
+                                      aria-label={t('plugins.accounts.autoCheckin')}
+                                      onChange={(checked) =>
+                                        void handleAutoCheckinToggle(account, checked)}
+                                    />
+                                  </label>
+                                </Tooltip>
+                              ) : null}
+                            </div>
+                            <span className={styles.controlsDivider} aria-hidden="true" />
+                            <div className={styles.iconActions}>
+                              <Tooltip title={t('plugins.accounts.check')}>
                                 <button
                                   type="button"
                                   className={styles.iconButton}
-                                  aria-label={t('plugins.accounts.refreshUsage')}
-                                  disabled={usageBusy}
-                                  onClick={() => void refreshUsage([account.account], true)}
+                                  aria-label={t('plugins.accounts.check')}
+                                  disabled={checkBusyAccount === account.account}
+                                  onClick={() => void handleCheck(account)}
                                 >
-                                  <RefreshCw size={14} aria-hidden="true" />
+                                  {checkBusyAccount === account.account ? (
+                                    <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+                                  ) : (
+                                    <PlugZap size={14} aria-hidden="true" />
+                                  )}
                                 </button>
                               </Tooltip>
-                            ) : null}
-                            {selectedProvider.checkin ? (
-                              <Tooltip title={t('plugins.accounts.checkin')}>
+                              {selectedProvider.usage ? (
+                                <Tooltip title={t('plugins.accounts.refreshUsage')}>
+                                  <button
+                                    type="button"
+                                    className={styles.iconButton}
+                                    aria-label={t('plugins.accounts.refreshUsage')}
+                                    disabled={usageBusy}
+                                    onClick={() => void refreshUsage([account.account], true)}
+                                  >
+                                    <RefreshCw size={14} aria-hidden="true" />
+                                  </button>
+                                </Tooltip>
+                              ) : null}
+                              {selectedProvider.checkin ? (
+                                <Tooltip title={t('plugins.accounts.checkin')}>
+                                  <button
+                                    type="button"
+                                    className={styles.iconButton}
+                                    aria-label={t('plugins.accounts.checkin')}
+                                    disabled={checkinBusy}
+                                    onClick={() => void runCheckin([account.account])}
+                                  >
+                                    <CalendarCheck size={14} aria-hidden="true" />
+                                  </button>
+                                </Tooltip>
+                              ) : null}
+                              <Tooltip title={t('plugins.accounts.signOut')}>
                                 <button
                                   type="button"
-                                  className={styles.iconButton}
-                                  aria-label={t('plugins.accounts.checkin')}
-                                  disabled={checkinBusy}
-                                  onClick={() => void runCheckin([account.account])}
+                                  className={`${styles.iconButton} ${styles.iconButtonDanger}`}
+                                  aria-label={t('plugins.accounts.signOut')}
+                                  onClick={() => handleSignOut(account)}
                                 >
-                                  <CalendarCheck size={14} aria-hidden="true" />
+                                  <LogOut size={14} aria-hidden="true" />
                                 </button>
                               </Tooltip>
-                            ) : null}
-                            <Tooltip title={t('plugins.accounts.signOut')}>
-                              <button
-                                type="button"
-                                className={`${styles.iconButton} ${styles.iconButtonDanger}`}
-                                aria-label={t('plugins.accounts.signOut')}
-                                onClick={() => handleSignOut(account)}
-                              >
-                                <LogOut size={14} aria-hidden="true" />
-                              </button>
-                            </Tooltip>
+                            </div>
                           </div>
                         </div>
 
