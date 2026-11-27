@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::db::SqliteDbState;
 
@@ -100,7 +100,7 @@ fn installed_by_package(
         .collect())
 }
 
-async fn reload_runtimes(manager: &PluginManagerState) {
+pub(crate) async fn reload_runtimes(manager: &PluginManagerState) {
     manager.gateway().clear_provider_cache();
     manager.middleware().reload().await;
     if let Err(error) = manager.page_server().sync_enabled_plugins(manager.db()) {
@@ -109,6 +109,37 @@ async fn reload_runtimes(manager: &PluginManagerState) {
     if let Err(error) = manager.host().notify_plugins_changed().await {
         log::warn!("plugin host restart after a plugin change failed: {error}");
     }
+}
+
+/// Atomic reload shared by the desktop command and the control API.
+///
+/// Rescans installed manifests, recompiles middleware, re-syncs page tokens,
+/// restarts the Bun host when provider plugins are present and finally emits
+/// one `plugins-changed` event so open desktop pages refresh without a restart.
+pub async fn reload_plugins(
+    manager: &PluginManagerState,
+    app: &AppHandle,
+    id: Option<&str>,
+) -> Result<Vec<InstalledPluginRecord>, String> {
+    if let Some(id) = id {
+        if store::get_installed_plugin(manager.db(), id)?.is_none() {
+            return Err(format!("Plugin '{id}' is not installed"));
+        }
+    }
+    let records = installer::refresh_installed_plugins(manager.db(), manager.paths())?;
+    reload_runtimes(manager).await;
+    let _ = app.emit("plugins-changed", json!({ "id": id }));
+    Ok(records)
+}
+
+#[tauri::command]
+pub async fn plugins_reload(
+    manager: State<'_, PluginManagerState>,
+    app: AppHandle,
+    id: Option<String>,
+) -> Result<Vec<InstalledPluginRecord>, String> {
+    let manager = manager.inner().clone();
+    reload_plugins(&manager, &app, id.as_deref()).await
 }
 
 #[tauri::command]
@@ -769,6 +800,55 @@ pub async fn plugins_account_sign_out(
         .await
 }
 
+/// `host.js`'s `usageOf` normalizes an empty plugin reply into a fixed object
+/// with every field present but empty (`{"plan":"","until":"",…,"windows":[]}`),
+/// so `object.is_empty()` never fires. A snapshot is only worth persisting when
+/// at least one field carries real content; `error` alone is not a snapshot.
+fn usage_snapshot_has_meaningful_data(object: &serde_json::Map<String, Value>) -> bool {
+    object.iter().any(|(key, value)| {
+        if key == "error" {
+            return false;
+        }
+        match value {
+            Value::String(text) => !text.trim().is_empty(),
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(map) => !map.is_empty(),
+            Value::Number(_) | Value::Bool(_) => true,
+            Value::Null => false,
+        }
+    })
+}
+
+fn record_usage_snapshot(
+    db: &SqliteDbState,
+    provider: &str,
+    account: Option<&str>,
+    usage: &Value,
+) -> Result<(), String> {
+    let Some(object) = usage.as_object() else {
+        return Ok(());
+    };
+    let has_error = object
+        .get("error")
+        .and_then(Value::as_str)
+        .is_some_and(|message| !message.trim().is_empty());
+    if has_error || !usage_snapshot_has_meaningful_data(object) {
+        return Ok(());
+    }
+    let account_key = account
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(provider);
+    let mut record = super::background_tasks::find_account_meta(db, account_key, provider)?;
+    if record.provider_id.trim().is_empty() {
+        record.provider_id = provider.to_string();
+    }
+    record.quota = usage.clone();
+    record.quota_updated_at = Some(now_rfc3339());
+    store::upsert_account_meta(db, &record)?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn plugins_account_check(
     manager: State<'_, PluginManagerState>,
@@ -777,10 +857,17 @@ pub async fn plugins_account_check(
     proxy: Option<String>,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
-    manager
+    let result = manager
         .host()
         .check(json!({ "provider": provider, "account": account, "proxy": proxy }))
-        .await
+        .await?;
+    if let Some(usage) = result.get("usage") {
+        if let Err(error) = record_usage_snapshot(manager.db(), &provider, account.as_deref(), usage)
+        {
+            log::warn!("saving the usage snapshot of {provider} failed: {error}");
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -791,10 +878,15 @@ pub async fn plugins_account_usage(
     proxy: Option<String>,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
-    manager
+    let result = manager
         .host()
         .usage(json!({ "provider": provider, "account": account, "proxy": proxy }))
-        .await
+        .await?;
+    if let Err(error) = record_usage_snapshot(manager.db(), &provider, account.as_deref(), &result)
+    {
+        log::warn!("saving the usage snapshot of {provider} failed: {error}");
+    }
+    Ok(result)
 }
 
 #[tauri::command]
@@ -972,5 +1064,73 @@ mod tests {
         .unwrap();
         let merged = attach_provider_auto_checkin(&db, json!([{"id": "demo"}])).unwrap();
         assert_eq!(merged[0]["autoCheckin"], true);
+    }
+
+    #[test]
+    fn usage_snapshot_persists_without_disabling_account_or_overwriting_with_errors() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        record_usage_snapshot(
+            &db,
+            "qoder",
+            Some("qoder#1"),
+            &json!({ "plan": "Pro", "windows": [{ "name": "Daily", "used": 25 }] }),
+        )
+        .unwrap();
+
+        let metas = store::list_account_metas(&db).unwrap();
+        assert_eq!(metas.len(), 1);
+        assert!(metas[0].enabled);
+        assert_eq!(metas[0].provider_id, "qoder");
+        assert_eq!(metas[0].quota["plan"], "Pro");
+        assert!(metas[0].quota_updated_at.is_some());
+
+        // Error payloads must not clobber the last valid cached quota snapshot.
+        record_usage_snapshot(
+            &db,
+            "qoder",
+            Some("qoder#1"),
+            &json!({ "error": "upstream timeout" }),
+        )
+        .unwrap();
+        let metas = store::list_account_metas(&db).unwrap();
+        assert_eq!(metas[0].quota["plan"], "Pro");
+    }
+
+    #[test]
+    fn an_all_empty_normalized_usage_snapshot_keeps_the_previous_quota() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        record_usage_snapshot(
+            &db,
+            "qoder",
+            Some("qoder#1"),
+            &json!({ "plan": "Pro", "windows": [{ "name": "Daily", "used": 25 }] }),
+        )
+        .unwrap();
+        let before = store::list_account_metas(&db).unwrap();
+        let previous_updated_at = before[0].quota_updated_at.clone();
+        assert!(previous_updated_at.is_some());
+
+        // The Bun host normalizes a missing usage reply into this fixed object.
+        record_usage_snapshot(
+            &db,
+            "qoder",
+            Some("qoder#1"),
+            &json!({
+                "plan": "",
+                "until": "",
+                "renew": "",
+                "balance": "",
+                "error": "",
+                "user": "",
+                "signIn": "",
+                "resets": null,
+                "windows": []
+            }),
+        )
+        .unwrap();
+
+        let after = store::list_account_metas(&db).unwrap();
+        assert_eq!(after[0].quota["plan"], "Pro");
+        assert_eq!(after[0].quota_updated_at, previous_updated_at);
     }
 }

@@ -230,8 +230,10 @@
         "notStored": "未保存该明细。可在网关设置中开启对应记录项。",
         "requestHeaders": "Request Headers",
         "responseHeaders": "Response Headers",
+        "upstreamRequestHeaders": "发往上游请求头（已脱敏）",
         "receivedBody": "收到的请求体（原始）",
-        "upstreamBody": "实际发出的请求体（整流/转换后）",
+        "upstreamBody": "实际发出的请求体（整流/转换/中间件改写后）",
+        "pluginBody": "插件最终发出的请求体",
         "lines": "{{count}} 行",
         "expand": "展开",
         "collapse": "收起",
@@ -311,6 +313,12 @@
           "declared": "已声明",
           "forwarded": "已转发",
           "used": "已调用"
+        },
+        "rewriteKinds": {
+          "pluginMiddlewareRequest": "插件改写请求",
+          "pluginMiddlewareProvider": "插件改写上游请求",
+          "pluginMiddlewareResponse": "插件改写响应",
+          "pluginProviderFetch": "渠道插件二次改写"
         },
         "compaction": {
           "native": "原生压缩",
@@ -1602,6 +1610,52 @@
       "restartRequired": "已保存，下次启动生效。当前仍使用：{{mode}}。",
       "failed": "未能更新渲染设置：{{error}}",
       "automaticFallback": "本次启动遇到显示异常，已自动回退到兼容渲染。"
+    },
+    "controlApi": {
+      "title": "Agent 集成（本地控制）",
+      "description": "允许本机编码 Agent 通过仅监听 127.0.0.1 的令牌 API 查询和修改 AI Toolbox 配置，并用弹窗逐次授权写入。",
+      "enabled": "启用本地控制 API",
+      "enabledHelp": "服务只绑定 127.0.0.1，使用随机 Bearer Token；关闭后所有 HTTP 请求立即失败。",
+      "url": "监听地址",
+      "discoveryFile": "发现文件（含令牌，不会在此显示）",
+      "statusRunning": "运行中",
+      "statusStopped": "已停止",
+      "refresh": "刷新状态",
+      "approvalMode": "授权策略",
+      "approvalModeHelp": "控制写操作是否需要桌面确认；默认每次都询问。",
+      "approvalModeAlwaysAsk": "每次都询问",
+      "approvalModeAskHighRisk": "仅高风险询问",
+      "approvalModeAutoApprove": "全部自动放行",
+      "approvalModeReadOnly": "只读",
+      "approvalModeHint": {
+        "always_ask": "所有写操作都会弹窗等待确认；本地插件热重载可单独放行。",
+        "ask_high_risk": "可逆修改自动执行，删除、远程安装、网关启停等高风险操作才弹窗。",
+        "auto_approve": "持有本机令牌的调用全部放行，适合完全可信的自动化环境。",
+        "read_only": "只允许查询；所有写请求返回 403，CLI 退出码为 4。"
+      },
+      "approvalTimeout": "确认超时",
+      "approvalTimeoutHelp": "弹窗等待秒数，范围 15–300；超时后请求返回 408。",
+      "seconds": "秒",
+      "autoApproveLocalReload": "本地插件重载免确认",
+      "autoApproveLocalReloadHelp": "仅在「每次都询问」策略下生效，且只放行本地目录来源的插件热重载。",
+      "cliTitle": "aitb 命令行",
+      "cliDescription": "安装后可在终端运行 aitb status --json，让 Agent 自动读取发现文件并调用控制面。",
+      "cliPath": "安装位置",
+      "cliInstalledTag": "已安装",
+      "cliNotInstalledTag": "未安装",
+      "cliInstall": "安装到 PATH",
+      "cliRemove": "从 PATH 移除",
+      "cliInstalled": "aitb 已安装到 PATH",
+      "cliRemoved": "aitb 已移除",
+      "cliInstallFailed": "安装 aitb 失败：{{error}}",
+      "cliRemoveFailed": "移除 aitb 失败：{{error}}",
+      "cliNotOnPath": "安装目录尚未进入当前 PATH，重新打开终端或重新登录后生效。",
+      "cliBuildHint": "未找到 aitb 可执行文件。请先运行 cargo build --release --manifest-path cli/Cargo.toml。",
+      "cliSource": "待安装文件：{{path}}",
+      "securityNote": "令牌只写入私有权限的 control.json；本页面、日志和 HTTP 响应都不会显示明文凭据。",
+      "loadFailed": "加载本地控制设置失败：{{error}}",
+      "saveFailed": "保存本地控制设置失败：{{error}}",
+      "saved": "本地控制设置已保存"
     }
   },
   "theme": {
@@ -6595,6 +6649,7 @@
       "usageEmpty": "尚未读取额度",
       "usageLoadFailed": "额度读取失败：{{error}}",
       "usageError": "额度提示：{{error}}",
+      "usageRefreshFailedCached": "刷新失败，当前显示为缓存数据",
       "usageUntil": "有效期至 {{time}}",
       "signInExpired": "登录凭据已过期，请重新登录",
       "walletBalance": "余额 {{balance}}",
@@ -7001,5 +7056,20 @@
         "pages": "插件页面"
       }
     }
+  },
+  "controlApiApproval": {
+    "title": "Agent 请求修改 AI Toolbox",
+    "riskHigh": "高风险",
+    "riskStandard": "可逆变更",
+    "countdown": "{{seconds}} 秒后超时",
+    "deny": "拒绝",
+    "allowOnce": "允许本次",
+    "action": "操作",
+    "target": "目标",
+    "highRiskNote": "此操作会删除数据、安装远程代码或切换接管状态，请确认请求来源可信。",
+    "standardNote": "此操作会写入本地配置，可通过再次修改或备份恢复。",
+    "queued": "还有 {{count}} 个请求在排队",
+    "expired": "该授权请求已超时或失效",
+    "resolveFailed": "无法提交授权结果：{{error}}"
   }
 }

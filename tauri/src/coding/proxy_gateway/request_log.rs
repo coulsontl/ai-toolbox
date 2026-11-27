@@ -49,6 +49,7 @@ pub fn is_sensitive_header(normalized_name: &str) -> bool {
             | "set-cookie"
             | "x-api-key"
             | "api-key"
+            | "x-goog-api-key"
             | "anthropic-api-key"
             | "openai-api-key"
     ) || normalized_name == "token"
@@ -541,11 +542,13 @@ mod tests {
         let redacted = redact_headers(&[
             ("Anthropic-Api-Key".to_string(), "secret".to_string()),
             ("X-Api-Key".to_string(), "secret".to_string()),
+            ("X-Goog-Api-Key".to_string(), "secret".to_string()),
             ("Custom-Token".to_string(), "secret".to_string()),
         ]);
 
         assert_eq!(redacted.get("Anthropic-Api-Key").unwrap(), REDACTED);
         assert_eq!(redacted.get("X-Api-Key").unwrap(), REDACTED);
+        assert_eq!(redacted.get("X-Goog-Api-Key").unwrap(), REDACTED);
         assert_eq!(redacted.get("Custom-Token").unwrap(), REDACTED);
     }
 
@@ -681,6 +684,11 @@ mod tests {
             )])),
             request_body: Some("{}".to_string()),
             upstream_request_body: Some(r#"{"model":"upstream"}"#.to_string()),
+            upstream_request_headers: Some(BTreeMap::from([(
+                "Authorization".to_string(),
+                REDACTED.to_string(),
+            )])),
+            plugin_request_body: Some(r#"{"model":"plugin"}"#.to_string()),
             response_headers: None,
             upstream_response_body: Some(r#"{"upstream":true}"#.to_string()),
             response_body: Some(r#"{"ok":true}"#.to_string()),
@@ -710,6 +718,18 @@ mod tests {
         assert_eq!(
             detail.upstream_response_body.as_deref(),
             Some(r#"{"upstream":true}"#)
+        );
+        assert_eq!(
+            detail
+                .upstream_request_headers
+                .as_ref()
+                .and_then(|headers| headers.get("Authorization"))
+                .map(String::as_str),
+            Some(REDACTED)
+        );
+        assert_eq!(
+            detail.plugin_request_body.as_deref(),
+            Some(r#"{"model":"plugin"}"#)
         );
         assert_eq!(detail.response_body.as_deref(), Some(r#"{"ok":true}"#));
         assert_eq!(

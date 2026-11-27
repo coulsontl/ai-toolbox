@@ -311,6 +311,14 @@ pub async fn create_grok_provider_inner<R: tauri::Runtime>(
     provider: GrokProviderInput,
 ) -> Result<GrokProvider, String> {
     validate_provider_settings(&provider.settings_config, &provider.category)?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        state,
+        Some(app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Grok,
+        &provider.category,
+        &provider.settings_config,
+        provider.meta.as_ref(),
+    )?;
     let db = state.db();
     let now = Local::now().to_rfc3339();
     let sort_index = match provider.sort_index {
@@ -353,6 +361,14 @@ pub async fn update_grok_provider(
     provider: GrokProvider,
 ) -> Result<GrokProvider, String> {
     validate_provider_settings(&provider.settings_config, &provider.category)?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Grok,
+        &provider.category,
+        &provider.settings_config,
+        provider.meta.as_ref(),
+    )?;
     if provider.id == GROK_LOCAL_PROVIDER_ID {
         return Err("Local Grok provider must be saved before it can be updated".to_string());
     }

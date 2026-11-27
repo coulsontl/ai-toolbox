@@ -315,7 +315,7 @@ pub fn record_checkin_result(
     store::upsert_account_meta(db, &record)
 }
 
-fn find_account_meta(
+pub(super) fn find_account_meta(
     db: &SqliteDbState,
     account_key: &str,
     provider: &str,

@@ -184,6 +184,14 @@ pub async fn create_claude_desktop_provider<R: tauri::Runtime>(
     provider: ClaudeDesktopProviderInput,
 ) -> Result<ClaudeDesktopProvider, String> {
     let db = state.db();
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::ClaudeDesktop,
+        &provider.category,
+        &provider.settings_config,
+        provider.meta.as_ref(),
+    )?;
     let now = Local::now().to_rfc3339();
     let content = ClaudeDesktopProviderContent {
         name: provider.name,
@@ -233,6 +241,14 @@ pub async fn update_claude_desktop_provider(
     provider: ClaudeDesktopProvider,
 ) -> Result<ClaudeDesktopProvider, String> {
     let db = state.db();
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::ClaudeDesktop,
+        &provider.category,
+        &provider.settings_config,
+        provider.meta.as_ref(),
+    )?;
     let id = provider.id.clone();
     let existing = get_provider_from_sqlite(db, &id)?
         .ok_or_else(|| format!("Claude Desktop provider with ID '{}' not found", id))?;

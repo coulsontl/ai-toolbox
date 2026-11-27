@@ -550,9 +550,14 @@
     background-color 150ms var(--pl-ease),
     border-color 150ms var(--pl-ease);
 
-  &:hover {
+  &:hover:not(:disabled) {
     border-color: var(--pl-border-strong);
     background: var(--pl-surface-hover);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   &:focus-visible {
@@ -572,6 +577,16 @@
   }
 }
 
+.spin {
+  animation: installedPluginsSpin 0.78s linear infinite;
+}
+
+@keyframes installedPluginsSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .loading {
   display: flex;
   align-items: center;
@@ -580,16 +595,6 @@
   padding: 48px;
   color: var(--pl-text-secondary);
   font-size: 12px;
-}
-
-.spin {
-  animation: pluginInstalledSpin 0.78s linear infinite;
-}
-
-@keyframes pluginInstalledSpin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 @media (max-width: 960px) {

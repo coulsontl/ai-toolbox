@@ -55,6 +55,8 @@ interface InstalledPluginsViewProps {
   pluginSettings: PluginSettings | null;
   chinaMirrorBusy: boolean;
   loading: boolean;
+  refreshing?: boolean;
+  onRefresh?: () => void;
   onDataChanged: () => Promise<void>;
   onToggleChinaMirror: (enabled: boolean) => void;
   onOpenInstall: () => void;
@@ -73,6 +75,8 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   pluginSettings,
   chinaMirrorBusy,
   loading,
+  refreshing = false,
+  onRefresh,
   onDataChanged,
   onToggleChinaMirror,
   onOpenInstall,
@@ -87,7 +91,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   const [filter, setFilter] = React.useState<PluginFilter>('all');
   const [search, setSearch] = React.useState('');
   const [sortDirection, setSortDirection] = React.useState<SortDirection>('asc');
-  const [refreshing, setRefreshing] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [uninstallTarget, setUninstallTarget] = React.useState<InstalledPluginRecord | null>(null);
   const [purgeData, setPurgeData] = React.useState(false);
@@ -156,15 +159,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
       );
     } finally {
       setBusyId(null);
-    }
-  };
-
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    try {
-      await onDataChanged();
-    } finally {
-      setRefreshing(false);
     }
   };
 
@@ -281,6 +275,21 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
             <PackageCheck size={15} aria-hidden="true" />
             <span>{t('plugins.installed.manualInstall')}</span>
           </button>
+          {onRefresh ? (
+            <button
+              type="button"
+              className={styles.actionButton}
+              disabled={refreshing}
+              onClick={onRefresh}
+            >
+              <RefreshCw
+                size={14}
+                className={refreshing ? styles.spin : undefined}
+                aria-hidden="true"
+              />
+              <span>{t('common.refresh')}</span>
+            </button>
+          ) : null}
         </div>
       </div>
     );
@@ -353,7 +362,7 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
               className={styles.iconButton}
               aria-label={t('plugins.installed.refresh')}
               disabled={refreshing}
-              onClick={() => void handleRefresh()}
+              onClick={onRefresh}
             >
               <RefreshCw
                 size={15}
@@ -597,7 +606,7 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
             type="button"
             className={styles.statusBarButton}
             disabled={refreshing}
-            onClick={() => void handleRefresh()}
+            onClick={onRefresh}
           >
             {t('plugins.installed.refresh')}
           </button>

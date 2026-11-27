@@ -101,7 +101,7 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
     }
   }, [marketFilter, markets]);
 
-  const loadListings = React.useCallback(async () => {
+  const loadListings = React.useCallback(async (): Promise<boolean> => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     setLoading(true);
@@ -112,15 +112,17 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
         marketId: marketFilter === 'all' ? null : marketFilter,
         includeNpmSearch,
       });
-      if (requestIdRef.current !== requestId) return;
+      if (requestIdRef.current !== requestId) return true;
       setListings(nextListings);
       setError(null);
       onListingCountChange(nextListings.length);
+      return true;
     } catch (listingError) {
-      if (requestIdRef.current !== requestId) return;
+      if (requestIdRef.current !== requestId) return false;
       setError(
         t('plugins.market.loadFailed', { error: formatPluginError(listingError) }),
       );
+      return false;
     } finally {
       if (requestIdRef.current === requestId) {
         setLoading(false);

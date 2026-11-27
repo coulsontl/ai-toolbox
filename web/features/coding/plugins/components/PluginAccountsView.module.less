@@ -561,6 +561,17 @@
   word-break: break-word;
 }
 
+.usageRefreshWarning {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 4px;
+  color: var(--pl-warning);
+  font-size: 10px;
+  line-height: 1.45;
+  cursor: help;
+}
+
 .quotaStrip {
   display: flex;
   min-width: 0;
@@ -683,6 +694,9 @@
 }
 
 .usageEmpty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--pl-text-muted);
   font-size: 12px;
 }

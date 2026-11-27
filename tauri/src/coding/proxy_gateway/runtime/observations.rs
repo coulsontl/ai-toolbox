@@ -36,6 +36,13 @@ pub(super) const REWRITE_CAPSULE_EXPANDED: &str = "compaction_capsule_expanded";
 pub(super) const REWRITE_COMPACTION_SUMMARIZED: &str = "compaction_summarized";
 pub(super) const REWRITE_NATIVE_TOOL_FILTERED: &str = "native_tool_filtered";
 pub(super) const REWRITE_LOSSY_CONVERSION: &str = "lossy_conversion";
+/// Plugin middleware stages, recorded by [`RequestObservations::merge_middleware_rewrites`].
+pub(super) const REWRITE_PLUGIN_MIDDLEWARE_REQUEST: &str = "plugin_middleware_request";
+pub(super) const REWRITE_PLUGIN_MIDDLEWARE_PROVIDER: &str = "plugin_middleware_provider";
+pub(super) const REWRITE_PLUGIN_MIDDLEWARE_RESPONSE: &str = "plugin_middleware_response";
+/// The plugin provider's host reported a wire request that differs from what
+/// the gateway itself built (URL, headers or body).
+pub(super) const REWRITE_PLUGIN_PROVIDER_FETCH: &str = "plugin_provider_fetch";
 
 /// Bounds that keep a malformed or hostile request from bloating the JSONL
 /// detail. Both lists are diagnostics, not a ledger.
@@ -140,6 +147,42 @@ impl RequestObservations {
             .collect();
         for kind in filtered {
             self.push_rewrite(REWRITE_NATIVE_TOOL_FILTERED, Some(kind));
+        }
+    }
+
+    /// Appends the plugin middleware stages that actually changed the payload.
+    ///
+    /// Called twice by design: once when the gateway response is assembled
+    /// (request/provider/response stages already known) and once right before
+    /// the detail is written, because a streaming `onEvent` middleware can only
+    /// report its rewrites after `write_streaming_body` consumed the stream.
+    /// Entries are deduplicated so the second merge never doubles a marker.
+    pub(super) fn merge_middleware_rewrites(
+        &mut self,
+        request: &[String],
+        provider: &[String],
+        response: &[String],
+    ) {
+        for (kind, names) in [
+            (REWRITE_PLUGIN_MIDDLEWARE_REQUEST, request),
+            (REWRITE_PLUGIN_MIDDLEWARE_PROVIDER, provider),
+            (REWRITE_PLUGIN_MIDDLEWARE_RESPONSE, response),
+        ] {
+            if names.is_empty() {
+                continue;
+            }
+            // `push_rewrite` truncates the detail before storing it, so the
+            // duplicate check must compare the same truncated form; otherwise a
+            // long detail is inserted again on the second merge.
+            let detail = truncate(names.join(", "), MAX_DETAIL_CHARS);
+            if self
+                .rewrites
+                .iter()
+                .any(|rewrite| rewrite.kind == kind && rewrite.detail.as_deref() == Some(&detail))
+            {
+                continue;
+            }
+            self.push_rewrite(kind, Some(detail));
         }
     }
 }
@@ -537,6 +580,20 @@ mod tests {
         let mut observations = RequestObservations::default();
         observations.push_rewrite(REWRITE_LOSSY_CONVERSION, Some("x".repeat(400)));
 
+        let detail = observations.rewrites[0].detail.as_deref().unwrap();
+        assert_eq!(detail.chars().count(), MAX_DETAIL_CHARS + 1);
+    }
+
+    #[test]
+    fn middleware_rewrite_merge_compares_truncated_details() {
+        let mut observations = RequestObservations::default();
+        let names = vec!["x".repeat(MAX_DETAIL_CHARS + 50)];
+        observations.merge_middleware_rewrites(&names, &[], &[]);
+        // The stored detail is truncated, so the second (identical) merge must
+        // recognize it instead of appending a duplicate.
+        observations.merge_middleware_rewrites(&names, &[], &[]);
+
+        assert_eq!(observations.rewrites.len(), 1);
         let detail = observations.rewrites[0].detail.as_deref().unwrap();
         assert_eq!(detail.chars().count(), MAX_DETAIL_CHARS + 1);
     }

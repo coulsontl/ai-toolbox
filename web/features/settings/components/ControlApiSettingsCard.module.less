@@ -1,0 +1,125 @@
+.card {
+  border-radius: 12px;
+  box-shadow: var(--shadow-card-sm);
+  border: 1px solid var(--color-border-card) !important;
+  overflow: hidden;
+  transition: box-shadow 0.2s ease;
+
+  :global {
+    .ant-card-head {
+      background: var(--color-bg-elevated);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--color-border-card);
+      padding: 0 20px;
+      min-height: 48px;
+    }
+    .ant-card-head-title {
+      padding: 12px 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--color-text-primary);
+    }
+    .ant-card-body {
+      padding: 16px 20px;
+    }
+    .ant-card-extra {
+      padding: 12px 0;
+    }
+  }
+
+  &:hover {
+    box-shadow: var(--shadow-container);
+    border-color: var(--color-border-secondary) !important;
+  }
+}
+
+.cardTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hint {
+  display: block;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 32px;
+  margin-top: 12px;
+}
+
+.metaBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-bg-container);
+  border: 1px solid var(--color-border-card);
+}
+
+.metaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 20px;
+  font-size: 12px;
+}
+
+.path {
+  max-width: 65%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.divider {
+  margin: 16px 0 4px;
+}
+
+.approvalSelect {
+  width: 200px;
+}
+
+.cliHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.cliActions {
+  margin-top: 12px;
+}
+
+.securityNote {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--color-border-card);
+
+  :global(.anticon) {
+    color: var(--color-text-tertiary);
+    margin-top: 2px;
+  }
+
+  span {
+    font-size: 10px;
+    line-height: 1.5;
+  }
+}

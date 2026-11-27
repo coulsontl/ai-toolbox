@@ -29,6 +29,7 @@ use serde_json::{json, Map as JsonMap, Value};
 use crate::coding::proxy_gateway::transformer::AiProtocol;
 
 use super::bun_host::auth::list_accounts;
+use super::bun_host::protocol::CapturedWireRequest;
 use super::PluginManagerState;
 
 /// The body of a plugin fetch reply, in the shape the gateway forwards.
@@ -103,11 +104,28 @@ pub struct PluginProviderEndpoint {
     pub models: Vec<PluginModelInfo>,
 }
 
+/// Ask the Bun host to capture the outbound HTTP request a provider plugin
+/// really sent. Both switches off means no capture at all.
+#[derive(Clone, Debug, Default)]
+pub struct PluginRequestCapture {
+    pub headers: bool,
+    pub body: bool,
+    /// Decoded body cap in bytes; the host falls back to its own 256 KiB
+    /// default when this is zero and never exceeds 256 KiB.
+    pub max_body_bytes: usize,
+}
+
+/// The request the host captured, re-exported for gateway consumers.
+pub type CapturedPluginRequest = CapturedWireRequest;
+
 /// A fetch reply headed for `UpstreamResponse::PluginStream`.
 pub struct PluginFetchReply {
     pub status: u16,
     pub headers: HeaderMap,
     pub body: PluginGatewayBody,
+    /// Present when the caller asked for a capture and the plugin's fetch
+    /// reached the vendor through the host's `fetch`.
+    pub wire_request: Option<CapturedPluginRequest>,
 }
 
 const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
@@ -458,6 +476,39 @@ pub async fn send_via_plugin_host(
     proxy: Option<&str>,
     initial_account: &str,
 ) -> Result<PluginFetchReply, String> {
+    send_via_plugin_host_with_capture(
+        manager,
+        reference,
+        npm,
+        upstream_model_id,
+        url,
+        method,
+        headers,
+        body,
+        proxy,
+        initial_account,
+        None,
+    )
+    .await
+}
+
+/// Send one upstream request and, when `capture` asks for it, also return the
+/// request the plugin really made to the vendor.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_via_plugin_host_with_capture(
+    manager: &PluginManagerState,
+    reference: &PluginProviderRef,
+    npm: &str,
+    upstream_model_id: &str,
+    url: &str,
+    method: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    proxy: Option<&str>,
+    initial_account: &str,
+    capture: Option<PluginRequestCapture>,
+) -> Result<PluginFetchReply, String> {
+    let capture = capture.filter(|capture| capture.headers || capture.body);
     let candidates = enabled_accounts(manager, &reference.provider_id)?;
     let mut account = initial_account.to_string();
     let mut switches_left = if reference.account_strategy == PluginAccountStrategy::AutoRotate {
@@ -468,7 +519,7 @@ pub async fn send_via_plugin_host(
     let mut reloaded = false;
 
     loop {
-        let params = json!({
+        let mut params = json!({
             "provider": reference.provider_id,
             "account": account,
             "model": upstream_model_id,
@@ -479,6 +530,11 @@ pub async fn send_via_plugin_host(
             "body": base64::engine::general_purpose::STANDARD.encode(body),
             "proxy": proxy.unwrap_or(""),
         });
+        if let Some(object) = params.as_object_mut() {
+            if let Some(capture) = capture_request_json(capture.as_ref()) {
+                object.insert("captureRequest".to_string(), capture);
+            }
+        }
         let response = manager.host().fetch(params).await?;
 
         if response.status == 401
@@ -526,6 +582,7 @@ pub async fn send_via_plugin_host(
                     .body
                     .map(|chunk| chunk.map(|bytes: Bytes| bytes.to_vec())),
             ),
+            wire_request: response.wire_request,
         });
     }
 }
@@ -549,6 +606,17 @@ fn header_map_to_json(headers: &HeaderMap) -> Value {
         object.insert(lower, Value::String(text.to_string()));
     }
     Value::Object(object)
+}
+
+/// The `captureRequest` param sent to the host, or `None` when even the
+/// capture itself is off (both switches false).
+fn capture_request_json(capture: Option<&PluginRequestCapture>) -> Option<Value> {
+    let capture = capture.filter(|capture| capture.headers || capture.body)?;
+    Some(json!({
+        "headers": capture.headers,
+        "body": capture.body,
+        "maxBodyBytes": capture.max_body_bytes,
+    }))
 }
 
 /// Host reply headers as a `HeaderMap`, dropping framing headers the gateway
@@ -614,6 +682,22 @@ mod tests {
             Some(AiProtocol::OpenAiChat)
         );
         assert_eq!(npm_to_ai_protocol("@ai-sdk/unknown"), None);
+    }
+
+    #[test]
+    fn a_capture_request_is_only_sent_when_asked_for() {
+        assert!(capture_request_json(None).is_none());
+        assert!(capture_request_json(Some(&PluginRequestCapture::default())).is_none());
+
+        let value = capture_request_json(Some(&PluginRequestCapture {
+            headers: true,
+            body: false,
+            max_body_bytes: 4096,
+        }))
+        .expect("capture params");
+        assert_eq!(value["headers"], true);
+        assert_eq!(value["body"], false);
+        assert_eq!(value["maxBodyBytes"], 4096);
     }
 
     #[test]

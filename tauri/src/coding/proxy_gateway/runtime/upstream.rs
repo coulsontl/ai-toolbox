@@ -58,6 +58,7 @@ use crate::coding::proxy_gateway::types::{
     normalize_service_tier, service_tier_wire_value, CodexChatReasoningMeta,
     GatewayAuxiliaryMetadata, GatewayCliKey, GatewayFailoverEvent, GatewayProviderAttempt,
     GatewayProxyMode, GatewayStreamOutcome, ProviderGatewayMeta, ProviderModelHealthKey,
+    ProxyGatewaySettings,
 };
 use crate::coding::proxy_gateway::usage_parser::{
     flattened_flush_boundary, for_each_flattened_sse_field, from_response_body_with_provider_type,
@@ -111,6 +112,167 @@ const COPILOT_TOKEN_CACHE_MAX_ENTRIES: usize = 256;
 // `MAX_BYTES x MAX_CONCURRENT_CONNECTIONS` (= 128, `runtime.rs`).
 const STREAM_SEMANTIC_PROBE_MAX_CHUNKS: usize = 1024;
 const STREAM_SEMANTIC_PROBE_MAX_BYTES: usize = 1024 * 1024;
+
+/// Hard cap for the body a plugin host hands back as `wire_request.body`.
+/// Mirrors the host-side default; the setting can only lower it.
+const MAX_PLUGIN_CAPTURE_BODY_BYTES: usize = 256 * 1024;
+
+/// Request-side detail captured from the final upstream attempt.
+///
+/// A plugin provider (Bun host) can report the request it really sent, while a
+/// plain HTTP forward has no such report and simply records the headers the
+/// gateway built. Both paths store raw values here; redaction happens when the
+/// JSONL detail is written (`runtime/observability.rs`).
+#[derive(Clone, Debug, Default)]
+struct CapturedUpstreamRequest {
+    /// Redacted URL the plugin reported; `None` keeps the gateway-built URL.
+    upstream_url_override: Option<String>,
+    /// Headers actually sent upstream, when header storage is enabled.
+    request_headers: Option<Vec<(String, String)>>,
+    /// Plugin-sent body, only when it differs from the gateway body.
+    plugin_body: Option<Vec<u8>>,
+    /// Original (pre-truncation) plugin body length.
+    plugin_body_bytes: u64,
+    /// The plugin host's 256 KiB capture cap cut `plugin_body`, so the stored
+    /// bytes are only a prefix of the body the plugin really sent.
+    plugin_body_truncated: bool,
+    /// The plugin changed the URL, headers, or body beyond what the gateway
+    /// itself built.
+    plugin_rewrote: bool,
+}
+
+/// Capture switches derived from the log settings.
+///
+/// Both switches off returns `None`, so an installation that never stores
+/// headers or bodies pays no capture cost at all.
+fn plugin_request_capture(
+    settings: &ProxyGatewaySettings,
+) -> Option<gateway_bridge::PluginRequestCapture> {
+    if !settings.request_log_enabled || (!settings.store_headers && !settings.store_request_body) {
+        return None;
+    }
+    Some(gateway_bridge::PluginRequestCapture {
+        headers: settings.store_headers,
+        body: settings.store_request_body,
+        max_body_bytes: (settings.log_max_body_size_kb.max(1) as usize)
+            .saturating_mul(1024)
+            .min(MAX_PLUGIN_CAPTURE_BODY_BYTES),
+    })
+}
+
+fn sorted_header_pairs(mut pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+    pairs.sort();
+    pairs
+}
+
+fn header_map_pairs(map: &HeaderMap) -> Vec<(String, String)> {
+    sorted_header_pairs(
+        map.iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_string(),
+                    value
+                        .to_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|_| {
+                            String::from_utf8_lossy(value.as_bytes()).into_owned()
+                        }),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn normalized_pair_list(pairs: &[(String, String)]) -> Vec<(String, String)> {
+    sorted_header_pairs(
+        pairs
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.trim().to_ascii_lowercase(),
+                    value.trim().to_string(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Header comparison for the `plugin_provider_fetch` marker.
+///
+/// `gateway_bridge` strips the client's credentials before handing the request
+/// to the Bun host, and `host.js::sdkHeaders` re-injects the account's real
+/// credentials. Those differences are expected on every direct plugin call, so
+/// they must not count as a plugin rewrite. Authentication headers are still
+/// recorded verbatim in `request_headers` (redacted later when the detail is
+/// written); they are only excluded from the difference test.
+fn comparable_header_pairs(pairs: &[(String, String)]) -> Vec<(String, String)> {
+    normalized_pair_list(
+        &pairs
+            .iter()
+            .filter(|(name, _)| {
+                !crate::coding::proxy_gateway::request_log::is_sensitive_header(
+                    &name.trim().to_ascii_lowercase(),
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Capture for a plain HTTP forward: the gateway has no wire report, so the
+/// request headers it built are the truth.
+fn captured_gateway_request(
+    headers: &HeaderMap,
+    settings: &ProxyGatewaySettings,
+) -> CapturedUpstreamRequest {
+    CapturedUpstreamRequest {
+        request_headers: settings.store_headers.then(|| header_map_pairs(headers)),
+        ..Default::default()
+    }
+}
+
+/// Capture for a plugin-host reply. `gateway_body`/`gateway_url` are what the
+/// gateway handed to the host; the wire request is what the host really sent.
+fn captured_plugin_request(
+    wire: Option<&gateway_bridge::CapturedPluginRequest>,
+    gateway_body: &[u8],
+    gateway_url: &str,
+    gateway_headers: &HeaderMap,
+    settings: &ProxyGatewaySettings,
+) -> CapturedUpstreamRequest {
+    let Some(wire) = wire else {
+        // No wire report (for example a host that cannot capture it): fall
+        // back to the headers the gateway itself built.
+        return captured_gateway_request(gateway_headers, settings);
+    };
+    let url_changed = !wire.url.trim().is_empty() && wire.url != gateway_url;
+    let body_changed = wire.body.as_deref().is_some_and(|body| {
+        if wire.truncated {
+            wire.body_bytes != gateway_body.len() as u64 || !gateway_body.starts_with(body)
+        } else {
+            body != gateway_body
+        }
+    });
+    let headers_changed = settings.request_log_enabled
+        && settings.store_headers
+        && !wire.headers.is_empty()
+        && comparable_header_pairs(&wire.headers)
+            != comparable_header_pairs(&header_map_pairs(gateway_headers));
+    CapturedUpstreamRequest {
+        upstream_url_override: url_changed
+            .then(|| crate::coding::proxy_gateway::request_log::redact_request_path(&wire.url)),
+        // Headers are recorded whenever a capture exists, even when they match
+        // what the gateway built: they are the truth about the final request.
+        request_headers: (settings.request_log_enabled
+            && settings.store_headers
+            && !wire.headers.is_empty())
+            .then(|| sorted_header_pairs(wire.headers.clone())),
+        plugin_body: body_changed.then(|| wire.body.clone().unwrap_or_default()),
+        plugin_body_bytes: if body_changed { wire.body_bytes } else { 0 },
+        plugin_body_truncated: body_changed && wire.truncated,
+        plugin_rewrote: url_changed || body_changed || headers_changed,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct CopilotTokenCacheEntry {
@@ -992,7 +1154,7 @@ pub(super) async fn route_request_with_options(
                     }
                 }
                 RequestOutcome::Reject { status, message } => {
-                    return middleware_reject_response(&route, status, &message);
+                    return middleware_reject_response(&route, status, &message, &middleware_state);
                 }
             }
         }
@@ -1006,16 +1168,20 @@ pub(super) async fn route_request_with_options(
     }
 
     let Some(db) = context.db.as_ref() else {
-        return json_response(
-            503,
-            "Service Unavailable",
-            json!({
-                "error": "gateway_provider_state_missing",
-                "message": "Proxy gateway was started without database access, so it cannot resolve upstream providers."
-            }),
-            route.route_name,
-            None,
-            "matched CLI gateway route, but runtime has no database handle",
+        return finalize_middleware_response(
+            json_response(
+                503,
+                "Service Unavailable",
+                json!({
+                    "error": "gateway_provider_state_missing",
+                    "message": "Proxy gateway was started without database access, so it cannot resolve upstream providers."
+                }),
+                route.route_name,
+                None,
+                "matched CLI gateway route, but runtime has no database handle",
+            ),
+            middleware_request.as_ref(),
+            &middleware_state,
         );
     };
 
@@ -1042,7 +1208,11 @@ pub(super) async fn route_request_with_options(
                 );
                 response.cli_key = Some(route.cli_key);
                 response.error_category = Some("privacy_request_blocked".into());
-                return response;
+                return finalize_middleware_response(
+                    response,
+                    middleware_request.as_ref(),
+                    &middleware_state,
+                );
             }
         };
     let mut response = forward_to_upstream(
@@ -1135,7 +1305,7 @@ pub(super) async fn route_request_with_options(
         response.privacy = Some(privacy);
     }
     apply_response_middleware(context, request, &route, &mut response, &middleware_state).await;
-    response
+    finalize_middleware_response(response, middleware_request.as_ref(), &middleware_state)
 }
 
 /// Build the gateway route view of a `/plugin/<provider_id>/...` request.
@@ -1374,7 +1544,7 @@ async fn forward_plugin_inference(
                     }
                 }
                 RequestOutcome::Reject { status, message } => {
-                    return middleware_reject_response(route, status, &message);
+                    return middleware_reject_response(route, status, &message, &middleware_state);
                 }
             }
         }
@@ -1404,16 +1574,24 @@ async fn forward_plugin_inference(
             );
             response.cli_key = Some(route.cli_key);
             response.error_category = Some("privacy_request_blocked".to_string());
-            return response;
+            return finalize_middleware_response(
+                response,
+                middleware_request.as_ref(),
+                &middleware_state,
+            );
         }
     };
 
     let Some(manager) = context.plugin_manager.as_ref() else {
-        return plugin_failure_response(
-            route,
-            503,
-            "plugin_runtime_missing",
-            "The plugin runtime is not available in this build session.",
+        return finalize_middleware_response(
+            plugin_failure_response(
+                route,
+                503,
+                "plugin_runtime_missing",
+                "The plugin runtime is not available in this build session.",
+            ),
+            middleware_request.as_ref(),
+            &middleware_state,
         );
     };
     let requested_model =
@@ -1429,7 +1607,11 @@ async fn forward_plugin_inference(
     {
         Ok(endpoint) => endpoint,
         Err(message) => {
-            return plugin_failure_response(route, 502, "plugin_provider_unavailable", &message)
+            return finalize_middleware_response(
+                plugin_failure_response(route, 502, "plugin_provider_unavailable", &message),
+                middleware_request.as_ref(),
+                &middleware_state,
+            )
         }
     };
 
@@ -1440,15 +1622,19 @@ async fn forward_plugin_inference(
     if raw_request_path.ends_with("/count_tokens")
         && endpoint.target_protocol != AiProtocol::AnthropicMessages
     {
-        return plugin_failure_response(
-            route,
-            501,
-            "unsupported_endpoint",
-            &format!(
-                "Plugin provider '{}' uses {} protocol and does not support /v1/messages/count_tokens.",
-                endpoint.provider_id,
-                endpoint.target_protocol.as_str()
+        return finalize_middleware_response(
+            plugin_failure_response(
+                route,
+                501,
+                "unsupported_endpoint",
+                &format!(
+                    "Plugin provider '{}' uses {} protocol and does not support /v1/messages/count_tokens.",
+                    endpoint.provider_id,
+                    endpoint.target_protocol.as_str()
+                ),
             ),
+            middleware_request.as_ref(),
+            &middleware_state,
         );
     }
 
@@ -1618,7 +1804,7 @@ async fn forward_plugin_inference(
         response.privacy = Some(privacy);
     }
     apply_response_middleware(context, request, route, &mut response, &middleware_state).await;
-    response
+    finalize_middleware_response(response, middleware_request.as_ref(), &middleware_state)
 }
 
 /// Build the middleware request context shared by every hook.
@@ -1656,6 +1842,7 @@ fn middleware_reject_response(
     route: &GatewayRoute,
     status: u16,
     message: &str,
+    middleware_state: &MiddlewareState,
 ) -> DebugHttpResponse {
     let mut response = json_response(
         status,
@@ -1667,6 +1854,40 @@ fn middleware_reject_response(
     );
     response.cli_key = Some(route.cli_key);
     response.error_category = Some("middleware_rejected".to_string());
+    // `RequestOutcome::Reject` does not carry the body a preceding `onRequest`
+    // module rewrote, so only the rewrite markers can be preserved here.
+    response.observations.merge_middleware_rewrites(
+        &middleware_state.request_rewrites(),
+        &middleware_state.provider_rewrites(),
+        &middleware_state.response_rewrites(),
+    );
+    response.middleware_state = Some(middleware_state.clone());
+    response
+}
+
+/// Attach middleware bookkeeping to a local (pre-upstream) failure.
+///
+/// When `onRequest` rewrote the body but routing/provider selection failed
+/// before the request was sent, the detail must still show the rewritten
+/// body; that is the only way to explain why the client's original body is
+/// not what the upstream would have received. The client-facing
+/// `request_body` intentionally stays the original inbound body.
+fn finalize_middleware_response(
+    mut response: DebugHttpResponse,
+    rewritten_request: Option<&DebugHttpRequest>,
+    middleware_state: &MiddlewareState,
+) -> DebugHttpResponse {
+    if response.upstream_url.is_none() && response.upstream_request_body.is_none() {
+        if let Some(rewritten) = rewritten_request {
+            response.upstream_request_body = Some(rewritten.body.clone());
+        }
+    }
+    response.observations.merge_middleware_rewrites(
+        &middleware_state.request_rewrites(),
+        &middleware_state.provider_rewrites(),
+        &middleware_state.response_rewrites(),
+    );
+    response.middleware_state = Some(middleware_state.clone());
     response
 }
 
@@ -2622,7 +2843,42 @@ async fn send_upstream_request(
     let aux_shaping = aux_task.as_ref().is_some_and(CodexAuxTask::is_shaped);
     // Plugin providers delegate the transport, not the routing: resolve the
     // endpoint and its protocol first so conversion, URL building and headers
-    // all see the effective provider.
+    // all see the effective provider. Also recognize custom providers whose
+    // `base_url` explicitly targets this gateway's `/plugin/<provider_id>`
+    // route so they dispatch in-process to the Bun host instead of looping
+    // back over HTTP.
+    if provider.plugin_provider.is_none() {
+        let mut gateway_addrs = Vec::new();
+        if let Some(listen_addr) = context.listen_addr() {
+            gateway_addrs.push(listen_addr);
+        }
+        let settings_snapshot = context.settings_snapshot();
+        for addr in super::super::self_loop::gateway_addrs_from_status_and_settings(
+            None,
+            Some(&settings_snapshot),
+        ) {
+            if !gateway_addrs.contains(&addr) {
+                gateway_addrs.push(addr);
+            }
+        }
+        if let Some(provider_id) =
+            super::super::self_loop::extract_local_gateway_plugin_provider_id(
+                &provider.base_url,
+                &gateway_addrs,
+            )
+        {
+            provider.plugin_provider = Some(PluginProviderRef {
+                plugin_spec: String::new(),
+                provider_id,
+                account_key: None,
+                account_strategy: crate::plugins::gateway_bridge::PluginAccountStrategy::AutoRotate,
+            });
+            // `##` marked the local `/plugin/<id>` URL as full; the plugin
+            // endpoint replaces it with a base URL that still needs the
+            // protocol path appended.
+            provider.is_full_url = false;
+        }
+    }
     let mut plugin_endpoint: Option<gateway_bridge::PluginProviderEndpoint> = None;
     let mut plugin_account: Option<String> = None;
     if let Some(reference) = provider.plugin_provider.clone() {
@@ -2646,6 +2902,9 @@ async fn send_upstream_request(
         .map_err(|message| GatewayForwardError::new(message, GatewayFailureKind::Connection))?;
         provider.target_protocol = endpoint.target_protocol;
         provider.base_url = endpoint.base_url.clone();
+        // The plugin endpoint is always a base URL; never keep the `##`
+        // full-URL marker from the placeholder/local route.
+        provider.is_full_url = false;
         plugin_account = Some(gateway_bridge::select_plugin_account(manager, &reference));
         plugin_endpoint = Some(endpoint);
     }
@@ -2793,6 +3052,11 @@ async fn send_upstream_request(
 
     let header_preserving_proxy = header_preserving_proxy(db).await;
 
+    // Request-side capture is driven entirely by the log settings: both
+    // switches off means the host is not asked for a wire request at all.
+    let capture_settings = context.settings_snapshot();
+    let plugin_capture = plugin_request_capture(&capture_settings);
+    let captured_request: CapturedUpstreamRequest;
     let response = if let (Some(endpoint), Some(manager), Some(reference)) = (
         plugin_endpoint.as_ref(),
         context.plugin_manager.as_ref(),
@@ -2804,7 +3068,7 @@ async fn send_upstream_request(
             Some(Some(url)) => Some(url),
             _ => None,
         };
-        let reply = gateway_bridge::send_via_plugin_host(
+        let reply = gateway_bridge::send_via_plugin_host_with_capture(
             manager,
             reference,
             &endpoint.npm,
@@ -2815,6 +3079,7 @@ async fn send_upstream_request(
             &upstream_body,
             plugin_proxy.as_deref(),
             plugin_account.as_deref().unwrap_or(&reference.provider_id),
+            plugin_capture,
         )
         .await
         .map_err(|message| {
@@ -2825,6 +3090,13 @@ async fn send_upstream_request(
             error.upstream_request_body = Some(upstream_body_snapshot.clone());
             error
         })?;
+        captured_request = captured_plugin_request(
+            reply.wire_request.as_ref(),
+            &upstream_body,
+            upstream_url.as_str(),
+            &headers.map,
+            &capture_settings,
+        );
         UpstreamResponse::PluginStream {
             status: reqwest::StatusCode::from_u16(reply.status)
                 .unwrap_or(reqwest::StatusCode::BAD_GATEWAY),
@@ -2832,6 +3104,7 @@ async fn send_upstream_request(
             body: reply.body,
         }
     } else {
+        captured_request = captured_gateway_request(&headers.map, &capture_settings);
         send_request_once(
             &client,
             method.clone(),
@@ -2949,6 +3222,7 @@ async fn send_upstream_request(
                 remote_compaction,
                 xai_namespace_restore_map.clone(),
                 observations.clone(),
+                captured_request.clone(),
             )
             .await;
         }
@@ -3023,7 +3297,7 @@ async fn send_upstream_request(
                 })?,
             None => retried_body,
         };
-        let response = send_retry_attempt(
+        let (response, captured_attempt) = send_retry_attempt(
             context,
             provider,
             plugin_endpoint.as_ref(),
@@ -3065,6 +3339,7 @@ async fn send_upstream_request(
             RemoteCompactionCompat::Fallback,
             xai_namespace_restore_map.clone(),
             retried.observations,
+            captured_attempt,
         )
         .await;
     }
@@ -3184,7 +3459,7 @@ async fn send_upstream_request(
                 let rectified_pipeline = rectified.pipeline;
                 let rectified_pipeline_context = rectified.pipeline_context;
                 let rectified_observations = rectified.observations;
-                let response = send_retry_attempt(
+                let (response, captured_attempt) = send_retry_attempt(
                     context,
                     provider,
                     plugin_endpoint.as_ref(),
@@ -3223,6 +3498,7 @@ async fn send_upstream_request(
                     remote_compaction,
                     xai_namespace_restore_map.clone(),
                     rectified_observations,
+                    captured_attempt,
                 )
                 .await;
             }
@@ -3246,7 +3522,7 @@ async fn send_upstream_request(
                     &upstream_body_snapshot,
                     encrypted_content_error.strip_item_ids,
                 )? {
-                    let response = send_retry_attempt(
+                    let (response, captured_attempt) = send_retry_attempt(
                         context,
                         provider,
                         plugin_endpoint.as_ref(),
@@ -3285,6 +3561,7 @@ async fn send_upstream_request(
                         remote_compaction,
                         xai_namespace_restore_map.clone(),
                         observations.clone(),
+                        captured_attempt,
                     )
                     .await;
                 }
@@ -3301,7 +3578,7 @@ async fn send_upstream_request(
                     None
                 };
             if let Some(rectified_body) = rectified_body {
-                let response = send_retry_attempt(
+                let (response, captured_attempt) = send_retry_attempt(
                     context,
                     provider,
                     plugin_endpoint.as_ref(),
@@ -3340,6 +3617,7 @@ async fn send_upstream_request(
                     remote_compaction,
                     xai_namespace_restore_map.clone(),
                     observations.clone(),
+                    captured_attempt,
                 )
                 .await;
             }
@@ -3351,7 +3629,7 @@ async fn send_upstream_request(
             if let Some(rectified_body) =
                 build_unsupported_media_rectified_body(&upstream_body_snapshot)?
             {
-                let response = send_retry_attempt(
+                let (response, captured_attempt) = send_retry_attempt(
                     context,
                     provider,
                     plugin_endpoint.as_ref(),
@@ -3390,6 +3668,7 @@ async fn send_upstream_request(
                     remote_compaction,
                     xai_namespace_restore_map.clone(),
                     observations.clone(),
+                    captured_attempt,
                 )
                 .await;
             }
@@ -3419,6 +3698,7 @@ async fn send_upstream_request(
             // still identifiable as a compaction turn by its path and category.
             None,
             observations,
+            captured_request.clone(),
         ));
     }
 
@@ -3441,6 +3721,7 @@ async fn send_upstream_request(
         remote_compaction,
         xai_namespace_restore_map,
         observations,
+        captured_request,
     )
     .await
 }
@@ -3487,7 +3768,7 @@ fn websocket_aux_failure(
         upstream_response_body_bytes,
         upstream_url: None,
         served_service_tier: None,
-        observations: super::observations::RequestObservations::default(),
+        observations: crate::coding::proxy_gateway::runtime::observations::RequestObservations::default(),
         auxiliary_shaped: false,
         error_category: Some(error_category.into()),
         error_message: Some(error_message.into()),
@@ -3766,7 +4047,8 @@ async fn send_retry_attempt(
     non_streaming_timeout_secs: u64,
     streaming_idle_timeout_secs: u64,
     header_preserving_proxy: &Option<Option<String>>,
-) -> Result<UpstreamResponse, GatewayForwardError> {
+) -> Result<(UpstreamResponse, CapturedUpstreamRequest), GatewayForwardError> {
+    let capture_settings = context.settings_snapshot();
     if let (Some(endpoint), Some(manager), Some(reference)) = (
         plugin_endpoint,
         context.plugin_manager.as_ref(),
@@ -3776,7 +4058,7 @@ async fn send_retry_attempt(
             Some(Some(url)) => Some(url),
             _ => None,
         };
-        let reply = gateway_bridge::send_via_plugin_host(
+        let reply = gateway_bridge::send_via_plugin_host_with_capture(
             manager,
             reference,
             &endpoint.npm,
@@ -3787,6 +4069,7 @@ async fn send_retry_attempt(
             upstream_body,
             plugin_proxy.as_deref(),
             plugin_account.unwrap_or(&reference.provider_id),
+            plugin_request_capture(&capture_settings),
         )
         .await
         .map_err(|message| {
@@ -3795,14 +4078,24 @@ async fn send_retry_attempt(
                 GatewayFailureKind::Connection,
             )
         })?;
-        return Ok(UpstreamResponse::PluginStream {
-            status: reqwest::StatusCode::from_u16(reply.status)
-                .unwrap_or(reqwest::StatusCode::BAD_GATEWAY),
-            headers: reply.headers,
-            body: reply.body,
-        });
+        let captured = captured_plugin_request(
+            reply.wire_request.as_ref(),
+            upstream_body,
+            upstream_url.as_str(),
+            &headers.map,
+            &capture_settings,
+        );
+        return Ok((
+            UpstreamResponse::PluginStream {
+                status: reqwest::StatusCode::from_u16(reply.status)
+                    .unwrap_or(reqwest::StatusCode::BAD_GATEWAY),
+                headers: reply.headers,
+                body: reply.body,
+            },
+            captured,
+        ));
     }
-    send_request_once(
+    let response = send_request_once(
         client,
         method.clone(),
         upstream_url,
@@ -3812,7 +4105,11 @@ async fn send_retry_attempt(
         streaming_idle_timeout_secs.max(1),
         header_preserving_proxy.clone(),
     )
-    .await
+    .await?;
+    Ok((
+        response,
+        captured_gateway_request(&headers.map, &capture_settings),
+    ))
 }
 
 async fn send_request_once(
@@ -4025,8 +4322,26 @@ async fn build_gateway_response(
     remote_compaction: RemoteCompactionCompat,
     xai_namespace_restore_map: HashMap<String, NamespacedName>,
     mut observations: super::observations::RequestObservations,
+    captured_request: CapturedUpstreamRequest,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let status = response.status();
+    // A plugin host may report a URL the SDK normalized or rewrote (and which
+    // can carry a query-string key); always log the redacted wire URL.
+    let upstream_url = captured_request
+        .upstream_url_override
+        .clone()
+        .unwrap_or(upstream_url);
+    if captured_request.plugin_rewrote {
+        let detail = if provider.name.trim().is_empty() {
+            provider.id.clone()
+        } else {
+            provider.name.clone()
+        };
+        observations.push_rewrite(
+            super::observations::REWRITE_PLUGIN_PROVIDER_FETCH,
+            Some(detail),
+        );
+    }
     let aux_task = (provider.cli_key == GatewayCliKey::Codex)
         .then(|| classify_codex_aux_task(request))
         .flatten();
@@ -4247,6 +4562,11 @@ async fn build_gateway_response(
             fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
             ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
             upstream_request_body: Some(upstream_body_snapshot),
+            upstream_request_headers: captured_request.request_headers.clone(),
+            plugin_request_body: captured_request.plugin_body.clone(),
+            plugin_request_body_bytes: captured_request.plugin_body_bytes,
+            plugin_request_body_truncated: captured_request.plugin_body_truncated,
+            middleware_state: None,
             target_protocol: Some(provider.target_protocol),
             upstream_response_body: Some(upstream_response_body),
             upstream_response_body_bytes,
@@ -4362,6 +4682,11 @@ async fn build_gateway_response(
             fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
             ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
             upstream_request_body: Some(upstream_body_snapshot),
+            upstream_request_headers: captured_request.request_headers.clone(),
+            plugin_request_body: captured_request.plugin_body.clone(),
+            plugin_request_body_bytes: captured_request.plugin_body_bytes,
+            plugin_request_body_truncated: captured_request.plugin_body_truncated,
+            middleware_state: None,
             target_protocol: Some(provider.target_protocol),
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
@@ -4616,6 +4941,11 @@ async fn build_gateway_response(
         fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
         ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
         upstream_request_body: Some(upstream_body_snapshot),
+        upstream_request_headers: captured_request.request_headers.clone(),
+        plugin_request_body: captured_request.plugin_body.clone(),
+        plugin_request_body_bytes: captured_request.plugin_body_bytes,
+        plugin_request_body_truncated: captured_request.plugin_body_truncated,
+        middleware_state: None,
         target_protocol: Some(provider.target_protocol),
         upstream_response_body: stored_upstream_response_body,
         upstream_response_body_bytes: stored_upstream_response_body_bytes,
@@ -6984,6 +7314,7 @@ fn buffered_gateway_response(
     upstream_url: String,
     compaction_mode: Option<String>,
     observations: super::observations::RequestObservations,
+    captured_request: CapturedUpstreamRequest,
 ) -> DebugHttpResponse {
     let token_usage = from_response_body_with_provider_type(
         provider.cli_key,
@@ -7031,6 +7362,11 @@ fn buffered_gateway_response(
         fast_cost_multiplier: provider.meta.fast_cost_multiplier.clone(),
         ultrafast_cost_multiplier: provider.meta.ultrafast_cost_multiplier.clone(),
         upstream_request_body: Some(upstream_body_snapshot),
+        upstream_request_headers: captured_request.request_headers.clone(),
+        plugin_request_body: captured_request.plugin_body.clone(),
+        plugin_request_body_bytes: captured_request.plugin_body_bytes,
+        plugin_request_body_truncated: captured_request.plugin_body_truncated,
+        middleware_state: None,
         target_protocol: Some(provider.target_protocol),
         upstream_response_body,
         upstream_response_body_bytes,
@@ -9079,7 +9415,7 @@ fn build_upstream_body_for_provider(
                     pipeline: Pipeline::default(),
                     pipeline_context: PipelineContext::default(),
                     xai_namespace_restore_map: HashMap::new(),
-                    observations: super::observations::RequestObservations::default(),
+                    observations: crate::coding::proxy_gateway::runtime::observations::RequestObservations::default(),
                 })
                 .map_err(|error| GatewayForwardError {
                     message: error.to_string(),
@@ -9096,14 +9432,14 @@ fn build_upstream_body_for_provider(
             pipeline: Pipeline::default(),
             pipeline_context: PipelineContext::default(),
             xai_namespace_restore_map: HashMap::new(),
-            observations: super::observations::RequestObservations::default(),
+            observations: crate::coding::proxy_gateway::runtime::observations::RequestObservations::default(),
         });
     };
     // Declared tools are read from the body the client sent, before any
     // gateway rewrite. The forwarded side is read again at the end, from the
     // body actually sent upstream, so a declaration the gateway filtered is
     // visible in the detail dialog.
-    let mut observations = super::observations::RequestObservations::default();
+    let mut observations = crate::coding::proxy_gateway::runtime::observations::RequestObservations::default();
     if let Some(source_protocol) = source_protocol {
         observations.observe_declared(source_protocol, &value);
     }
@@ -17956,6 +18292,11 @@ data: {data}\r\n\r\n"
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
+            upstream_request_headers: None,
+            plugin_request_body: None,
+            plugin_request_body_bytes: 0,
+            plugin_request_body_truncated: false,
+            middleware_state: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
             upstream_response_body_stream_snapshot: None,
@@ -20440,6 +20781,11 @@ data: {data}\r\n\r\n"
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
+            upstream_request_headers: None,
+            plugin_request_body: None,
+            plugin_request_body_bytes: 0,
+            plugin_request_body_truncated: false,
+            middleware_state: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
             upstream_response_body_stream_snapshot: None,
@@ -20810,6 +21156,11 @@ data: {data}\r\n\r\n"
             fast_cost_multiplier: None,
             ultrafast_cost_multiplier: None,
             upstream_request_body: None,
+            upstream_request_headers: None,
+            plugin_request_body: None,
+            plugin_request_body_bytes: 0,
+            plugin_request_body_truncated: false,
+            middleware_state: None,
             upstream_response_body: None,
             upstream_response_body_bytes: 0,
             upstream_response_body_stream_snapshot: None,
@@ -24633,6 +24984,280 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             assert_eq!(info.agent, route.cli_key.as_str(), "{path}");
         }
     }
+
+    #[test]
+    fn plugin_request_capture_is_off_when_both_log_switches_are_off() {
+        let disabled = ProxyGatewaySettings {
+            store_headers: false,
+            store_request_body: false,
+            ..Default::default()
+        };
+        assert!(plugin_request_capture(&disabled).is_none());
+
+        let enabled = ProxyGatewaySettings {
+            store_headers: true,
+            store_request_body: true,
+            log_max_body_size_kb: 128,
+            ..Default::default()
+        };
+        let capture = plugin_request_capture(&enabled).expect("capture enabled");
+        assert!(capture.headers);
+        assert!(capture.body);
+        assert_eq!(capture.max_body_bytes, 128 * 1024);
+
+        // Master request log off: capture stays disabled even if detail flags remain true.
+        let log_off = ProxyGatewaySettings {
+            request_log_enabled: false,
+            store_headers: true,
+            store_request_body: true,
+            ..Default::default()
+        };
+        assert!(plugin_request_capture(&log_off).is_none());
+
+        // The host-side cap is a hard ceiling regardless of the setting.
+        let oversized = ProxyGatewaySettings {
+            store_headers: true,
+            store_request_body: true,
+            log_max_body_size_kb: 4096,
+            ..Default::default()
+        };
+        assert_eq!(
+            plugin_request_capture(&oversized)
+                .expect("capture enabled")
+                .max_body_bytes,
+            MAX_PLUGIN_CAPTURE_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn plugin_wire_request_is_only_recorded_when_it_differs() {
+        let settings = ProxyGatewaySettings {
+            store_headers: true,
+            store_request_body: true,
+            ..Default::default()
+        };
+        let gateway_headers = HeaderMap::new();
+        let wire = gateway_bridge::CapturedPluginRequest {
+            url: "https://api.example.com/v1/chat/completions?key=secret".to_string(),
+            method: "POST".to_string(),
+            headers: vec![("x-api-key".to_string(), "secret".to_string())],
+            body: Some(br#"{"model":"plugin"}"#.to_vec()),
+            body_bytes: 18,
+            truncated: false,
+        };
+
+        let captured = captured_plugin_request(
+            Some(&wire),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &settings,
+        );
+        assert!(captured.plugin_rewrote);
+        assert_eq!(
+            captured.upstream_url_override.as_deref(),
+            Some("https://api.example.com/v1/chat/completions?key=xxx")
+        );
+        assert_eq!(
+            captured.plugin_body.as_deref(),
+            Some(br#"{"model":"plugin"}"#.as_slice())
+        );
+        assert_eq!(captured.plugin_body_bytes, 18);
+        assert!(captured.request_headers.is_some());
+
+        // Identical wire request: nothing to record.
+        let same_wire = gateway_bridge::CapturedPluginRequest {
+            url: "https://api.example.com/v1/chat/completions".to_string(),
+            headers: Vec::new(),
+            body: Some(br#"{"model":"gateway"}"#.to_vec()),
+            ..wire.clone()
+        };
+        let captured = captured_plugin_request(
+            Some(&same_wire),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &settings,
+        );
+        assert!(!captured.plugin_rewrote);
+        assert!(captured.plugin_body.is_none());
+        assert!(captured.upstream_url_override.is_none());
+
+        // Body storage off: the host is not asked for a body and nothing is stored.
+        let body_off = ProxyGatewaySettings {
+            store_headers: true,
+            store_request_body: false,
+            ..Default::default()
+        };
+        let no_body_wire = gateway_bridge::CapturedPluginRequest {
+            url: "https://api.example.com/v1/chat/completions".to_string(),
+            headers: Vec::new(),
+            body: None,
+            body_bytes: 0,
+            truncated: false,
+            ..wire.clone()
+        };
+        let captured = captured_plugin_request(
+            Some(&no_body_wire),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &body_off,
+        );
+        assert!(!captured.plugin_rewrote);
+        assert!(captured.plugin_body.is_none());
+
+        // Truncated capture whose prefix and total length match gateway_body must
+        // not be mistaken for a plugin body rewrite.
+        let truncated_same_wire = gateway_bridge::CapturedPluginRequest {
+            url: "https://api.example.com/v1/chat/completions".to_string(),
+            headers: Vec::new(),
+            body: Some(br#"{"model":"#.to_vec()),
+            body_bytes: br#"{"model":"gateway"}"#.len() as u64,
+            truncated: true,
+            ..wire.clone()
+        };
+        let captured = captured_plugin_request(
+            Some(&truncated_same_wire),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &settings,
+        );
+        assert!(!captured.plugin_rewrote);
+        assert!(captured.plugin_body.is_none());
+        assert!(!captured.plugin_body_truncated);
+
+        // A truncated capture that really differs from the gateway body is a
+        // plugin body change and must carry the truncation marker.
+        let truncated_changed_wire = gateway_bridge::CapturedPluginRequest {
+            url: "https://api.example.com/v1/chat/completions".to_string(),
+            headers: Vec::new(),
+            body: Some(br#"{"model":"plugin"#.to_vec()),
+            body_bytes: 18,
+            truncated: true,
+            ..wire.clone()
+        };
+        let captured = captured_plugin_request(
+            Some(&truncated_changed_wire),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &settings,
+        );
+        assert!(captured.plugin_rewrote);
+        assert!(captured.plugin_body_truncated);
+    }
+
+    #[test]
+    fn plugin_auth_header_changes_are_not_reported_as_rewrites() {
+        let settings = ProxyGatewaySettings {
+            store_headers: true,
+            ..Default::default()
+        };
+        let mut gateway_headers = HeaderMap::new();
+        gateway_headers.insert("x-plugin-trace", HeaderValue::from_static("1"));
+        let wire = gateway_bridge::CapturedPluginRequest {
+            url: "https://api.example.com/v1/chat/completions".to_string(),
+            method: "POST".to_string(),
+            headers: vec![
+                ("authorization".to_string(), "Bearer plugin-token".to_string()),
+                ("x-api-key".to_string(), "plugin-key".to_string()),
+                ("x-plugin-trace".to_string(), "1".to_string()),
+            ],
+            body: Some(br#"{"model":"gateway"}"#.to_vec()),
+            body_bytes: 19,
+            truncated: false,
+        };
+
+        // Only the credentials the host re-injects differ (the gateway stripped
+        // them): URL, body and non-sensitive headers are identical.
+        let captured = captured_plugin_request(
+            Some(&wire),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &settings,
+        );
+        assert!(!captured.plugin_rewrote);
+        // Raw headers are still recorded for the detail; redaction is applied
+        // when the JSONL row is written.
+        assert!(captured.request_headers.as_ref().is_some_and(|headers| {
+            headers
+                .iter()
+                .any(|(name, value)| name == "authorization" && value == "Bearer plugin-token")
+        }));
+
+        // A non-sensitive header difference is still a plugin rewrite.
+        let changed = gateway_bridge::CapturedPluginRequest {
+            headers: vec![
+                ("authorization".to_string(), "Bearer plugin-token".to_string()),
+                ("x-plugin-trace".to_string(), "2".to_string()),
+            ],
+            ..wire.clone()
+        };
+        let captured = captured_plugin_request(
+            Some(&changed),
+            br#"{"model":"gateway"}"#,
+            "https://api.example.com/v1/chat/completions",
+            &gateway_headers,
+            &settings,
+        );
+        assert!(captured.plugin_rewrote);
+    }
+
+    #[test]
+    fn middleware_early_failure_keeps_the_rewritten_body() {
+        let state = MiddlewareState::new();
+        let mut rewritten = debug_request(br#"{"model":"rewritten"}"#);
+        rewritten.body = br#"{"model":"rewritten","plugin":true}"#.to_vec();
+        let response = json_response(
+            503,
+            "Service Unavailable",
+            json!({"error": "no_provider"}),
+            "anthropic",
+            None,
+            "no provider",
+        );
+
+        let finalized =
+            finalize_middleware_response(response, Some(&rewritten), &state);
+        assert_eq!(
+            finalized.upstream_request_body.as_deref(),
+            Some(rewritten.body.as_slice())
+        );
+        assert!(finalized.middleware_state.is_some());
+    }
+
+    #[test]
+    fn middleware_rewrites_are_merged_once_per_stage() {
+        let mut observations = crate::coding::proxy_gateway::runtime::observations::RequestObservations::default();
+        let request = vec!["rewrite-body".to_string()];
+        let provider = vec!["provider-body".to_string()];
+        let response = vec!["event-body".to_string()];
+        observations.merge_middleware_rewrites(&request, &provider, &response);
+        // The second merge (after a streaming response completed) must not
+        // duplicate the entries already recorded.
+        observations.merge_middleware_rewrites(&request, &provider, &response);
+
+        let kinds: Vec<&str> = observations
+            .rewrites
+            .iter()
+            .map(|rewrite| rewrite.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::coding::proxy_gateway::runtime::observations::REWRITE_PLUGIN_MIDDLEWARE_REQUEST,
+                crate::coding::proxy_gateway::runtime::observations::REWRITE_PLUGIN_MIDDLEWARE_PROVIDER,
+                crate::coding::proxy_gateway::runtime::observations::REWRITE_PLUGIN_MIDDLEWARE_RESPONSE,
+            ]
+        );
+        assert_eq!(
+            observations.rewrites[0].detail.as_deref(),
+            Some("rewrite-body")
+        );
+    }
 }
 
 /// Reject forwarding an upstream request back into this gateway's own listener
@@ -24645,48 +25270,5 @@ fn ensure_not_self_loopback(
     let Some(listen_addr) = listen_addr else {
         return Ok(());
     };
-    let Some(target_port) = upstream_url.port_or_known_default() else {
-        return Ok(());
-    };
-    if target_port != listen_addr.port() {
-        return Ok(());
-    }
-    let Some(host) = upstream_url.host_str() else {
-        return Ok(());
-    };
-    let normalized = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    let is_loopback_ip = |ip: std::net::IpAddr| -> bool {
-        ip.is_loopback()
-            || matches!(
-                ip,
-                std::net::IpAddr::V6(v6)
-                    if v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
-            )
-    };
-    let listener_ip = listen_addr.ip();
-    let matches_self = if normalized == "localhost" || normalized.ends_with(".localhost") {
-        is_loopback_ip(listener_ip) || listener_ip.is_unspecified()
-    } else if let Ok(ip) = normalized.parse::<std::net::IpAddr>() {
-        if listener_ip.is_unspecified() {
-            is_loopback_ip(ip) || ip.is_unspecified()
-        } else if is_loopback_ip(listener_ip) {
-            is_loopback_ip(ip)
-        } else {
-            ip == listener_ip
-        }
-    } else {
-        false
-    };
-
-    if matches_self {
-        return Err(format!(
-            "Upstream URL targets the proxy gateway's own listening port ({}); refusing to forward to prevent a self-loop",
-            listen_addr.port()
-        ));
-    }
-    Ok(())
+    super::super::self_loop::ensure_url_not_self_loopback(upstream_url, listen_addr)
 }

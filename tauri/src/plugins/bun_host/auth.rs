@@ -42,6 +42,11 @@ pub struct PluginAccountSummary {
     pub last_checkin_message: Option<String>,
     #[serde(default)]
     pub last_checkin_day: Option<String>,
+    /// Last persisted usage/quota snapshot for instant display before live refresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_updated_at: Option<String>,
 }
 
 /// Enumerate the auth file. Returns an empty list when no one signed in yet.
@@ -103,6 +108,13 @@ pub fn list_accounts(
                 last_checkin_at: meta.and_then(|meta| meta.last_checkin_at.clone()),
                 last_checkin_message: meta.and_then(|meta| meta.last_checkin_message.clone()),
                 last_checkin_day: meta.and_then(|meta| meta.last_checkin_day.clone()),
+                quota: meta.and_then(|meta| {
+                    meta.quota
+                        .as_object()
+                        .filter(|object| !object.is_empty())
+                        .map(|_| meta.quota.clone())
+                }),
+                quota_updated_at: meta.and_then(|meta| meta.quota_updated_at.clone()),
             })
         })
         .collect();
@@ -136,6 +148,8 @@ mod tests {
                 display_name: "Secondary".to_string(),
                 enabled: false,
                 sort_index: 3,
+                quota: serde_json::json!({ "plan": "Pro", "balance": "$12.00" }),
+                quota_updated_at: Some("2026-11-27T12:00:00+08:00".to_string()),
                 ..PluginAccountMetaRecord::default()
             },
         )
@@ -171,6 +185,19 @@ mod tests {
         assert_eq!(secondary.provider, "demo");
         assert_eq!(secondary.display_name, "Secondary");
         assert!(!secondary.enabled);
+        assert_eq!(
+            secondary
+                .quota
+                .as_ref()
+                .and_then(|q| q.get("plan"))
+                .and_then(Value::as_str),
+            Some("Pro")
+        );
+        assert_eq!(
+            secondary.quota_updated_at.as_deref(),
+            Some("2026-11-27T12:00:00+08:00")
+        );
+        assert!(primary.quota.is_none());
 
         // The serialized DTO must not carry any credential value.
         let serialized = serde_json::to_string(&accounts).unwrap();

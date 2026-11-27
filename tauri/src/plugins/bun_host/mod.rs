@@ -40,8 +40,8 @@ use super::store;
 use super::types::PluginKind;
 
 use protocol::{
-    encode_abort, encode_request, parse_host_line, FetchHead, HostEvent, HostMessage,
-    MAX_WIRE_LINE, STREAM_WINDOW,
+    encode_abort, encode_request, parse_host_line, CapturedWireRequest, FetchHead, HostEvent,
+    HostMessage, MAX_WIRE_LINE, STREAM_WINDOW,
 };
 use stream::{FetchAbort, FetchBodyStream, PluginFetchResponse};
 
@@ -143,6 +143,13 @@ impl RuntimeLogRing {
     }
 }
 
+/// What a fetch's `Head` frame delivers: the reply head itself plus whatever
+/// outbound request the host captured for it.
+struct FetchHeadReply {
+    head: FetchHead,
+    wire_request: Option<CapturedWireRequest>,
+}
+
 enum Pending {
     Call {
         method: String,
@@ -150,9 +157,11 @@ enum Pending {
     },
     Head {
         method: String,
-        tx: oneshot::Sender<Result<FetchHead, String>>,
+        tx: oneshot::Sender<Result<FetchHeadReply, String>>,
         chunk_tx: mpsc::Sender<Result<Bytes, String>>,
         finished: Arc<AtomicBool>,
+        /// Arrives before the head when the caller asked for a capture.
+        wire_request: Option<CapturedWireRequest>,
     },
     Stream {
         method: String,
@@ -662,6 +671,7 @@ impl BunHost {
                     tx: head_tx,
                     chunk_tx: chunk_tx.clone(),
                     finished: finished.clone(),
+                    wire_request: None,
                 },
             );
             (id, head_rx, chunk_rx, chunk_tx, stdin_tx, finished)
@@ -679,8 +689,8 @@ impl BunHost {
 
         let abort_guard =
             FetchAbort::new(id, stdin_tx.clone(), finished.clone(), self.inner.clone());
-        let head = match tokio::time::timeout(FETCH_HEAD_TIMEOUT, head_rx).await {
-            Ok(Ok(Ok(head))) => head,
+        let reply = match tokio::time::timeout(FETCH_HEAD_TIMEOUT, head_rx).await {
+            Ok(Ok(Ok(reply))) => reply,
             Ok(Ok(Err(error))) => {
                 self.inner.lock().await.pending.remove(&id);
                 return Err(error);
@@ -708,9 +718,10 @@ impl BunHost {
             self.inner.clone(),
         ));
         Ok(PluginFetchResponse {
-            status: head.status,
-            headers: head.headers,
+            status: reply.head.status,
+            headers: reply.head.headers,
             body,
+            wire_request: reply.wire_request,
         })
     }
 
@@ -979,6 +990,15 @@ async fn handle_host_line(line: &str, state: &Arc<Mutex<HostInner>>, logs: &Arc<
                 pending.fail(&message);
             }
         }
+        HostMessage::WireRequest { id, request } => {
+            let mut inner = state.lock().await;
+            // The frame is only useful between the fetch request and its
+            // head; anything else (an aborted request, a late frame) is
+            // dropped rather than failing the fetch.
+            if let Some(Pending::Head { wire_request, .. }) = inner.pending.get_mut(&id) {
+                *wire_request = Some(request);
+            }
+        }
         HostMessage::Head { id, head } => {
             let mut inner = state.lock().await;
             let pending = inner.pending.remove(&id);
@@ -988,6 +1008,7 @@ async fn handle_host_line(line: &str, state: &Arc<Mutex<HostInner>>, logs: &Arc<
                     tx,
                     chunk_tx,
                     finished,
+                    wire_request,
                 }) => {
                     inner.pending.insert(
                         id,
@@ -998,7 +1019,7 @@ async fn handle_host_line(line: &str, state: &Arc<Mutex<HostInner>>, logs: &Arc<
                         },
                     );
                     drop(inner);
-                    let _ = tx.send(Ok(head));
+                    let _ = tx.send(Ok(FetchHeadReply { head, wire_request }));
                 }
                 Some(other) => {
                     drop(inner);
@@ -1258,6 +1279,7 @@ mod tests {
                 tx: head_tx,
                 chunk_tx,
                 finished: finished.clone(),
+                wire_request: None,
             },
         );
 
@@ -1267,9 +1289,10 @@ mod tests {
             &logs,
         )
         .await;
-        let head = head_rx.await.unwrap().unwrap();
-        assert_eq!(head.status, 200);
-        assert_eq!(head.headers[0].0, "content-type");
+        let reply = head_rx.await.unwrap().unwrap();
+        assert_eq!(reply.head.status, 200);
+        assert_eq!(reply.head.headers[0].0, "content-type");
+        assert!(reply.wire_request.is_none());
 
         handle_host_line(
             r#"{"id":9,"event":"chunk","data":"aGVsbG8="}"#,
@@ -1284,6 +1307,59 @@ mod tests {
         assert!(chunk_rx.recv().await.is_none());
         assert!(finished.load(Ordering::SeqCst));
         assert!(state.lock().await.pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_captured_wire_request_rides_along_with_the_head() {
+        let state = Arc::new(Mutex::new(HostInner::new()));
+        let logs = Arc::new(RuntimeLogRing::new());
+        let (head_tx, head_rx) = oneshot::channel();
+        let (chunk_tx, _chunk_rx) = mpsc::channel(4);
+        let finished = Arc::new(AtomicBool::new(false));
+        state.lock().await.pending.insert(
+            12,
+            Pending::Head {
+                method: "fetch".to_string(),
+                tx: head_tx,
+                chunk_tx,
+                finished,
+                wire_request: None,
+            },
+        );
+
+        handle_host_line(
+            r#"{"id":12,"event":"wire_request","url":"https://api.example.com/v1/messages","method":"POST","headers":{"content-type":"application/json"},"body":"aGVsbG8=","bodyBytes":5,"truncated":false}"#,
+            &state,
+            &logs,
+        )
+        .await;
+        handle_host_line(
+            r#"{"id":12,"event":"head","status":200,"headers":{}}"#,
+            &state,
+            &logs,
+        )
+        .await;
+
+        let reply = head_rx.await.unwrap().unwrap();
+        let wire = reply.wire_request.expect("captured request");
+        assert_eq!(wire.url, "https://api.example.com/v1/messages");
+        assert_eq!(wire.method, "POST");
+        assert_eq!(&wire.body.unwrap()[..], b"hello");
+        assert_eq!(wire.body_bytes, 5);
+    }
+
+    #[tokio::test]
+    async fn a_wire_request_without_a_pending_head_is_ignored() {
+        let state = Arc::new(Mutex::new(HostInner::new()));
+        let logs = Arc::new(RuntimeLogRing::new());
+        handle_host_line(
+            r#"{"id":99,"event":"wire_request","url":"https://api.example.com/v1/messages","method":"POST"}"#,
+            &state,
+            &logs,
+        )
+        .await;
+        assert!(state.lock().await.pending.is_empty());
+        assert!(logs.snapshot(10).is_empty());
     }
 
     #[tokio::test]

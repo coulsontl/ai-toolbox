@@ -1,0 +1,404 @@
+//! Tauri IPC commands for the control API settings page.
+//!
+//! These commands are intentionally separate from the HTTP surface: they are
+//! only reachable from the desktop webview, never through the bearer-token
+//! listener. None of them returns the bearer token.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::{json, Value};
+use tauri::State;
+
+use super::routes::status_payload;
+use super::settings::{save_control_api_settings, ControlApiSettings};
+use super::{start_if_enabled, stop, ControlApiState};
+
+#[tauri::command]
+pub fn control_api_get_settings(
+    context: State<'_, ControlApiState>,
+) -> Result<ControlApiSettings, String> {
+    Ok(context.context.settings())
+}
+
+#[tauri::command]
+pub async fn control_api_save_settings(
+    context: State<'_, ControlApiState>,
+    input: ControlApiSettings,
+) -> Result<Value, String> {
+    let saved = save_control_api_settings(&context.context.db, &input)?;
+    context.context.update_settings(saved.clone());
+
+    if saved.enabled {
+        start_if_enabled(&context).await?;
+    } else {
+        stop(&context).await?;
+    }
+    Ok(status_payload(&context.context))
+}
+
+#[tauri::command]
+pub fn control_api_status(context: State<'_, ControlApiState>) -> Value {
+    let mut payload = status_payload(&context.context);
+    payload["pendingApprovals"] = json!(context.context.approval.pending_infos());
+    payload
+}
+
+#[tauri::command]
+pub fn control_api_resolve_approval(
+    context: State<'_, ControlApiState>,
+    request_id: String,
+    approved: bool,
+) -> Value {
+    let resolved = context.context.approval.resolve(&request_id, approved);
+    json!({ "resolved": resolved })
+}
+
+#[tauri::command]
+pub fn control_api_list_pending_approvals(context: State<'_, ControlApiState>) -> Value {
+    json!(context.context.approval.pending_infos())
+}
+
+#[tauri::command]
+pub async fn control_api_cli_status() -> Result<Value, String> {
+    Ok(cli_status())
+}
+
+#[tauri::command]
+pub async fn control_api_install_cli() -> Result<Value, String> {
+    install_cli()?;
+    Ok(cli_status())
+}
+
+#[tauri::command]
+pub async fn control_api_uninstall_cli() -> Result<Value, String> {
+    uninstall_cli()?;
+    Ok(cli_status())
+}
+
+// ---------------------------------------------------------------------------
+// `aitb` installation
+// ---------------------------------------------------------------------------
+
+fn binary_name() -> &'static str {
+    if cfg!(windows) {
+        "aitb.exe"
+    } else {
+        "aitb"
+    }
+}
+
+fn install_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        dirs::data_local_dir()
+            .map(|dir| dir.join("AI Toolbox").join("bin"))
+            .ok_or_else(|| "Could not resolve %LOCALAPPDATA%".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir()
+            .map(|dir| dir.join(".local").join("bin"))
+            .ok_or_else(|| "Could not resolve the home directory".to_string())
+    }
+}
+
+fn install_path() -> Result<PathBuf, String> {
+    Ok(install_dir()?.join(binary_name()))
+}
+
+/// Looks for a build of `aitb` in the usual places: next to the desktop app,
+/// in a repo-local `cli/target/{release,debug}`, or an explicit override.
+fn find_cli_binary() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(explicit) = std::env::var("AI_TOOLBOX_AITB_BINARY") {
+        if !explicit.trim().is_empty() {
+            candidates.push(PathBuf::from(explicit));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(binary_name()));
+            candidates.push(dir.join("aitb").join(binary_name()));
+        }
+        let mut ancestor = exe.parent();
+        for _ in 0..5 {
+            let Some(dir) = ancestor else { break };
+            for profile in ["release", "debug"] {
+                candidates.push(
+                    dir.join("cli")
+                        .join("target")
+                        .join(profile)
+                        .join(binary_name()),
+                );
+            }
+            ancestor = dir.parent();
+        }
+    }
+    #[cfg(debug_assertions)]
+    {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = manifest.parent() {
+            for profile in ["release", "debug"] {
+                candidates.push(
+                    root.join("cli")
+                        .join("target")
+                        .join(profile)
+                        .join(binary_name()),
+                );
+            }
+        }
+    }
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+fn cli_status() -> Value {
+    let installed = install_path().ok().filter(|path| path.is_file());
+    let source = find_cli_binary();
+    let dir_on_path = install_dir()
+        .map(|dir| path_contains(&dir))
+        .unwrap_or(false);
+    json!({
+        "installed": installed.is_some(),
+        "installPath": installed.map(|path| path.to_string_lossy().to_string()),
+        "binarySource": source.map(|path| path.to_string_lossy().to_string()),
+        "installDir": install_dir().ok().map(|dir| dir.to_string_lossy().to_string()),
+        "onPath": dir_on_path,
+        "version": env!("CARGO_PKG_VERSION"),
+    })
+}
+
+fn install_cli() -> Result<(), String> {
+    let source = find_cli_binary().ok_or_else(|| {
+        "aitb was not found. Build it first with `cargo build --release --manifest-path cli/Cargo.toml`."
+            .to_string()
+    })?;
+    let dir = install_dir()?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create {}: {error}", dir.display()))?;
+    let target = dir.join(binary_name());
+    std::fs::copy(&source, &target).map_err(|error| {
+        format!(
+            "Failed to copy {} to {}: {error}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    ensure_on_path(&dir)?;
+    Ok(())
+}
+
+fn uninstall_cli() -> Result<(), String> {
+    let path = install_path()?;
+    if path.exists() {
+        std::fs::remove_file(&path)
+            .map_err(|error| format!("Failed to remove {}: {error}", path.display()))?;
+    }
+    remove_from_path(&install_dir()?)?;
+    Ok(())
+}
+
+// --- PATH handling ---------------------------------------------------------
+
+#[cfg(windows)]
+fn user_path() -> String {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let key = RegKey::predef(HKEY_CURRENT_USER);
+    key.open_subkey("Environment")
+        .ok()
+        .and_then(|env| env.get_value::<String, _>("Path").ok())
+        .or_else(|| std::env::var("PATH").ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+fn user_path() -> String {
+    std::env::var("PATH").unwrap_or_default()
+}
+
+fn path_contains(dir: &Path) -> bool {
+    let needle = dir.to_string_lossy().to_string();
+    user_path()
+        .split(if cfg!(windows) { ';' } else { ':' })
+        .any(|entry| entry.trim().trim_matches('"').eq_ignore_ascii_case(&needle))
+}
+
+#[cfg(windows)]
+fn ensure_on_path(dir: &Path) -> Result<(), String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ};
+    use winreg::RegKey;
+
+    let key = RegKey::predef(HKEY_CURRENT_USER);
+    let env = key
+        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|error| format!("Failed to open the user environment registry key: {error}"))?;
+    let raw = env.get_raw_value("Path").ok();
+    let (current, vtype) = match raw {
+        Some(raw) => (decode_utf16le(&raw.bytes), raw.vtype),
+        None => (String::new(), REG_EXPAND_SZ),
+    };
+    let target = dir.to_string_lossy().to_string();
+    if current
+        .split(';')
+        .any(|entry| entry.trim().trim_matches('"').eq_ignore_ascii_case(&target))
+    {
+        return Ok(());
+    }
+    let next = if current.trim().is_empty() {
+        target
+    } else {
+        format!("{};{}", current.trim_end_matches(';'), target)
+    };
+    let vtype = if vtype == REG_SZ {
+        REG_SZ
+    } else {
+        REG_EXPAND_SZ
+    };
+    env.set_raw_value(
+        "Path",
+        &winreg::RegValue {
+            bytes: encode_utf16le(&next),
+            vtype,
+        },
+    )
+    .map_err(|error| format!("Failed to update the user PATH: {error}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_from_path(dir: &Path) -> Result<(), String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ, REG_SZ};
+    use winreg::RegKey;
+
+    let key = RegKey::predef(HKEY_CURRENT_USER);
+    let env = key
+        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
+        .map_err(|error| format!("Failed to open the user environment registry key: {error}"))?;
+    let Some(raw) = env.get_raw_value("Path").ok() else {
+        return Ok(());
+    };
+    let (current, vtype) = (decode_utf16le(&raw.bytes), raw.vtype);
+    let target = dir.to_string_lossy().to_string();
+    let entries: Vec<&str> = current
+        .split(';')
+        .filter(|entry| !entry.trim().trim_matches('"').eq_ignore_ascii_case(&target))
+        .collect();
+    let next = entries.join(";");
+    if next == current {
+        return Ok(());
+    }
+    let vtype = if vtype == REG_SZ {
+        REG_SZ
+    } else {
+        REG_EXPAND_SZ
+    };
+    env.set_raw_value(
+        "Path",
+        &winreg::RegValue {
+            bytes: encode_utf16le(&next),
+            vtype,
+        },
+    )
+    .map_err(|error| format!("Failed to update the user PATH: {error}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn encode_utf16le(value: &str) -> Vec<u8> {
+    value
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect()
+}
+
+#[cfg(windows)]
+fn decode_utf16le(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+#[cfg(not(windows))]
+fn ensure_on_path(dir: &Path) -> Result<(), String> {
+    let marker = unix_path_marker();
+    let profile = unix_profile_path()?;
+    let existing = std::fs::read_to_string(&profile).unwrap_or_default();
+    if existing.contains(marker) {
+        return Ok(());
+    }
+    let line = format!(
+        "\n{}\nexport PATH=\"{}:$PATH\"\n",
+        marker,
+        dir.to_string_lossy()
+    );
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)
+        .map_err(|error| format!("Failed to open {}: {error}", profile.display()))?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| format!("Failed to update {}: {error}", profile.display()))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn remove_from_path(_dir: &Path) -> Result<(), String> {
+    let marker = unix_path_marker();
+    let profile = unix_profile_path()?;
+    let Ok(existing) = std::fs::read_to_string(&profile) else {
+        return Ok(());
+    };
+    if !existing.contains(marker) {
+        return Ok(());
+    }
+    let cleaned = existing
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(marker.trim()))
+        .filter(|line| !line.contains("AI Toolbox: add ~/.local/bin"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&profile, cleaned + "\n")
+        .map_err(|error| format!("Failed to update {}: {error}", profile.display()))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn unix_path_marker() -> String {
+    "# AI Toolbox: add ~/.local/bin to PATH".to_string()
+}
+
+#[cfg(not(windows))]
+fn unix_profile_path() -> Result<PathBuf, String> {
+    let home =
+        dirs::home_dir().ok_or_else(|| "Could not resolve the home directory".to_string())?;
+    Ok(home.join(".profile"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_paths_are_absolute_and_named_after_the_binary() {
+        let path = install_path().unwrap();
+        assert!(path.is_absolute());
+        assert_eq!(path.file_name().unwrap().to_string_lossy(), binary_name());
+    }
+
+    #[test]
+    fn status_shape_never_contains_a_token() {
+        let status = cli_status();
+        let text = serde_json::to_string(&status).unwrap();
+        assert!(!text.contains("token"));
+    }
+
+    #[test]
+    fn find_cli_binary_does_not_panic_when_missing() {
+        // On a clean checkout `cli/target` may not exist; the function must
+        // simply return None rather than erroring.
+        let _ = find_cli_binary();
+    }
+}

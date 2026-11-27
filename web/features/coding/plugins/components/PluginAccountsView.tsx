@@ -56,6 +56,7 @@ import PluginLoginModal from './PluginLoginModal';
 import styles from './PluginAccountsView.module.less';
 
 interface PluginAccountsViewProps {
+  active: boolean;
   refreshKey: number;
   installedPlugins: InstalledPluginRecord[];
   onDataChanged: () => Promise<void>;
@@ -64,6 +65,7 @@ interface PluginAccountsViewProps {
 }
 
 const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
+  active,
   refreshKey,
   installedPlugins,
   onDataChanged,
@@ -82,6 +84,7 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
   const [modelsRefreshing, setModelsRefreshing] = React.useState(false);
   const [usageByAccount, setUsageByAccount] = React.useState<Record<string, PluginUsage>>({});
   const [usageErrors, setUsageErrors] = React.useState<Record<string, string>>({});
+  const [usageLoadingAccounts, setUsageLoadingAccounts] = React.useState<Record<string, boolean>>({});
   const [usageBusy, setUsageBusy] = React.useState(false);
   const [checkinResults, setCheckinResults] = React.useState<Record<string, PluginCheckinResult>>({});
   const [checkinBusy, setCheckinBusy] = React.useState(false);
@@ -95,6 +98,15 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
   >({});
   const [modelSearch, setModelSearch] = React.useState('');
   const [providerSearch, setProviderSearch] = React.useState('');
+  const autoFetchedUsageRef = React.useRef(new Set<string>());
+  const lastRefreshKeyRef = React.useRef(refreshKey);
+
+  React.useEffect(() => {
+    if (lastRefreshKeyRef.current !== refreshKey) {
+      lastRefreshKeyRef.current = refreshKey;
+      autoFetchedUsageRef.current.clear();
+    }
+  }, [refreshKey]);
 
   React.useEffect(() => {
     let disposed = false;
@@ -112,7 +124,19 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
         setLoadError(formatPluginError(providersResult.reason));
       }
       if (accountsResult.status === 'fulfilled') {
-        setAccounts(accountsResult.value);
+        const nextAccounts = accountsResult.value;
+        setAccounts(nextAccounts);
+        setUsageByAccount((current) => {
+          let changed = false;
+          const next = { ...current };
+          for (const account of nextAccounts) {
+            if (account.quota && !next[account.account]) {
+              next[account.account] = account.quota;
+              changed = true;
+            }
+          }
+          return changed ? next : current;
+        });
       }
       setLoading(false);
     };
@@ -204,6 +228,18 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
 
   const reload = () => setReloadToken((current) => current + 1);
 
+  const handleRefreshAll = () => {
+    if (selectedProvider) {
+      const prefix = `${selectedProvider.id}:`;
+      for (const key of Array.from(autoFetchedUsageRef.current)) {
+        if (key.startsWith(prefix)) {
+          autoFetchedUsageRef.current.delete(key);
+        }
+      }
+    }
+    reload();
+  };
+
   const formatCountdown = (iso: string) => {
     const parts = getCountdownParts(iso);
     if (!parts) return '';
@@ -216,17 +252,25 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
     return t('plugins.units.minute', { value: parts.value });
   };
 
-  const refreshUsage = async (accountKeys?: string[], silent = false) => {
+  const refreshUsage = React.useCallback(async (accountKeys?: string[], silent = false) => {
     if (!selectedProvider) return;
+    const providerId = selectedProvider.id;
     const keys = accountKeys
       ?? providerAccounts.filter((account) => account.enabled).map((account) => account.account);
     if (keys.length === 0) return;
     setUsageBusy(true);
+    setUsageLoadingAccounts((current) => {
+      const next = { ...current };
+      for (const accountKey of keys) {
+        next[accountKey] = true;
+      }
+      return next;
+    });
     const results = await Promise.all(keys.map(async (accountKey) => {
       try {
         return {
           accountKey,
-          usage: await getPluginAccountUsage(selectedProvider.id, accountKey),
+          usage: await getPluginAccountUsage(providerId, accountKey),
           error: '',
         };
       } catch (error) {
@@ -248,6 +292,13 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
       }
       return next;
     });
+    setUsageLoadingAccounts((current) => {
+      const next = { ...current };
+      for (const accountKey of keys) {
+        delete next[accountKey];
+      }
+      return next;
+    });
     setUsageBusy(false);
     if (!silent) {
       const failed = results.filter((result) => result.error).length;
@@ -257,7 +308,28 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
         message.success(t('plugins.accounts.usageRefreshed'));
       }
     }
-  };
+  }, [message, providerAccounts, selectedProvider, t]);
+
+  // Automatically fetch live usage once per enabled account when visiting a
+  // usage-capable channel, while cached snapshots already paint immediately.
+  React.useEffect(() => {
+    if (!active || loading || !selectedProvider?.usage) {
+      return;
+    }
+    const pendingKeys = providerAccounts
+      .filter((account) => {
+        if (!account.enabled) return false;
+        return !autoFetchedUsageRef.current.has(`${selectedProvider.id}:${account.account}`);
+      })
+      .map((account) => account.account);
+    if (pendingKeys.length === 0) {
+      return;
+    }
+    for (const accountKey of pendingKeys) {
+      autoFetchedUsageRef.current.add(`${selectedProvider.id}:${accountKey}`);
+    }
+    void refreshUsage(pendingKeys, true);
+  }, [active, loading, providerAccounts, refreshUsage, selectedProvider]);
 
   const runCheckin = async (accountKeys?: string[]) => {
     if (!selectedProvider) return;
@@ -538,6 +610,19 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
             : loadError ?? t('plugins.accounts.emptyProvidersDesc')}
         </p>
         <div className={styles.emptyActions}>
+          <button
+            type="button"
+            className={styles.actionButton}
+            disabled={loading}
+            onClick={handleRefreshAll}
+          >
+            <RefreshCw
+              size={15}
+              className={loading ? styles.spin : undefined}
+              aria-hidden="true"
+            />
+            <span>{t('common.refresh')}</span>
+          </button>
           {loadError ? (
             <button type="button" className={styles.actionButton} onClick={onOpenRuntime}>
               {t('plugins.accounts.goRuntime')}
@@ -612,9 +697,14 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
             type="button"
             className={styles.iconButton}
             aria-label={t('plugins.accounts.refresh')}
-            onClick={reload}
+            disabled={loading}
+            onClick={handleRefreshAll}
           >
-            <RefreshCw size={15} aria-hidden="true" />
+            <RefreshCw
+              size={15}
+              className={loading ? styles.spin : undefined}
+              aria-hidden="true"
+            />
           </button>
         </Tooltip>
       </div>
@@ -1010,6 +1100,11 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                 </div>
                               )}
                             </>
+                          ) : usageLoadingAccounts[account.account] ? (
+                            <div className={styles.usageEmpty}>
+                              <Spin size="small" />
+                              <span>{t('common.loading')}</span>
+                            </div>
                           ) : (
                             <div className={styles.usageEmpty}>
                               {usageError
@@ -1017,6 +1112,14 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                 : t('plugins.accounts.usageEmpty')}
                             </div>
                           )}
+                          {usage && usageError ? (
+                            <Tooltip title={usageError}>
+                              <span className={styles.usageRefreshWarning}>
+                                <CircleAlert size={12} aria-hidden="true" />
+                                <span>{t('plugins.accounts.usageRefreshFailedCached')}</span>
+                              </span>
+                            </Tooltip>
+                          ) : null}
                           {hasFootnotes ? (
                             <div className={styles.accountFootnotes}>
                               {expiry ? (

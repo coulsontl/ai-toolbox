@@ -23,6 +23,8 @@ const BUILTIN_SKILL_MD: &str =
     include_str!("../../../resources/builtin_skills/ai-toolbox/SKILL.md");
 const BUILTIN_PLUGINS_REFERENCE: &str =
     include_str!("../../../resources/builtin_skills/ai-toolbox/references/plugins.md");
+const BUILTIN_CONTROL_CLI_REFERENCE: &str =
+    include_str!("../../../resources/builtin_skills/ai-toolbox/references/control-cli.md");
 
 pub const BUILTIN_SKILL_DELETE_ERROR: &str =
     "Built-in skills cannot be deleted. Uncheck the tools that should stop syncing this skill instead.";
@@ -68,10 +70,11 @@ pub fn guard_builtin_overwrite(skill: &Skill) -> Result<(), String> {
     Ok(())
 }
 
-fn embedded_files() -> [(&'static str, &'static str); 2] {
+fn embedded_files() -> [(&'static str, &'static str); 3] {
     [
         ("SKILL.md", BUILTIN_SKILL_MD),
         ("references/plugins.md", BUILTIN_PLUGINS_REFERENCE),
+        ("references/control-cli.md", BUILTIN_CONTROL_CLI_REFERENCE),
     ]
 }
 
@@ -121,7 +124,8 @@ fn builtin_dir_matches(dir: &Path) -> bool {
         return false;
     };
     for entry in entries.flatten() {
-        if entry.file_name() != "plugins.md" {
+        let name = entry.file_name();
+        if name != "plugins.md" && name != "control-cli.md" {
             return false;
         }
     }
@@ -188,7 +192,10 @@ fn write_builtin_skill_dir(dir: &Path) -> Result<(), String> {
     }
 
     remove_dir_entries_except(dir, &["SKILL.md", "references"])?;
-    remove_dir_entries_except(&dir.join("references"), &["plugins.md"])?;
+    remove_dir_entries_except(
+        &dir.join("references"),
+        &["plugins.md", "control-cli.md"],
+    )?;
     Ok(())
 }
 
@@ -465,6 +472,11 @@ mod tests {
                 .expect("read plugins reference"),
             BUILTIN_PLUGINS_REFERENCE
         );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("references/control-cli.md"))
+                .expect("read control CLI reference"),
+            BUILTIN_CONTROL_CLI_REFERENCE
+        );
 
         let managed = skill_store::get_managed_skills(&state)
             .await
@@ -546,6 +558,11 @@ mod tests {
             fs::read_to_string(skill_dir.join("references/plugins.md"))
                 .expect("read restored reference"),
             BUILTIN_PLUGINS_REFERENCE
+        );
+        assert_eq!(
+            fs::read_to_string(skill_dir.join("references/control-cli.md"))
+                .expect("read restored control CLI reference"),
+            BUILTIN_CONTROL_CLI_REFERENCE
         );
         assert!(
             !skill_dir.join("references/stale.md").exists(),

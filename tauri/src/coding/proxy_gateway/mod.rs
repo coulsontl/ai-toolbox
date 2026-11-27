@@ -13,6 +13,7 @@ pub mod provider_switch;
 pub mod request_log;
 pub(crate) mod retryable_status;
 mod runtime;
+pub(crate) mod self_loop;
 pub mod session_import;
 pub(crate) mod settings;
 pub mod transformer;

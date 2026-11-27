@@ -133,6 +133,7 @@ pub fn invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
         commands::plugins_list_installed,
         commands::plugins_install,
         commands::plugins_uninstall,
+        commands::plugins_reload,
         commands::plugins_set_enabled,
         commands::plugins_set_options,
         commands::plugins_list_markets,

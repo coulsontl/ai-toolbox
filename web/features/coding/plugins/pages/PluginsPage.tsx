@@ -43,6 +43,8 @@ import {
   getPluginsAccountsPath,
   getPluginsCustomPagePath,
   getPluginsPathForTab,
+  isPluginsPath,
+  rememberLastPluginsPath,
   resolvePluginsRoute,
   type PluginsPageTab,
 } from '../utils/pluginNavigation';
@@ -94,12 +96,16 @@ const PluginsPage: React.FC = () => {
   const [mountedPages, setMountedPages] = React.useState<MountedPageEntry[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [installedRefreshing, setInstalledRefreshing] = React.useState(false);
   const [bunBusy, setBunBusy] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [refreshKey, setRefreshKey] = React.useState(0);
   const [installOpen, setInstallOpen] = React.useState(false);
   const [installPrefill, setInstallPrefill] = React.useState('');
   const [optionsTarget, setOptionsTarget] = React.useState<InstalledPluginRecord | null>(null);
+  const [visitedTabs, setVisitedTabs] = React.useState<Set<PluginsPageTab>>(
+    () => new Set(activeTab ? [activeTab] : []),
+  );
 
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(
     () => window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1',
@@ -131,16 +137,8 @@ const PluginsPage: React.FC = () => {
     return () => media.removeEventListener('change', syncNarrow);
   }, []);
 
-  const loadSharedData = React.useCallback(async () => {
-    const [
-      installedResult,
-      accountsResult,
-      marketsResult,
-      middlewareResult,
-      bunResult,
-      settingsResult,
-      pagesResult,
-    ] = await Promise.allSettled([
+  const loadSharedData = React.useCallback(async (): Promise<boolean> => {
+    const results = await Promise.allSettled([
       listInstalledPlugins(),
       listPluginAccounts(),
       listPluginMarkets(),
@@ -149,12 +147,18 @@ const PluginsPage: React.FC = () => {
       getPluginSettings(),
       listPluginPages(),
     ]);
+    const [
+      installedResult,
+      accountsResult,
+      marketsResult,
+      middlewareResult,
+      bunResult,
+      settingsResult,
+      pagesResult,
+    ] = results;
 
     if (installedResult.status === 'fulfilled') {
       setInstalledPlugins(installedResult.value);
-      setLoadError(null);
-    } else {
-      setLoadError(formatPluginError(installedResult.reason));
     }
     if (accountsResult.status === 'fulfilled') {
       setAccounts(accountsResult.value);
@@ -179,8 +183,20 @@ const PluginsPage: React.FC = () => {
       // frames the reader still has open.
       setPagesError(formatPluginError(pagesResult.reason));
     }
+
+    const firstFailure = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    setLoadError(firstFailure ? formatPluginError(firstFailure.reason) : null);
     setPagesLoaded(true);
+    return !firstFailure;
   }, []);
+
+  // Child views only need completion semantics when they reload shared data
+  // after their own mutations, so hide the success flag they would ignore.
+  const reloadSharedData = React.useCallback(async (): Promise<void> => {
+    await loadSharedData();
+  }, [loadSharedData]);
 
   React.useEffect(() => {
     let disposed = false;
@@ -197,8 +213,26 @@ const PluginsPage: React.FC = () => {
   React.useEffect(() => {
     if (location.pathname === '/plugins') {
       navigate(DEFAULT_PLUGINS_PATH, { replace: true });
+      return;
     }
-  }, [location.pathname, navigate]);
+    if (isPluginsPath(location.pathname)) {
+      rememberLastPluginsPath(`${location.pathname}${location.search}`);
+    }
+  }, [location.pathname, location.search, navigate]);
+
+  React.useEffect(() => {
+    if (!activeTab) {
+      return;
+    }
+    setVisitedTabs((current) => {
+      if (current.has(activeTab)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.add(activeTab);
+      return next;
+    });
+  }, [activeTab]);
 
   const routePage = React.useMemo(() => {
     if (routeKind !== 'page' || !routePluginId) {
@@ -334,9 +368,11 @@ const PluginsPage: React.FC = () => {
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
-      await loadSharedData();
+      const succeeded = await loadSharedData();
       setRefreshKey((current) => current + 1);
-      message.success(t('plugins.page.notice.refreshed'));
+      if (succeeded) {
+        message.success(t('plugins.page.notice.refreshed'));
+      }
     } finally {
       setRefreshing(false);
     }
@@ -370,6 +406,18 @@ const PluginsPage: React.FC = () => {
       );
     } finally {
       setChinaMirrorBusy(false);
+    }
+  };
+
+  const handleRefreshInstalled = async () => {
+    setInstalledRefreshing(true);
+    try {
+      const succeeded = await loadSharedData();
+      if (succeeded) {
+        message.success(t('plugins.page.notice.refreshed'));
+      }
+    } finally {
+      setInstalledRefreshing(false);
     }
   };
 
@@ -567,53 +615,65 @@ const PluginsPage: React.FC = () => {
             </div>
           ) : null}
 
-          {activeTab === 'installed' ? (
-            <InstalledPluginsView
-              plugins={installedPlugins}
-              accounts={accounts}
-              middlewareStates={middlewareStates}
-              bunStatus={bunStatus}
-              pluginSettings={pluginSettings}
-              chinaMirrorBusy={chinaMirrorBusy}
-              loading={loading}
-              onDataChanged={loadSharedData}
-              onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
-              onOpenInstall={() => openInstallModal()}
-              onBrowseMarket={() => handleSelectTab('market')}
-              onOpenRuntime={() => handleSelectTab('runtime')}
-              onManageAccounts={(providerId) => navigate(getPluginsAccountsPath(providerId))}
-              onEditOptions={setOptionsTarget}
-              onOpenPage={(pluginId, pageId) => navigate(getPluginsCustomPagePath(pluginId, pageId))}
-            />
+          {visitedTabs.has('installed') ? (
+            <div style={{ display: activeTab === 'installed' ? undefined : 'none' }}>
+              <InstalledPluginsView
+                plugins={installedPlugins}
+                accounts={accounts}
+                middlewareStates={middlewareStates}
+                bunStatus={bunStatus}
+                pluginSettings={pluginSettings}
+                chinaMirrorBusy={chinaMirrorBusy}
+                loading={loading}
+                refreshing={installedRefreshing}
+                onRefresh={() => void handleRefreshInstalled()}
+                onDataChanged={reloadSharedData}
+                onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
+                onOpenInstall={() => openInstallModal()}
+                onBrowseMarket={() => handleSelectTab('market')}
+                onOpenRuntime={() => handleSelectTab('runtime')}
+                onManageAccounts={(providerId) => navigate(getPluginsAccountsPath(providerId))}
+                onEditOptions={setOptionsTarget}
+                onOpenPage={(pluginId, pageId) => navigate(getPluginsCustomPagePath(pluginId, pageId))}
+              />
+            </div>
           ) : null}
-          {activeTab === 'accounts' ? (
-            <PluginAccountsView
-              refreshKey={refreshKey}
-              installedPlugins={installedPlugins}
-              onDataChanged={loadSharedData}
-              onBrowseMarket={() => handleSelectTab('market')}
-              onOpenRuntime={() => handleSelectTab('runtime')}
-            />
+          {visitedTabs.has('accounts') ? (
+            <div style={{ display: activeTab === 'accounts' ? undefined : 'none' }}>
+              <PluginAccountsView
+                active={keepAliveActive && !isPageRoute && activeTab === 'accounts'}
+                refreshKey={refreshKey}
+                installedPlugins={installedPlugins}
+                onDataChanged={reloadSharedData}
+                onBrowseMarket={() => handleSelectTab('market')}
+                onOpenRuntime={() => handleSelectTab('runtime')}
+              />
+            </div>
           ) : null}
-          {activeTab === 'market' ? (
-            <PluginMarketView
-              refreshKey={refreshKey}
-              pluginSettings={pluginSettings}
-              chinaMirrorBusy={chinaMirrorBusy}
-              onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
-              onDataChanged={loadSharedData}
-              onListingCountChange={setMarketCount}
-            />
+          {visitedTabs.has('market') ? (
+            <div style={{ display: activeTab === 'market' ? undefined : 'none' }}>
+              <PluginMarketView
+                refreshKey={refreshKey}
+                pluginSettings={pluginSettings}
+                chinaMirrorBusy={chinaMirrorBusy}
+                onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
+                onDataChanged={reloadSharedData}
+                onListingCountChange={setMarketCount}
+              />
+            </div>
           ) : null}
-          {activeTab === 'runtime' ? (
-            <PluginRuntimeView
-              refreshKey={refreshKey}
-              pluginSettings={pluginSettings}
-              chinaMirrorBusy={chinaMirrorBusy}
-              onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
-              onSettingsSaved={setPluginSettings}
-              onBunStatusChange={setBunStatus}
-            />
+          {visitedTabs.has('runtime') ? (
+            <div style={{ display: activeTab === 'runtime' ? undefined : 'none' }}>
+              <PluginRuntimeView
+                active={keepAliveActive && !isPageRoute && activeTab === 'runtime'}
+                refreshKey={refreshKey}
+                pluginSettings={pluginSettings}
+                chinaMirrorBusy={chinaMirrorBusy}
+                onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
+                onSettingsSaved={setPluginSettings}
+                onBunStatusChange={setBunStatus}
+              />
+            </div>
           ) : null}
         </div>
       </div>

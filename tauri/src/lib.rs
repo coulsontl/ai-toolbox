@@ -25,6 +25,7 @@ pub mod app_paths;
 pub mod auto_launch;
 pub mod clipboard;
 pub mod coding;
+pub mod control_api;
 pub mod db;
 pub mod http_client;
 pub mod keep_awake;
@@ -1266,6 +1267,19 @@ pub fn run() {
                 let plugin_manager =
                     plugins::PluginManager::new(db_state.clone(), app_data_dir.clone());
 
+                // Local Agent Control API. The listener is started below only
+                // after the state is managed, so the async startup can look it
+                // up by type.
+                let control_api_settings =
+                    control_api::settings::load_control_api_settings(&db_state)
+                        .unwrap_or_default();
+                app.manage(control_api::ControlApiState::new(
+                    app_handle.clone(),
+                    db_state.clone(),
+                    control_api_settings,
+                ));
+                info!("Agent Control API 状态已注册到应用");
+
                 app.manage(db_state);
                 info!("SQLite 主数据库状态已注册到应用");
 
@@ -1278,6 +1292,21 @@ pub fn run() {
 
                 app.manage(coding::proxy_gateway::ProxyGatewayState::default());
                 info!("网关状态已注册到应用");
+
+                let control_api_startup_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Manager;
+                    let Some(state) =
+                        control_api_startup_handle.try_state::<control_api::ControlApiState>()
+                    else {
+                        return;
+                    };
+                    match control_api::start_if_enabled(&state).await {
+                        Ok(true) => info!("Agent Control API 已启动"),
+                        Ok(false) => info!("Agent Control API 未启用"),
+                        Err(error) => warn!("Agent Control API 启动失败: {}", error),
+                    }
+                });
 
                 // Deep-link (`aitoolbox://`) provider import: register state and
                 // subscribe to the unified `deep-link://new-url` event. The
@@ -2356,6 +2385,7 @@ pub fn run() {
             coding::proxy_gateway::delete_model_pricing,
             coding::proxy_gateway::fetch_remote_model_pricing,
             coding::proxy_gateway::proxy_gateway_model_health_entries,
+            coding::proxy_gateway::proxy_gateway_reset_model_health,
             // Backup - Local
             settings::backup::backup_database,
             settings::backup::restore_database,
@@ -3194,6 +3224,9 @@ pub fn run() {
             if invoke.message.command().starts_with("plugins_") {
                 return plugins::invoke_handler(invoke);
             }
+            if invoke.message.command().starts_with("control_api_") {
+                return control_api::invoke_handler(invoke);
+            }
             core_invoke_handler(invoke)
         })
         .build(tauri::generate_context!())
@@ -3237,6 +3270,12 @@ pub fn run() {
                     if code.is_none() && lightweight::is_lightweight_mode() {
                         api.prevent_exit();
                     }
+                }
+                // Remove the discovery file and stop accepting connections
+                // before the process disappears, so a restart never reads a
+                // token that no listener serves.
+                tauri::RunEvent::Exit => {
+                    control_api::shutdown_on_exit(app_handle);
                 }
 
                 _ => {}

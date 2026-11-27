@@ -9,6 +9,7 @@ mod observability;
 mod observations;
 mod pipeline;
 mod providers;
+pub(crate) use providers::codex_base_url_from_config;
 #[cfg(test)]
 pub(crate) use providers::provider_from_record_for_test;
 mod routes;
@@ -40,7 +41,7 @@ use self::http_io::{
 #[cfg(test)]
 use self::http_io::{find_header_end, header_value};
 #[cfg(test)]
-use self::providers::{codex_base_url_from_config, json_object_string};
+use self::providers::json_object_string;
 #[cfg(test)]
 use self::routes::{build_target_url, match_gateway_route};
 #[cfg(test)]
@@ -392,6 +393,13 @@ impl ProxyGatewayManager {
             .as_ref()
             .and_then(|runtime| runtime.context.health_items())
     }
+
+    pub fn reset_model_health(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .map(|runtime| runtime.context.reset_health())
+            .unwrap_or(false)
+    }
 }
 
 pub struct ProxyGatewayRuntime {
@@ -689,6 +697,22 @@ impl GatewayRuntimeContext {
         let mut registry = registry.lock().ok()?;
         registry.refresh_due_cooldowns(Utc::now());
         Some(registry.health_items())
+    }
+
+    fn reset_health(&self) -> bool {
+        let Some(registry) = self.health_registry.as_ref() else {
+            return false;
+        };
+        let Ok(mut registry) = registry.lock() else {
+            return false;
+        };
+        registry.reset();
+        if let Some(path) = self.health_path.as_ref() {
+            if let Err(error) = registry.save(path) {
+                log::warn!("Failed to persist the reset proxy gateway model health: {error}");
+            }
+        }
+        true
     }
 
     fn update_health_settings(&self, settings: ProxyGatewaySettings) {
@@ -3664,6 +3688,11 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             .recv_timeout(Duration::from_secs(2))
             .expect("captured upstream request");
         assert!(captured.contains(r#""model":"middleware-model""#));
+        assert!(response
+            .observations
+            .rewrites
+            .iter()
+            .any(|rewrite| rewrite.kind == super::observations::REWRITE_PLUGIN_MIDDLEWARE_REQUEST));
     }
 
     #[test]
@@ -3794,6 +3823,11 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             .expect("captured second attempt");
         assert!(second_captured.contains(r#""provider_tag":"Second Upstream""#));
         assert!(!second_captured.contains("First Upstream"));
+        assert!(response
+            .observations
+            .rewrites
+            .iter()
+            .any(|rewrite| rewrite.kind == super::observations::REWRITE_PLUGIN_MIDDLEWARE_PROVIDER));
     }
 
     #[test]
@@ -3842,6 +3876,7 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
         assert!(!text.contains("drop.me"));
         assert!(text.contains("event: replace.me"));
         assert!(text.contains(r#""replaced":true"#));
+        assert_eq!(state.response_rewrites(), vec!["Middleware Demo"]);
     }
 
     #[test]
@@ -3885,6 +3920,7 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
         ));
         let body: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(body["injected"], true);
+        assert_eq!(state.response_rewrites(), vec!["Middleware Demo"]);
 
         // A context without the plugin manager leaves the body untouched.
         let mut untouched = json_response(

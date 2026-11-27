@@ -234,14 +234,25 @@ pub(super) fn record_gateway_observability_with_transport(
                 Some(service_tier),
             )
         });
+        // A streaming `onEvent` middleware can only report its rewrites after
+        // `write_streaming_body` consumed the stream; observability runs after
+        // that, so merge the live state once more here (deduplicated).
+        let mut detail_observations = response.observations.clone();
+        if let Some(state) = &response.middleware_state {
+            detail_observations.merge_middleware_rewrites(
+                &state.request_rewrites(),
+                &state.provider_rewrites(),
+                &state.response_rewrites(),
+            );
+        }
         let mut detail = GatewayRequestLogDetail {
             privacy: response.privacy.as_ref().map(|privacy| privacy.detail()),
             websocket,
             auxiliary: auxiliary.clone(),
             // Detail-only observation markers: they stay in the JSONL record and
             // are deliberately absent from the compact SQLite summary.
-            native_tools: response.observations.native_tools.clone(),
-            rewrites: response.observations.rewrites.clone(),
+            native_tools: detail_observations.native_tools.clone(),
+            rewrites: detail_observations.rewrites.clone(),
             summary: GatewayRequestLogSummary {
                 transport,
                 request_kind,
@@ -267,7 +278,13 @@ pub(super) fn record_gateway_observability_with_transport(
                 service_tier: billed_service_tier,
                 service_tier_multiplier,
                 compaction_mode: response.compaction_mode.clone(),
-                upstream_url: response.upstream_url.clone(),
+                // Never persist a plaintext query credential. Plugin hosts can
+                // report an SDK-normalized URL, so redact the final value here
+                // regardless of where it came from.
+                upstream_url: response
+                    .upstream_url
+                    .as_deref()
+                    .map(request_log::redact_request_path),
                 status_code: (transport == super::super::types::GatewayRequestTransport::Http
                     || request_kind == super::super::types::GatewayRequestKind::WebsocketHandshake)
                     .then_some(response.status_code),
@@ -303,6 +320,8 @@ pub(super) fn record_gateway_observability_with_transport(
             request_headers: None,
             request_body: None,
             upstream_request_body: None,
+            upstream_request_headers: None,
+            plugin_request_body: None,
             response_headers: None,
             upstream_response_body: None,
             response_body: None,
@@ -385,24 +404,32 @@ fn maybe_write_request_detail(
         .error_category
         .as_deref()
         .is_some_and(|category| category.starts_with("privacy_"));
-    let store_body = |body: &[u8], original_len: u64, enabled: bool| {
-        if !enabled {
-            return None;
-        }
-        if let Some(privacy) = &response.privacy {
-            let redacted = privacy.log_body(body, original_len);
-            return stored_body_text(
-                redacted.as_bytes(),
-                redacted.len() as u64,
+    let store_body =
+        |body: &[u8], original_len: u64, enabled: bool, capture_truncated: bool| {
+            if !enabled {
+                return None;
+            }
+            if let Some(privacy) = &response.privacy {
+                let redacted = privacy.log_body(body, original_len);
+                return stored_body_text(
+                    redacted.as_bytes(),
+                    redacted.len() as u64,
+                    true,
+                    settings.log_max_body_size_kb,
+                    capture_truncated && (redacted.len() as u64) < original_len,
+                );
+            }
+            if privacy_blocked {
+                return Some("[privacy: blocked request body omitted]".into());
+            }
+            stored_body_text(
+                body,
+                original_len,
                 true,
                 settings.log_max_body_size_kb,
-            );
-        }
-        if privacy_blocked {
-            return Some("[privacy: blocked request body omitted]".into());
-        }
-        stored_body_text(body, original_len, true, settings.log_max_body_size_kb)
-    };
+                capture_truncated,
+            )
+        };
     detail.privacy = response
         .privacy
         .as_ref()
@@ -425,27 +452,70 @@ fn maybe_write_request_detail(
         &request.body,
         request.body.len() as u64,
         settings.store_request_body,
+        false,
     );
     detail.upstream_request_body = response
         .upstream_request_body
         .as_deref()
-        .and_then(|body| store_body(body, body.len() as u64, settings.store_request_body));
+        .and_then(|body| {
+            store_body(body, body.len() as u64, settings.store_request_body, false)
+        });
+    // Headers actually sent upstream are *always* redacted: the values are
+    // raw at this point, unlike `request_headers` which came from the client.
+    detail.upstream_request_headers = if settings.store_headers && !privacy_blocked {
+        response
+            .upstream_request_headers
+            .as_ref()
+            .map(|headers| request_log::redact_headers(headers))
+    } else {
+        None
+    };
+    // The plugin's own body duplicates the gateway body in the common case;
+    // keep it only when it explains a real difference.
+    detail.plugin_request_body = response
+        .plugin_request_body
+        .as_deref()
+        .and_then(|body| {
+            store_body(
+                body,
+                response.plugin_request_body_bytes,
+                settings.store_request_body,
+                response.plugin_request_body_truncated,
+            )
+        });
+    let effective_upstream_body = detail
+        .upstream_request_body
+        .as_ref()
+        .or(detail.request_body.as_ref());
+    if detail.plugin_request_body.as_ref() == effective_upstream_body {
+        detail.plugin_request_body = None;
+    }
     detail.response_headers = settings
         .store_headers
         .then(|| request_log::redact_headers(&response.headers));
     detail.upstream_response_body =
         upstream_response_body_snapshot.and_then(|(body, original_len)| {
-            store_body(body, *original_len, settings.store_response_body)
+            store_body(
+                body,
+                *original_len,
+                settings.store_response_body,
+                false,
+            )
         });
     detail.response_body = store_body(
         &response.body,
         response.response_body_bytes,
         settings.store_response_body,
+        false,
     );
     if let Some(privacy) = &response.privacy {
-        for headers in [&mut detail.request_headers, &mut detail.response_headers]
-            .into_iter()
-            .flatten()
+        for headers in [
+            &mut detail.request_headers,
+            &mut detail.upstream_request_headers,
+            &mut detail.response_headers,
+        ]
+        .into_iter()
+        .flatten()
         {
             for value in headers.values_mut() {
                 *value = privacy.log_text(value);
@@ -614,6 +684,7 @@ fn stored_body_text(
     original_len: u64,
     enabled: bool,
     max_body_size_kb: u64,
+    capture_truncated: bool,
 ) -> Option<String> {
     if !enabled {
         return None;
@@ -622,7 +693,10 @@ fn stored_body_text(
     if max_bytes == 0 {
         return Some(String::new());
     }
-    if original_len <= max_bytes as u64 {
+    // The plugin host caps its capture at 256 KiB, which can bite before the
+    // configured log limit. Such a prefix must never look like a whole body.
+    let truncated_before_storage = capture_truncated && (body.len() as u64) < original_len;
+    if original_len <= max_bytes as u64 && !truncated_before_storage {
         return Some(String::from_utf8_lossy(body).to_string());
     }
     let mut text = String::from_utf8_lossy(&body[..body.len().min(max_bytes)]).to_string();
@@ -1135,5 +1209,257 @@ mod tests {
         assert!(should_skip_observability("HEAD", "/gemini/v1beta"));
         assert!(!should_skip_observability("POST", "/anthropic"));
         assert!(!should_skip_observability("POST", "/anthropic/v1/messages"));
+    }
+
+    fn detail_for_provider(
+        db: &SqliteDbState,
+        paths: &ProxyGatewayPaths,
+        provider_id: &str,
+    ) -> crate::coding::proxy_gateway::types::GatewayRequestLogDetail {
+        let logs =
+            usage_stats::request_logs(db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                .unwrap();
+        let item = logs
+            .data
+            .iter()
+            .find(|item| item.provider_id == provider_id)
+            .unwrap_or_else(|| panic!("request for {provider_id}"));
+        request_log::get_request_log_detail(paths, &item.trace_id)
+            .unwrap()
+            .expect("JSONL detail")
+    }
+
+    #[test]
+    fn upstream_request_headers_are_redacted_and_gated_by_store_headers() {
+        let headers = || {
+            Some(vec![
+                ("Authorization".to_string(), "Bearer secret".to_string()),
+                ("X-Api-Key".to_string(), "secret".to_string()),
+                ("X-Goog-Api-Key".to_string(), "secret".to_string()),
+                ("Cookie".to_string(), "session=secret".to_string()),
+                ("X-Custom-Token".to_string(), "secret".to_string()),
+                ("Content-Type".to_string(), "application/json".to_string()),
+            ])
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            store_headers: true,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths.clone()));
+        let started_at = Utc::now();
+        let mut response = response_with_upstream_body(json!({"ok": true}));
+        response.provider_id = Some("provider-headers".to_string());
+        response.upstream_request_headers = headers();
+        record_gateway_observability(
+            &request_with_id(1),
+            &response,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(50),
+        );
+
+        let detail = detail_for_provider(&db, &paths, "provider-headers");
+        let stored = detail.upstream_request_headers.expect("upstream headers");
+        assert_eq!(stored.get("Authorization").map(String::as_str), Some("[REDACTED]"));
+        assert_eq!(stored.get("X-Api-Key").map(String::as_str), Some("[REDACTED]"));
+        assert_eq!(
+            stored.get("X-Goog-Api-Key").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert_eq!(stored.get("Cookie").map(String::as_str), Some("[REDACTED]"));
+        assert_eq!(
+            stored.get("X-Custom-Token").map(String::as_str),
+            Some("[REDACTED]")
+        );
+        assert_eq!(
+            stored.get("Content-Type").map(String::as_str),
+            Some("application/json")
+        );
+
+        // `store_headers=false` must not write them even when the response
+        // still carries a capture (defensive: capture is expected off too).
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            store_headers: false,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths.clone()));
+        let mut response = response_with_upstream_body(json!({"ok": true}));
+        response.provider_id = Some("provider-no-headers".to_string());
+        response.upstream_request_headers = headers();
+        record_gateway_observability(
+            &request_with_id(2),
+            &response,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(50),
+        );
+        let detail = detail_for_provider(&db, &paths, "provider-no-headers");
+        assert!(detail.upstream_request_headers.is_none());
+    }
+
+    #[test]
+    fn plugin_request_body_honors_storage_limits_and_dedupes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            store_request_body: true,
+            log_max_body_size_kb: 1,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths.clone()));
+        let started_at = Utc::now();
+
+        // Identical bodies: the plugin copy is dropped.
+        let mut same = response_with_upstream_body(json!({"ok": true}));
+        same.provider_id = Some("provider-plugin-same".to_string());
+        same.upstream_request_body = Some(br#"{"model":"same"}"#.to_vec());
+        same.plugin_request_body = Some(br#"{"model":"same"}"#.to_vec());
+        same.plugin_request_body_bytes = br#"{"model":"same"}"#.len() as u64;
+        record_gateway_observability(
+            &request_with_id(1),
+            &same,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(20),
+        );
+        assert!(detail_for_provider(&db, &paths, "provider-plugin-same")
+            .plugin_request_body
+            .is_none());
+
+        // Different body: stored and truncated at the configured limit.
+        let large_plugin_body = vec![b'x'; 3000];
+        let mut different = response_with_upstream_body(json!({"ok": true}));
+        different.provider_id = Some("provider-plugin-different".to_string());
+        different.upstream_request_body = Some(br#"{"model":"gateway"}"#.to_vec());
+        different.plugin_request_body = Some(large_plugin_body.clone());
+        different.plugin_request_body_bytes = large_plugin_body.len() as u64;
+        record_gateway_observability(
+            &request_with_id(2),
+            &different,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(20),
+        );
+        let detail = detail_for_provider(&db, &paths, "provider-plugin-different");
+        let stored = detail.plugin_request_body.expect("plugin body");
+        assert!(stored.contains("[truncated: stored 1024 of 3000 bytes]"));
+        assert_eq!(stored.len(), 1024 + "\n[truncated: stored 1024 of 3000 bytes]".len());
+
+        // Body storage off: nothing is written.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            store_request_body: false,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths.clone()));
+        let mut response = response_with_upstream_body(json!({"ok": true}));
+        response.provider_id = Some("provider-plugin-off".to_string());
+        response.plugin_request_body = Some(large_plugin_body.clone());
+        response.plugin_request_body_bytes = large_plugin_body.len() as u64;
+        record_gateway_observability(
+            &request_with_id(3),
+            &response,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(20),
+        );
+        assert!(detail_for_provider(&db, &paths, "provider-plugin-off")
+            .plugin_request_body
+            .is_none());
+    }
+
+    #[test]
+    fn plugin_capture_truncation_is_marked_even_below_the_log_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        // The log limit is 512 KiB, larger than the host's 256 KiB capture cap.
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            store_request_body: true,
+            log_max_body_size_kb: 512,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths.clone()));
+        let started_at = Utc::now();
+
+        let captured = vec![b'x'; 256 * 1024];
+        let original_len = 300 * 1024;
+        let mut response = response_with_upstream_body(json!({"ok": true}));
+        response.provider_id = Some("provider-plugin-capture-truncated".to_string());
+        response.plugin_request_body = Some(captured);
+        response.plugin_request_body_bytes = original_len;
+        response.plugin_request_body_truncated = true;
+        record_gateway_observability(
+            &request_with_id(1),
+            &response,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(20),
+        );
+
+        let stored = detail_for_provider(&db, &paths, "provider-plugin-capture-truncated")
+            .plugin_request_body
+            .expect("plugin body");
+        assert!(stored.contains("[truncated: stored 262144 of 307200 bytes]"));
+    }
+
+    #[test]
+    fn middleware_rewrites_reach_the_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = ProxyGatewayPaths::new(dir.path());
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let settings = ProxyGatewaySettings {
+            request_log_enabled: true,
+            metrics_enabled: true,
+            ..Default::default()
+        };
+        let context = GatewayRuntimeContext::new(settings, Some(db.clone()), Some(paths.clone()));
+        let started_at = Utc::now();
+
+        let mut response = response_with_upstream_body(json!({"ok": true}));
+        response.provider_id = Some("provider-middleware".to_string());
+        response.observations.merge_middleware_rewrites(
+            &["request-rewrite".to_string()],
+            &["provider-rewrite".to_string()],
+            &["event-rewrite".to_string()],
+        );
+        record_gateway_observability(
+            &request_with_id(1),
+            &response,
+            &context,
+            started_at,
+            started_at + chrono::Duration::milliseconds(20),
+        );
+
+        let detail = detail_for_provider(&db, &paths, "provider-middleware");
+        let kinds: Vec<&str> = detail
+            .rewrites
+            .iter()
+            .map(|rewrite| rewrite.kind.as_str())
+            .collect();
+        assert!(kinds.contains(&"plugin_middleware_request"));
+        assert!(kinds.contains(&"plugin_middleware_provider"));
+        assert!(kinds.contains(&"plugin_middleware_response"));
+        assert_eq!(detail.rewrites.len(), 3);
     }
 }

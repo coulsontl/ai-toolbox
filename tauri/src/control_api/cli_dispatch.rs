@@ -1,0 +1,3387 @@
+//! Per-CLI dispatch for providers, models, global config files and prompts.
+//!
+//! This module deliberately contains no configuration parsing of its own. Each
+//! arm calls the same `#[tauri::command]` implementation the desktop page uses,
+//! via `AppHandle::state()`, so provider normalization, self-loop checks,
+//! backups, event broadcasts and WSL sync requests are inherited automatically.
+
+use serde_json::{json, Map, Value};
+use tauri::Manager;
+
+use super::error::{ApiError, ApiResult};
+use super::redact::{has_secret_value, redact_json_string, redact_text, redact_value};
+use super::ServerContext;
+use crate::db::SqliteDbState;
+
+pub const CLI_KEYS: [&str; 17] = [
+    "claudecode",
+    "claudedesktop",
+    "codex",
+    "grok",
+    "kimi",
+    "geminicli",
+    "antigravity",
+    "opencode",
+    "openclaw",
+    "pi",
+    "oh_my_pi",
+    "omo_native",
+    "hermes",
+    "dsh",
+    "zcode",
+    "workbuddy",
+    "codebuddy",
+];
+
+pub fn normalize_cli_key(raw: &str) -> Option<&'static str> {
+    let normalized = raw.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+    let key = match normalized.as_str() {
+        "claudecode" | "claude" | "claude_code" => "claudecode",
+        "claudedesktop" | "claude_desktop" => "claudedesktop",
+        "codex" => "codex",
+        "grok" | "grok_cli" => "grok",
+        "kimi" | "kimi_cli" | "kimi_code" => "kimi",
+        "geminicli" | "gemini_cli" | "gemini" => "geminicli",
+        "antigravity" | "antigravity_cli" => "antigravity",
+        "opencode" | "open_code" => "opencode",
+        "openclaw" | "open_claw" => "openclaw",
+        "pi" => "pi",
+        "oh_my_pi" | "ohmy pi" | "oh-my-pi" | "omp" => "oh_my_pi",
+        "omo_native" | "omo" | "omo-native" => "omo_native",
+        "hermes" => "hermes",
+        "dsh" => "dsh",
+        "zcode" | "zcode_cli" => "zcode",
+        "workbuddy" | "workbuddy_desktop" => "workbuddy",
+        "codebuddy" | "codebuddy_cli" => "codebuddy",
+        _ => return None,
+    };
+    Some(key)
+}
+
+struct CliCapability {
+    kind: &'static str,
+    provider_crud: bool,
+    model_crud: bool,
+    config: bool,
+    prompts: bool,
+    apply: bool,
+    test: bool,
+}
+
+fn capability(key: &'static str) -> CliCapability {
+    let kind = match key {
+        "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
+            "database"
+        }
+        "antigravity" => "official",
+        _ => "file",
+    };
+    let provider_crud = key != "antigravity";
+    let model_crud = key != "antigravity";
+    let prompts = !matches!(key, "openclaw" | "workbuddy");
+    let apply = !matches!(key, "antigravity" | "workbuddy" | "codebuddy");
+    let test = key != "antigravity";
+    CliCapability {
+        kind,
+        provider_crud,
+        model_crud,
+        config: true,
+        prompts,
+        apply,
+        test,
+    }
+}
+
+pub fn capability_matrix() -> Value {
+    let rows = CLI_KEYS
+        .iter()
+        .map(|key| {
+            let capability = capability(key);
+            json!({
+                "cliKey": key,
+                "kind": capability.kind,
+                "providerCrud": capability.provider_crud,
+                "modelCrud": capability.model_crud,
+                "config": capability.config,
+                "prompts": capability.prompts,
+                "apply": capability.apply,
+                "test": capability.test,
+                "promptPlans": capability.prompts,
+                "paths": true,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({ "clis": rows })
+}
+
+fn app(context: &ServerContext) -> tauri::AppHandle {
+    context.app.clone()
+}
+
+fn db_state(context: &ServerContext) -> tauri::State<'_, SqliteDbState> {
+    context.app.state::<SqliteDbState>()
+}
+
+fn invalid(error: String) -> ApiError {
+    ApiError::bad_request(error)
+}
+
+fn internal(error: String) -> ApiError {
+    ApiError::internal(error)
+}
+
+// ---------------------------------------------------------------------------
+// Provider serialization and canonical field mapping
+// ---------------------------------------------------------------------------
+
+/// Turns a native provider DTO into the public shape: `settingsConfig` is
+/// parsed and redacted, `hasApiKey` records whether a credential existed.
+fn public_db_provider(mut value: Value) -> Value {
+    let mut had_secret = false;
+    if let Some(settings_config) = value.get("settingsConfig").and_then(Value::as_str) {
+        had_secret |= settings_config_has_secret(settings_config);
+        let redacted = redact_json_string(settings_config);
+        value["settingsConfig"] = redacted;
+    }
+    if let Some(extra) = value.get("extraSettingsConfig").and_then(Value::as_str) {
+        had_secret |= settings_config_has_secret(extra);
+        let redacted = redact_json_string(extra);
+        value["extraSettingsConfig"] = redacted;
+    }
+    if let Some(meta) = value.get("meta").cloned() {
+        had_secret |= has_secret_value(&meta);
+    }
+    redact_value(&mut value);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("hasApiKey".to_string(), Value::Bool(had_secret));
+    }
+    value
+}
+
+fn settings_config_has_secret(raw: &str) -> bool {
+    match serde_json::from_str::<Value>(raw) {
+        Ok(value) => has_secret_value(&value),
+        Err(_) => redact_text(raw) != raw,
+    }
+}
+
+fn public_file_provider(provider_key: &str, provider: Value, has_key: bool) -> Value {
+    let mut value = json!({
+        "id": provider_key,
+        "providerKey": provider_key,
+        "provider": provider,
+        "hasApiKey": has_key,
+    });
+    redact_value(&mut value);
+    value
+}
+
+/// Parse `settingsConfig` (a string in every DB provider) to an object.
+fn settings_config_object(value: &Value) -> Map<String, Value> {
+    value
+        .get("settingsConfig")
+        .and_then(Value::as_str)
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .and_then(|parsed| parsed.as_object().cloned())
+        .unwrap_or_default()
+}
+
+fn set_settings_config(value: &mut Value, object: Map<String, Value>) {
+    value["settingsConfig"] = Value::String(Value::Object(object).to_string());
+}
+
+/// Applies canonical `baseUrl` / `apiKey` / `model` fields to a DB provider
+/// settings object. Native `settingsConfig` always wins over these shortcuts.
+fn apply_canonical_fields(cli: &str, body: &Value, settings: &mut Map<String, Value>) {
+    let base_url = canonical_string(body, "baseUrl");
+    let api_key = canonical_string(body, "apiKey");
+    let model = canonical_string(body, "model");
+
+    match cli {
+        "claudecode" | "claudedesktop" => {
+            let env = ensure_object(settings, "env");
+            if let Some(base_url) = base_url {
+                env.insert("ANTHROPIC_BASE_URL".to_string(), json!(base_url));
+            }
+            if let Some(api_key) = api_key {
+                env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), json!(api_key));
+            }
+            if let Some(model) = model {
+                env.insert("ANTHROPIC_MODEL".to_string(), json!(model));
+            }
+        }
+        "codex" => {
+            let auth = ensure_object(settings, "auth");
+            if let Some(api_key) = api_key {
+                auth.insert("OPENAI_API_KEY".to_string(), json!(api_key));
+            }
+            if base_url.is_some() || model.is_some() {
+                let existing = settings
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if let Ok(patched) = patch_codex_toml(&existing, base_url, model) {
+                    settings.insert("config".to_string(), json!(patched));
+                }
+            }
+        }
+        "grok" => {
+            let auth = ensure_object(settings, "auth");
+            if let Some(api_key) = api_key {
+                auth.insert("API_KEY".to_string(), json!(api_key));
+            }
+            if let Some(base_url) = base_url {
+                settings.insert("baseUrl".to_string(), json!(base_url));
+            }
+            // Grok custom providers project `[providers]`/`[model.*]` from the
+            // catalog, so a canonical model must exist there as a row. The
+            // channel address lives on both the top-level field and every row.
+            let catalog = ensure_array(settings, "modelCatalog", "models");
+            if let Some(base_url) = base_url {
+                for row in catalog.iter_mut() {
+                    if let Some(object) = row.as_object_mut() {
+                        object.insert("baseUrl".to_string(), json!(base_url));
+                    }
+                }
+            }
+            match model {
+                Some(model) => {
+                    let position = catalog.iter().position(|row| {
+                        row.get("key").and_then(Value::as_str) == Some(model)
+                            || row.get("model").and_then(Value::as_str) == Some(model)
+                    });
+                    let position = match position {
+                        Some(position) => position,
+                        None => {
+                            catalog.push(json!({
+                                "key": model,
+                                "model": model,
+                                "displayName": model,
+                                "apiBackend": "chat_completions",
+                            }));
+                            catalog.len() - 1
+                        }
+                    };
+                    if let Some(base_url) = base_url {
+                        catalog[position]["baseUrl"] = json!(base_url);
+                    }
+                    let key = catalog[position]
+                        .get("key")
+                        .and_then(Value::as_str)
+                        .unwrap_or(model)
+                        .to_string();
+                    settings.insert("defaultModelKey".to_string(), json!(key));
+                }
+                None => {
+                    if catalog.is_empty() {
+                        let fallback = "grok-4.5";
+                        catalog.push(json!({
+                            "key": fallback,
+                            "model": fallback,
+                            "displayName": fallback,
+                            "apiBackend": "chat_completions",
+                        }));
+                        settings.insert("defaultModelKey".to_string(), json!(fallback));
+                    }
+                }
+            }
+        }
+        "kimi" => {
+            let auth = ensure_object(settings, "auth");
+            if let Some(api_key) = api_key {
+                auth.insert("API_KEY".to_string(), json!(api_key));
+            }
+            if base_url.is_some() {
+                let provider_key = kimi_provider_key(settings);
+                let configs = ensure_object(settings, "providerConfigs");
+                let entry = configs
+                    .entry(provider_key)
+                    .or_insert_with(|| json!({ "type": "openai" }));
+                if !entry.is_object() {
+                    *entry = json!({ "type": "openai" });
+                }
+                if let Some(base_url) = base_url {
+                    entry["base_url"] = json!(base_url);
+                }
+            }
+            if let Some(model) = model {
+                let provider_key = kimi_provider_key(settings);
+                let catalog = ensure_array(settings, "modelCatalog", "models");
+                let position = catalog.iter().position(|row| {
+                    row.get("key").and_then(Value::as_str) == Some(model)
+                        || row.get("model").and_then(Value::as_str) == Some(model)
+                });
+                let position = match position {
+                    Some(position) => position,
+                    None => {
+                        catalog.push(json!({
+                            "key": model,
+                            "model": model,
+                            "provider": provider_key,
+                        }));
+                        catalog.len() - 1
+                    }
+                };
+                let key = catalog[position]
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or(model)
+                    .to_string();
+                settings.insert("defaultModelKey".to_string(), json!(key));
+            }
+        }
+        "geminicli" => {
+            let env = ensure_object(settings, "env");
+            if let Some(api_key) = api_key {
+                env.insert("GEMINI_API_KEY".to_string(), json!(api_key));
+            }
+            if let Some(base_url) = base_url {
+                env.insert("GOOGLE_GEMINI_BASE_URL".to_string(), json!(base_url));
+            }
+            if let Some(model) = model {
+                env.insert("GEMINI_MODEL".to_string(), json!(model));
+            }
+        }
+        "zcode" => {
+            // ZCode stores a typed `ZcodeSettingsConfig`, not a flat
+            // `{baseUrl, apiKey}` pair, so canonical fields are projected into
+            // the provider id/name, `config.api`, `config.access` and models.
+            if settings
+                .get("providerId")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                let requested = canonical_string(body, "providerId")
+                    .filter(|value| value.starts_with("custom:"))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "custom:{}",
+                            crate::coding::zcode::commands::zcode_provider_id_slug(&provider_name(
+                                body
+                            ))
+                        )
+                    });
+                settings.insert("providerId".to_string(), json!(requested));
+            }
+            // A canonical `name` is the display name shown by ZCode, so an
+            // update must overwrite it; without a name the stored value wins.
+            match canonical_string(body, "name") {
+                Some(name) => {
+                    settings.insert("providerName".to_string(), json!(name));
+                }
+                None => {
+                    settings
+                        .entry("providerName".to_string())
+                        .or_insert_with(|| json!(provider_name(body)));
+                }
+            }
+
+            if base_url.is_some() || api_key.is_some() {
+                let config = ensure_object(settings, "config");
+                if let Some(base_url) = base_url {
+                    let api = ensure_object(config, "api");
+                    api.entry("type".to_string())
+                        .or_insert_with(|| json!("anthropic-messages"));
+                    api.insert("baseUrl".to_string(), json!(base_url));
+                }
+                if let Some(api_key) = api_key {
+                    let access = ensure_object(config, "access");
+                    access.insert("type".to_string(), json!("api-key"));
+                    access.insert("apiKey".to_string(), json!(api_key));
+                }
+            }
+            if let Some(model) = model {
+                let models = ensure_root_array(settings, "models");
+                let position = models
+                    .iter()
+                    .position(|row| row.get("modelId").and_then(Value::as_str) == Some(model));
+                let position = match position {
+                    Some(position) => position,
+                    None => {
+                        models.push(json!({
+                            "modelId": model,
+                            "ruleKind": "smart",
+                            "isDefault": true,
+                        }));
+                        models.len() - 1
+                    }
+                };
+                for (index, row) in models.iter_mut().enumerate() {
+                    if let Some(object) = row.as_object_mut() {
+                        object.insert("isDefault".to_string(), json!(index == position));
+                    }
+                }
+                settings.insert("defaultModelId".to_string(), json!(model));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn canonical_string<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
+    body.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn ensure_object<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
+    let value = map.entry(key.to_string()).or_insert_with(|| json!({}));
+    if !value.is_object() {
+        *value = json!({});
+    }
+    value.as_object_mut().expect("object just ensured")
+}
+
+fn ensure_root_array<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut Vec<Value> {
+    let value = map.entry(key.to_string()).or_insert_with(|| json!([]));
+    if !value.is_array() {
+        *value = json!([]);
+    }
+    value.as_array_mut().expect("array just ensured")
+}
+
+/// Ensures `root.key` holds an array.
+fn ensure_array<'a>(map: &'a mut Map<String, Value>, root: &str, key: &str) -> &'a mut Vec<Value> {
+    ensure_root_array(ensure_object(map, root), key)
+}
+
+/// Kimi stores custom channels under a provider key; reuse the single existing
+/// key when the caller already configured one, otherwise use `custom`.
+fn kimi_provider_key(settings: &Map<String, Value>) -> String {
+    let keys: Vec<&String> = settings
+        .get("providerConfigs")
+        .and_then(Value::as_object)
+        .map(|configs| configs.keys().collect())
+        .unwrap_or_default();
+    if keys.len() == 1 {
+        keys[0].clone()
+    } else {
+        "custom".to_string()
+    }
+}
+
+/// Writes the canonical channel address/model into Codex's TOML string.
+fn patch_codex_toml(
+    existing: &str,
+    base_url: Option<&str>,
+    model: Option<&str>,
+) -> Result<String, String> {
+    use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
+    let mut document = if existing.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        existing
+            .parse::<DocumentMut>()
+            .map_err(|error| format!("Invalid TOML: {error}"))?
+    };
+    if let Some(model) = model {
+        // Older Codex configs may pin the model inside `[chat]`; keep that
+        // location when present, otherwise write the top-level key.
+        let handled = document
+            .get_mut("chat")
+            .and_then(Item::as_table_mut)
+            .filter(|chat| chat.contains_key("model"))
+            .map(|chat| chat["model"] = Item::Value(TomlValue::from(model)))
+            .is_some();
+        if !handled {
+            document["model"] = Item::Value(TomlValue::from(model));
+        }
+    }
+    if let Some(base_url) = base_url {
+        let provider_id = document
+            .get("model_provider")
+            .and_then(Item::as_str)
+            .unwrap_or("custom")
+            .to_string();
+        if !document.contains_key("model_provider") {
+            document["model_provider"] = Item::Value(TomlValue::from(provider_id.clone()));
+        }
+        if !document.contains_key("model_providers") {
+            document["model_providers"] = Item::Table(Table::new());
+        }
+        let providers = document["model_providers"]
+            .as_table_mut()
+            .ok_or_else(|| "model_providers must be a table".to_string())?;
+        if !providers.contains_key(&provider_id) {
+            providers[&provider_id] = Item::Table(Table::new());
+        }
+        let table = providers[&provider_id]
+            .as_table_mut()
+            .ok_or_else(|| "model_provider entry must be a table".to_string())?;
+        table["base_url"] = Item::Value(TomlValue::from(base_url));
+        if !table.contains_key("name") {
+            table["name"] = Item::Value(TomlValue::from("AI Toolbox"));
+        }
+        if !table.contains_key("wire_api") {
+            table["wire_api"] = Item::Value(TomlValue::from("responses"));
+        }
+    }
+    Ok(document.to_string())
+}
+
+fn provider_slug(name: &str) -> String {
+    let mut slug = String::new();
+    for ch in name.trim().chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') && !slug.is_empty() {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        format!("provider-{}", uuid::Uuid::new_v4().simple())
+    } else {
+        slug
+    }
+}
+
+fn requested_provider_key(body: &Value) -> Option<String> {
+    body.get("providerId")
+        .or_else(|| body.get("providerKey"))
+        .or_else(|| body.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn provider_name(body: &Value) -> String {
+    body.get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Custom provider")
+        .to_string()
+}
+
+fn provider_category(body: &Value) -> String {
+    body.get("category")
+        .and_then(Value::as_str)
+        .unwrap_or("custom")
+        .to_string()
+}
+
+fn db_provider_input(cli: &str, body: &Value) -> Value {
+    let base = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    let mut input = base.as_object().cloned().unwrap_or_default();
+    input
+        .entry("name".to_string())
+        .or_insert_with(|| json!(provider_name(body)));
+    input
+        .entry("category".to_string())
+        .or_insert_with(|| json!(provider_category(body)));
+    let mut settings = match input.get("settingsConfig") {
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default(),
+        Some(Value::Object(object)) => object.clone(),
+        _ => Map::new(),
+    };
+    // `base` is the provider object when the caller nests it under
+    // `"provider"`, otherwise the body itself, so canonical shortcuts work in
+    // both shapes.
+    apply_canonical_fields(cli, &base, &mut settings);
+    input.insert(
+        "settingsConfig".to_string(),
+        Value::String(Value::Object(settings).to_string()),
+    );
+    Value::Object(input)
+}
+
+// ---------------------------------------------------------------------------
+// Provider CRUD
+// ---------------------------------------------------------------------------
+
+pub async fn list_providers(context: &ServerContext, cli: &str) -> ApiResult<Value> {
+    match cli {
+        "antigravity" => Ok(json!({ "providers": [], "providerCrud": false })),
+        "claudecode" => {
+            let providers =
+                crate::coding::claude_code::commands::list_claude_providers(db_state(context))
+                    .await
+                    .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "claudedesktop" => {
+            let providers = crate::coding::claude_desktop::commands::list_claude_desktop_providers(
+                db_state(context),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "codex" => {
+            let providers = crate::coding::codex::commands::list_codex_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "grok" => {
+            let providers = crate::coding::grok::commands::list_grok_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "kimi" => {
+            let providers = crate::coding::kimi::commands::list_kimi_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "geminicli" => {
+            let providers =
+                crate::coding::gemini_cli::commands::list_gemini_cli_providers(db_state(context))
+                    .await
+                    .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "zcode" => {
+            let providers = crate::coding::zcode::commands::list_zcode_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            Ok(providers_value(
+                providers
+                    .into_iter()
+                    .map(|item| serde_json::to_value(item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        "opencode" => list_file_providers_opencode(context).await,
+        "openclaw" => list_file_providers_openclaw(context).await,
+        "pi" => list_runtime_providers(context, RuntimeCli::Pi).await,
+        "oh_my_pi" => list_runtime_providers(context, RuntimeCli::Omp).await,
+        "hermes" => list_runtime_providers(context, RuntimeCli::Hermes).await,
+        "dsh" => list_runtime_providers(context, RuntimeCli::Dsh).await,
+        "omo_native" => list_omo_providers(context).await,
+        "workbuddy" | "codebuddy" => list_family_providers(context, cli).await,
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+fn providers_value(providers: Vec<Value>) -> Value {
+    let items = providers
+        .into_iter()
+        .map(public_db_provider)
+        .collect::<Vec<_>>();
+    json!({ "providers": items })
+}
+
+pub async fn get_provider(context: &ServerContext, cli: &str, id: &str) -> ApiResult<Value> {
+    let listing = list_providers(context, cli).await?;
+    let found = listing
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("id").and_then(Value::as_str) == Some(id)
+                    || item.get("providerKey").and_then(Value::as_str) == Some(id)
+                    || item.get("providerId").and_then(Value::as_str) == Some(id)
+            })
+        })
+        .cloned();
+    found.ok_or_else(|| ApiError::not_found(format!("Provider '{id}' was not found in '{cli}'")))
+}
+
+pub async fn create_provider(context: &ServerContext, cli: &str, body: Value) -> ApiResult<Value> {
+    match cli {
+        "antigravity" => Err(ApiError::read_only(
+            "Antigravity only supports Google OAuth and has no custom provider entry",
+        )),
+        "claudecode" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid Claude provider: {error}")))?;
+            let provider = crate::coding::claude_code::commands::create_claude_provider(
+                db_state(context),
+                app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "claudedesktop" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid Claude Desktop provider: {error}")))?;
+            let provider = crate::coding::claude_desktop::commands::create_claude_desktop_provider(
+                db_state(context),
+                app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "codex" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid Codex provider: {error}")))?;
+            let provider = crate::coding::codex::commands::create_codex_provider_inner(
+                &db_state(context),
+                &app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "grok" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid Grok provider: {error}")))?;
+            let provider = crate::coding::grok::commands::create_grok_provider_inner(
+                &db_state(context),
+                &app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "kimi" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid Kimi provider: {error}")))?;
+            let provider = crate::coding::kimi::commands::create_kimi_provider(
+                db_state(context),
+                app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "geminicli" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid Gemini provider: {error}")))?;
+            let provider = crate::coding::gemini_cli::commands::create_gemini_cli_provider_inner(
+                &db_state(context),
+                &app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "zcode" => {
+            let input = serde_json::from_value(db_provider_input(cli, &body))
+                .map_err(|error| invalid(format!("Invalid ZCode provider: {error}")))?;
+            let provider = crate::coding::zcode::commands::create_zcode_provider(
+                db_state(context),
+                app(context),
+                input,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "opencode" => create_opencode_provider(context, body).await,
+        "openclaw" => create_openclaw_provider(context, body).await,
+        "pi" => create_runtime_provider(context, RuntimeCli::Pi, body).await,
+        "oh_my_pi" => create_runtime_provider(context, RuntimeCli::Omp, body).await,
+        "hermes" => create_runtime_provider(context, RuntimeCli::Hermes, body).await,
+        "dsh" => create_runtime_provider(context, RuntimeCli::Dsh, body).await,
+        "omo_native" => create_omo_provider(context, body).await,
+        "workbuddy" | "codebuddy" => create_family_provider(context, cli, body).await,
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+pub async fn update_provider(
+    context: &ServerContext,
+    cli: &str,
+    id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    match cli {
+        "antigravity" => Err(ApiError::read_only(
+            "Antigravity only supports Google OAuth and has no custom provider entry",
+        )),
+        "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
+            update_db_provider(context, cli, id, body).await
+        }
+        "opencode" => update_opencode_provider(context, id, body).await,
+        "openclaw" => update_openclaw_provider(context, id, body).await,
+        "pi" => update_runtime_provider(context, RuntimeCli::Pi, id, body).await,
+        "oh_my_pi" => update_runtime_provider(context, RuntimeCli::Omp, id, body).await,
+        "hermes" => update_runtime_provider(context, RuntimeCli::Hermes, id, body).await,
+        "dsh" => update_runtime_provider(context, RuntimeCli::Dsh, id, body).await,
+        "omo_native" => update_omo_provider(context, id, body).await,
+        "workbuddy" | "codebuddy" => update_family_provider(context, cli, id, body).await,
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+async fn update_db_provider(
+    context: &ServerContext,
+    cli: &str,
+    id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    let patch = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+
+    // Rebuild the raw provider from the same command output, not from the
+    // redacted public DTO, so secrets that the caller did not send survive.
+    let raw = raw_db_provider(context, cli, id).await?;
+    let mut merged = raw;
+    merge_settings_config(&mut merged, &patch);
+    let merged = apply_canonical_to_provider_value(cli, merged, &patch);
+
+    match cli {
+        "claudecode" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid Claude provider: {error}")))?;
+            let provider = crate::coding::claude_code::commands::update_claude_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "claudedesktop" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid Claude Desktop provider: {error}")))?;
+            let provider = crate::coding::claude_desktop::commands::update_claude_desktop_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "codex" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid Codex provider: {error}")))?;
+            let provider = crate::coding::codex::commands::update_codex_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "grok" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid Grok provider: {error}")))?;
+            let provider = crate::coding::grok::commands::update_grok_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "kimi" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid Kimi provider: {error}")))?;
+            let provider = crate::coding::kimi::commands::update_kimi_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "geminicli" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid Gemini provider: {error}")))?;
+            let provider = crate::coding::gemini_cli::commands::update_gemini_cli_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        "zcode" => {
+            let provider = serde_json::from_value(merged)
+                .map_err(|error| invalid(format!("Invalid ZCode provider: {error}")))?;
+            let provider = crate::coding::zcode::commands::update_zcode_provider(
+                db_state(context),
+                app(context),
+                provider,
+            )
+            .await
+            .map_err(internal)?;
+            Ok(public_db_provider(serde_json::to_value(provider)?))
+        }
+        _ => Err(ApiError::not_found("Unknown database CLI")),
+    }
+}
+
+fn merge_settings_config(raw: &mut Value, patch: &Value) {
+    if let Some(settings) = patch
+        .get("settingsConfig")
+        .filter(|value| value.is_object())
+    {
+        let mut stored = Value::Object(settings_config_object(raw));
+        super::redact::merge_patch_preserving_secrets(&mut stored, settings.clone());
+        if let Some(object) = stored.as_object() {
+            set_settings_config(raw, object.clone());
+        }
+    }
+    if let Some(object) = patch.as_object() {
+        for (key, value) in object {
+            if matches!(
+                key.as_str(),
+                "settingsConfig"
+                    | "apiKey"
+                    | "baseUrl"
+                    | "model"
+                    | "provider"
+                    | "id"
+                    | "isApplied"
+                    | "isDefault"
+                    | "createdAt"
+                    | "updatedAt"
+            ) {
+                continue;
+            }
+            raw[key] = value.clone();
+        }
+    }
+}
+
+fn apply_canonical_to_provider_value(cli: &str, mut raw: Value, body: &Value) -> Value {
+    let mut settings = settings_config_object(&raw);
+    apply_canonical_fields(cli, body, &mut settings);
+    set_settings_config(&mut raw, settings);
+    raw
+}
+
+async fn raw_db_provider(context: &ServerContext, cli: &str, id: &str) -> ApiResult<Value> {
+    match cli {
+        "claudecode" => {
+            let items =
+                crate::coding::claude_code::commands::list_claude_providers(db_state(context))
+                    .await
+                    .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        "claudedesktop" => {
+            let items = crate::coding::claude_desktop::commands::list_claude_desktop_providers(
+                db_state(context),
+            )
+            .await
+            .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        "codex" => {
+            let items = crate::coding::codex::commands::list_codex_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        "grok" => {
+            let items = crate::coding::grok::commands::list_grok_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        "kimi" => {
+            let items = crate::coding::kimi::commands::list_kimi_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        "geminicli" => {
+            let items =
+                crate::coding::gemini_cli::commands::list_gemini_cli_providers(db_state(context))
+                    .await
+                    .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        "zcode" => {
+            let items = crate::coding::zcode::commands::list_zcode_providers(db_state(context))
+                .await
+                .map_err(internal)?;
+            items
+                .into_iter()
+                .find(|item| item.id == id)
+                .map(|item| serde_json::to_value(item).map_err(ApiError::from))
+                .transpose()?
+                .ok_or_else(|| ApiError::not_found(format!("Provider '{id}' not found")))
+        }
+        _ => Err(ApiError::not_found("Unknown database CLI")),
+    }
+}
+
+pub async fn delete_provider(context: &ServerContext, cli: &str, id: &str) -> ApiResult<Value> {
+    match cli {
+        "antigravity" => Err(ApiError::read_only(
+            "Antigravity only supports Google OAuth and has no custom provider entry",
+        )),
+        "claudecode" => {
+            crate::coding::claude_code::commands::delete_claude_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "claudedesktop" => {
+            crate::coding::claude_desktop::commands::delete_claude_desktop_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "codex" => {
+            crate::coding::codex::commands::delete_codex_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "grok" => {
+            crate::coding::grok::commands::delete_grok_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "kimi" => {
+            crate::coding::kimi::commands::delete_kimi_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "geminicli" => {
+            crate::coding::gemini_cli::commands::delete_gemini_cli_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "zcode" => {
+            crate::coding::zcode::commands::delete_zcode_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"deleted": id}))
+        }
+        "opencode" => delete_opencode_provider(context, id).await,
+        "openclaw" => delete_openclaw_provider(context, id).await,
+        "pi" => delete_runtime_provider(context, RuntimeCli::Pi, id).await,
+        "oh_my_pi" => delete_runtime_provider(context, RuntimeCli::Omp, id).await,
+        "hermes" => delete_runtime_provider(context, RuntimeCli::Hermes, id).await,
+        "dsh" => delete_runtime_provider(context, RuntimeCli::Dsh, id).await,
+        "omo_native" => delete_omo_provider(context, id).await,
+        "workbuddy" | "codebuddy" => delete_family_provider(context, cli, id).await,
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+pub async fn apply_provider(
+    context: &ServerContext,
+    cli: &str,
+    id: &str,
+    model_id: Option<&str>,
+) -> ApiResult<Value> {
+    match cli {
+        "claudecode" => {
+            crate::coding::claude_code::commands::apply_claude_config(db_state(context), app(context), id.to_string())
+                .await
+                .map_err(internal)?;
+            Ok(json!({"applied": id}))
+        }
+        "claudedesktop" => {
+            crate::coding::claude_desktop::commands::apply_claude_desktop_provider(db_state(context), app(context), id.to_string())
+                .await
+                .map_err(internal)?;
+            Ok(json!({"applied": id}))
+        }
+        "codex" => {
+            crate::coding::codex::commands::apply_codex_config(db_state(context), app(context), id.to_string())
+                .await
+                .map_err(internal)?;
+            Ok(json!({"applied": id}))
+        }
+        "grok" => {
+            crate::coding::grok::commands::select_grok_provider(db_state(context), app(context), id.to_string())
+                .await
+                .map_err(internal)?;
+            Ok(json!({"applied": id}))
+        }
+        "kimi" => {
+            crate::coding::kimi::commands::select_kimi_provider(db_state(context), app(context), id.to_string())
+                .await
+                .map_err(internal)?;
+            Ok(json!({"applied": id}))
+        }
+        "geminicli" => {
+            crate::coding::gemini_cli::commands::select_gemini_cli_provider(db_state(context), app(context), id.to_string())
+                .await
+                .map_err(internal)?;
+            Ok(json!({"applied": id}))
+        }
+        "zcode" => {
+            let model = model_id.unwrap_or_default();
+            crate::coding::zcode::commands::select_zcode_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+                model.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+            Ok(json!({"applied": id, "modelId": model}))
+        }
+        "opencode" => apply_opencode_provider(context, id, model_id).await,
+        "openclaw" => apply_openclaw_provider(context, id, model_id).await,
+        "pi" => apply_runtime_provider(context, RuntimeCli::Pi, id, model_id).await,
+        "oh_my_pi" => apply_runtime_provider(context, RuntimeCli::Omp, id, model_id).await,
+        "hermes" => apply_runtime_provider(context, RuntimeCli::Hermes, id, model_id).await,
+        "dsh" => apply_runtime_provider(context, RuntimeCli::Dsh, id, model_id).await,
+        "omo_native" => apply_omo_provider(context, id, model_id).await,
+        "workbuddy" | "codebuddy" => Err(ApiError::read_only(
+            "This product has no explicit provider apply step; its models are discovered from models.json",
+        )),
+        "antigravity" => Err(ApiError::read_only(
+            "Antigravity only supports Google OAuth and has no custom provider entry",
+        )),
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// File-backed provider helpers
+// ---------------------------------------------------------------------------
+
+async fn list_file_providers_opencode(context: &ServerContext) -> ApiResult<Value> {
+    let config = read_opencode_config_value(context).await?;
+    let providers = config
+        .get("provider")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let items = providers
+        .into_iter()
+        .map(|(key, provider)| {
+            let has_key = provider
+                .get("options")
+                .and_then(|options| options.get("apiKey"))
+                .is_some_and(|value| !value.is_null());
+            public_file_provider(&key, provider, has_key)
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "providers": items }))
+}
+
+async fn read_opencode_config_value(context: &ServerContext) -> ApiResult<Value> {
+    let result = crate::coding::open_code::commands::read_opencode_config(db_state(context))
+        .await
+        .map_err(internal)?;
+    let value = serde_json::to_value(result)?;
+    match value.get("status").and_then(Value::as_str) {
+        Some("success") => Ok(value.get("config").cloned().unwrap_or_else(|| json!({}))),
+        Some("notFound") => Ok(json!({"provider": {}})),
+        _ => Err(ApiError::bad_request(
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("OpenCode config could not be parsed"),
+        )),
+    }
+}
+
+async fn save_opencode_config_value(context: &ServerContext, config: Value) -> ApiResult<()> {
+    let config: crate::coding::open_code::types::OpenCodeConfig = serde_json::from_value(config)
+        .map_err(|error| invalid(format!("Invalid OpenCode config: {error}")))?;
+    crate::coding::open_code::commands::save_opencode_config(
+        db_state(context),
+        app(context),
+        config,
+    )
+    .await
+    .map_err(internal)
+}
+
+async fn create_opencode_provider(context: &ServerContext, body: Value) -> ApiResult<Value> {
+    let provider = body.get("provider").cloned().unwrap_or_else(|| {
+        let mut provider = json!({
+            "name": provider_name(&body),
+            "npm": "@ai-sdk/openai-compatible",
+            "options": {},
+            "models": {},
+        });
+        if let Some(base_url) = body.get("baseUrl").and_then(Value::as_str) {
+            provider["options"]["baseURL"] = json!(base_url);
+        }
+        if let Some(api_key) = body.get("apiKey").and_then(Value::as_str) {
+            provider["options"]["apiKey"] = json!(api_key);
+        }
+        provider
+    });
+    let key = requested_provider_key(&body).unwrap_or_else(|| provider_slug(&provider_name(&body)));
+    let mut config = read_opencode_config_value(context).await?;
+    if !config.get("provider").is_some_and(Value::is_object) {
+        config["provider"] = json!({});
+    }
+    config["provider"][&key] = provider;
+    save_opencode_config_value(context, config).await?;
+    get_provider(context, "opencode", &key).await
+}
+
+async fn update_opencode_provider(
+    context: &ServerContext,
+    id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    let mut config = read_opencode_config_value(context).await?;
+    let existing = config
+        .get_mut("provider")
+        .and_then(Value::as_object_mut)
+        .and_then(|providers| providers.get_mut(id))
+        .ok_or_else(|| ApiError::not_found(format!("OpenCode provider '{id}' not found")))?;
+    let patch = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    super::redact::merge_patch_preserving_secrets(existing, patch);
+    save_opencode_config_value(context, config).await?;
+    get_provider(context, "opencode", id).await
+}
+
+async fn delete_opencode_provider(context: &ServerContext, id: &str) -> ApiResult<Value> {
+    let mut config = read_opencode_config_value(context).await?;
+    let removed = config
+        .get_mut("provider")
+        .and_then(Value::as_object_mut)
+        .and_then(|providers| providers.remove(id))
+        .is_some();
+    if !removed {
+        return Err(ApiError::not_found(format!(
+            "OpenCode provider '{id}' not found"
+        )));
+    }
+    save_opencode_config_value(context, config).await?;
+    Ok(json!({"deleted": id}))
+}
+
+async fn apply_opencode_provider(
+    context: &ServerContext,
+    id: &str,
+    model_id: Option<&str>,
+) -> ApiResult<Value> {
+    let mut config = read_opencode_config_value(context).await?;
+    let models = config
+        .get("provider")
+        .and_then(|providers| providers.get(id))
+        .and_then(|provider| provider.get("models"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let model_id = model_id
+        .map(str::to_string)
+        .or_else(|| models.keys().next().cloned())
+        .ok_or_else(|| ApiError::bad_request("This provider has no models to apply"))?;
+    config["model"] = json!(format!("{id}/{model_id}"));
+    save_opencode_config_value(context, config).await?;
+    Ok(json!({"applied": id, "modelId": model_id}))
+}
+
+async fn list_file_providers_openclaw(context: &ServerContext) -> ApiResult<Value> {
+    let config = read_openclaw_config_value(context).await?;
+    let providers = config
+        .get("models")
+        .and_then(|models| models.get("providers"))
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let items = providers
+        .into_iter()
+        .map(|(key, provider)| {
+            let has_key = provider.get("apiKey").is_some_and(|value| !value.is_null());
+            public_file_provider(&key, provider, has_key)
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "providers": items }))
+}
+
+async fn read_openclaw_config_value(context: &ServerContext) -> ApiResult<Value> {
+    let result = crate::coding::open_claw::commands::read_openclaw_config(db_state(context))
+        .await
+        .map_err(internal)?;
+    let value = serde_json::to_value(result)?;
+    match value.get("status").and_then(Value::as_str) {
+        Some("success") => Ok(value.get("config").cloned().unwrap_or_else(|| json!({}))),
+        Some("notFound") => Ok(json!({"models": {"providers": {}}})),
+        _ => Err(ApiError::bad_request(
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("OpenClaw config could not be parsed"),
+        )),
+    }
+}
+
+async fn save_openclaw_config_value(context: &ServerContext, config: Value) -> ApiResult<()> {
+    let config: crate::coding::open_claw::types::OpenClawConfig = serde_json::from_value(config)
+        .map_err(|error| invalid(format!("Invalid OpenClaw config: {error}")))?;
+    crate::coding::open_claw::commands::save_openclaw_config(
+        db_state(context),
+        app(context),
+        config,
+    )
+    .await
+    .map_err(internal)
+}
+
+async fn create_openclaw_provider(context: &ServerContext, body: Value) -> ApiResult<Value> {
+    let provider = body.get("provider").cloned().unwrap_or_else(|| {
+        let mut provider = json!({"models": []});
+        if let Some(base_url) = body.get("baseUrl").and_then(Value::as_str) {
+            provider["baseUrl"] = json!(base_url);
+        }
+        if let Some(api_key) = body.get("apiKey").and_then(Value::as_str) {
+            provider["apiKey"] = json!(api_key);
+        }
+        provider
+    });
+    let key = requested_provider_key(&body).unwrap_or_else(|| provider_slug(&provider_name(&body)));
+    let mut config = read_openclaw_config_value(context).await?;
+    if !config.get("models").is_some_and(Value::is_object) {
+        config["models"] = json!({});
+    }
+    if !config["models"]
+        .get("providers")
+        .is_some_and(Value::is_object)
+    {
+        config["models"]["providers"] = json!({});
+    }
+    config["models"]["providers"][&key] = provider;
+    save_openclaw_config_value(context, config).await?;
+    get_provider(context, "openclaw", &key).await
+}
+
+async fn update_openclaw_provider(
+    context: &ServerContext,
+    id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    let mut config = read_openclaw_config_value(context).await?;
+    let existing = config
+        .get_mut("models")
+        .and_then(|models| models.get_mut("providers"))
+        .and_then(Value::as_object_mut)
+        .and_then(|providers| providers.get_mut(id))
+        .ok_or_else(|| ApiError::not_found(format!("OpenClaw provider '{id}' not found")))?;
+    let patch = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    super::redact::merge_patch_preserving_secrets(existing, patch);
+    save_openclaw_config_value(context, config).await?;
+    get_provider(context, "openclaw", id).await
+}
+
+async fn delete_openclaw_provider(context: &ServerContext, id: &str) -> ApiResult<Value> {
+    let mut config = read_openclaw_config_value(context).await?;
+    let removed = config
+        .get_mut("models")
+        .and_then(|models| models.get_mut("providers"))
+        .and_then(Value::as_object_mut)
+        .and_then(|providers| providers.remove(id))
+        .is_some();
+    if !removed {
+        return Err(ApiError::not_found(format!(
+            "OpenClaw provider '{id}' not found"
+        )));
+    }
+    save_openclaw_config_value(context, config).await?;
+    Ok(json!({"deleted": id}))
+}
+
+async fn apply_openclaw_provider(
+    context: &ServerContext,
+    id: &str,
+    model_id: Option<&str>,
+) -> ApiResult<Value> {
+    let mut config = read_openclaw_config_value(context).await?;
+    let models = config
+        .get("models")
+        .and_then(|models| models.get("providers"))
+        .and_then(|providers| providers.get(id))
+        .and_then(|provider| provider.get("models"))
+        .cloned();
+    let model_id = model_id
+        .map(str::to_string)
+        .or_else(|| {
+            models.as_ref().and_then(|models| {
+                models.as_array().and_then(|items| {
+                    items.iter().find_map(|item| {
+                        item.get("id")
+                            .or_else(|| item.get("model"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                })
+            })
+        })
+        .ok_or_else(|| ApiError::bad_request("This provider has no models to apply"))?;
+    if !config.get("agents").is_some_and(Value::is_object) {
+        config["agents"] = json!({});
+    }
+    if !config["agents"]
+        .get("defaults")
+        .is_some_and(Value::is_object)
+    {
+        config["agents"]["defaults"] = json!({});
+    }
+    config["agents"]["defaults"]["model"] = json!({"primary": format!("{id}/{model_id}")});
+    save_openclaw_config_value(context, config).await?;
+    Ok(json!({"applied": id, "modelId": model_id}))
+}
+
+#[derive(Clone, Copy)]
+enum RuntimeCli {
+    Pi,
+    Omp,
+    Hermes,
+    Dsh,
+}
+
+impl RuntimeCli {
+    fn key(self) -> &'static str {
+        match self {
+            RuntimeCli::Pi => "pi",
+            RuntimeCli::Omp => "oh_my_pi",
+            RuntimeCli::Hermes => "hermes",
+            RuntimeCli::Dsh => "dsh",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            RuntimeCli::Pi => "Pi",
+            RuntimeCli::Omp => "Oh My Pi",
+            RuntimeCli::Hermes => "Hermes",
+            RuntimeCli::Dsh => "DSH",
+        }
+    }
+}
+
+async fn runtime_config(context: &ServerContext, cli: RuntimeCli) -> ApiResult<Value> {
+    let state = db_state(context);
+    let value = match cli {
+        RuntimeCli::Pi => serde_json::to_value(
+            crate::coding::pi::commands::read_pi_runtime_config(state)
+                .await
+                .map_err(internal)?,
+        )?,
+        RuntimeCli::Omp => serde_json::to_value(
+            crate::coding::oh_my_pi::commands::read_omp_runtime_config(state)
+                .await
+                .map_err(internal)?,
+        )?,
+        RuntimeCli::Hermes => serde_json::to_value(
+            crate::coding::hermes::commands::read_hermes_runtime_config(state)
+                .await
+                .map_err(internal)?,
+        )?,
+        RuntimeCli::Dsh => serde_json::to_value(
+            crate::coding::dsh::commands::read_dsh_runtime_config(state)
+                .await
+                .map_err(internal)?,
+        )?,
+    };
+    Ok(value)
+}
+
+async fn list_runtime_providers(context: &ServerContext, cli: RuntimeCli) -> ApiResult<Value> {
+    let config = runtime_config(context, cli).await?;
+    let providers = config
+        .get("providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let items = providers
+        .into_iter()
+        .map(|provider| {
+            let key = provider
+                .get("providerKey")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let raw = provider
+                .get("modelsProvider")
+                .or_else(|| provider.get("provider"))
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let has_key = raw.get("apiKey").is_some_and(|value| !value.is_null())
+                || provider
+                    .get("credential")
+                    .is_some_and(|value| !value.is_null());
+            let mut public = public_file_provider(&key, raw, has_key);
+            public["sources"] = provider
+                .get("sources")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            public["modelIds"] = provider
+                .get("modelIds")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            public["isDefault"] = provider
+                .get("isDefault")
+                .cloned()
+                .unwrap_or(Value::Bool(false));
+            public["warnings"] = provider
+                .get("warnings")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            public
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "providers": items }))
+}
+
+async fn create_runtime_provider(
+    context: &ServerContext,
+    cli: RuntimeCli,
+    body: Value,
+) -> ApiResult<Value> {
+    let key = requested_provider_key(&body).unwrap_or_else(|| provider_slug(&provider_name(&body)));
+    let provider = body.get("provider").cloned().unwrap_or_else(|| {
+        let mut provider = json!({"models": []});
+        if let Some(base_url) = body.get("baseUrl").and_then(Value::as_str) {
+            provider["baseUrl"] = json!(base_url);
+        }
+        if let Some(api_key) = body.get("apiKey").and_then(Value::as_str) {
+            provider["apiKey"] = json!(api_key);
+        }
+        provider
+    });
+    save_runtime_provider(
+        context,
+        cli,
+        &key,
+        provider,
+        body.get("apiKey").and_then(Value::as_str),
+    )
+    .await?;
+    get_provider(context, cli.key(), &key).await
+}
+
+async fn update_runtime_provider(
+    context: &ServerContext,
+    cli: RuntimeCli,
+    id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    let listing = list_runtime_providers(context, cli).await?;
+    let existing = listing
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["providerKey"] == id))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("{} provider '{id}' not found", cli.label())))?;
+    let mut provider = existing
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let patch = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    // The public DTO is redacted; re-read the raw runtime config for secrets.
+    let raw = runtime_config(context, cli).await?;
+    let raw_provider = raw
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["providerKey"] == id))
+        .and_then(|item| item.get("modelsProvider").or_else(|| item.get("provider")))
+        .cloned();
+    if let Some(raw_provider) = raw_provider {
+        provider = raw_provider;
+    }
+    super::redact::merge_patch_preserving_secrets(&mut provider, patch);
+    save_runtime_provider(
+        context,
+        cli,
+        id,
+        provider,
+        body.get("apiKey").and_then(Value::as_str),
+    )
+    .await?;
+    get_provider(context, cli.key(), id).await
+}
+
+async fn save_runtime_provider(
+    context: &ServerContext,
+    cli: RuntimeCli,
+    key: &str,
+    provider: Value,
+    api_key: Option<&str>,
+) -> ApiResult<()> {
+    match cli {
+        RuntimeCli::Pi => {
+            crate::coding::pi::commands::save_pi_models_provider(
+                db_state(context),
+                app(context),
+                crate::coding::pi::types::PiModelsProviderInput {
+                    provider_key: key.to_string(),
+                    provider,
+                },
+            )
+            .await
+            .map_err(internal)?;
+            if let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) {
+                crate::coding::pi::commands::save_pi_auth_provider(
+                    db_state(context),
+                    app(context),
+                    crate::coding::pi::types::PiAuthProviderInput {
+                        provider_key: key.to_string(),
+                        credential: json!({"type": "api_key", "key": api_key}),
+                    },
+                )
+                .await
+                .map_err(internal)?;
+            }
+        }
+        RuntimeCli::Omp => {
+            crate::coding::oh_my_pi::commands::save_omp_models_provider(
+                db_state(context),
+                app(context),
+                crate::coding::oh_my_pi::types::OmpModelsProviderInput {
+                    provider_key: key.to_string(),
+                    provider,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Hermes => {
+            crate::coding::hermes::commands::save_hermes_models_provider(
+                db_state(context),
+                app(context),
+                crate::coding::hermes::types::HermesModelsProviderInput {
+                    provider_key: key.to_string(),
+                    provider,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Dsh => {
+            let credential = api_key
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| crate::coding::dsh::types::DshCredentialInput {
+                    ref_name: format!(
+                        "AITB_{}",
+                        uuid::Uuid::new_v4().simple().to_string().to_uppercase()
+                    ),
+                    value: value.to_string(),
+                });
+            let mut provider = provider;
+            if let Some(credential) = &credential {
+                provider["apiKeyEnv"] = json!(credential.ref_name);
+            }
+            crate::coding::dsh::commands::save_dsh_models_provider(
+                db_state(context),
+                app(context),
+                crate::coding::dsh::types::DshModelsProviderInput {
+                    provider_key: key.to_string(),
+                    provider,
+                    credential,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+    }
+    Ok(())
+}
+
+async fn delete_runtime_provider(
+    context: &ServerContext,
+    cli: RuntimeCli,
+    id: &str,
+) -> ApiResult<Value> {
+    match cli {
+        RuntimeCli::Pi => {
+            crate::coding::pi::commands::delete_pi_runtime_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+                crate::coding::pi::types::PiDeleteScope::Both,
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Omp => {
+            crate::coding::oh_my_pi::commands::delete_omp_runtime_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Hermes => {
+            crate::coding::hermes::commands::delete_hermes_runtime_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Dsh => {
+            crate::coding::dsh::commands::delete_dsh_runtime_provider(
+                db_state(context),
+                app(context),
+                id.to_string(),
+            )
+            .await
+            .map_err(internal)?;
+        }
+    }
+    Ok(json!({"deleted": id}))
+}
+
+async fn apply_runtime_provider(
+    context: &ServerContext,
+    cli: RuntimeCli,
+    id: &str,
+    model_id: Option<&str>,
+) -> ApiResult<Value> {
+    let listing = list_runtime_providers(context, cli).await?;
+    let model_id = model_id.map(str::to_string).or_else(|| {
+        listing
+            .get("providers")
+            .and_then(Value::as_array)
+            .and_then(|items| items.iter().find(|item| item["providerKey"] == id))
+            .and_then(|item| item.get("modelIds"))
+            .and_then(Value::as_array)
+            .and_then(|ids| ids.first())
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
+    let model_id =
+        model_id.ok_or_else(|| ApiError::bad_request("This provider has no models to apply"))?;
+    match cli {
+        RuntimeCli::Pi => {
+            crate::coding::pi::commands::save_pi_model_settings(
+                db_state(context),
+                app(context),
+                crate::coding::pi::types::PiModelSettingsInput {
+                    default_provider: Some(id.to_string()),
+                    default_model: Some(model_id.clone()),
+                    default_thinking_level: None,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Omp => {
+            crate::coding::oh_my_pi::commands::save_omp_model_settings(
+                db_state(context),
+                app(context),
+                crate::coding::oh_my_pi::types::OmpModelSettingsInput {
+                    default_provider: Some(id.to_string()),
+                    default_model: Some(model_id.clone()),
+                    default_thinking_level: None,
+                    clear_thinking_level: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Hermes => {
+            crate::coding::hermes::commands::save_hermes_model_settings(
+                db_state(context),
+                app(context),
+                crate::coding::hermes::types::HermesModelSettingsInput {
+                    default_model: Some(model_id.clone()),
+                    default_provider: Some(id.to_string()),
+                    base_url: None,
+                    context_length: None,
+                    max_tokens: None,
+                    clear_context_length: false,
+                    clear_max_tokens: false,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+        RuntimeCli::Dsh => {
+            crate::coding::dsh::commands::save_dsh_model_settings(
+                db_state(context),
+                app(context),
+                crate::coding::dsh::types::DshModelSettingsInput {
+                    provider: Some(id.to_string()),
+                    model: Some(model_id.clone()),
+                    reasoning_effort: None,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        }
+    }
+    Ok(json!({"applied": id, "modelId": model_id}))
+}
+
+async fn list_omo_providers(context: &ServerContext) -> ApiResult<Value> {
+    let providers =
+        crate::coding::omo_native::providers::list_omo_native_providers(db_state(context))
+            .await
+            .map_err(internal)?;
+    let items = providers
+        .into_iter()
+        .map(|provider| {
+            let mut value = public_file_provider(
+                &provider.key,
+                provider.config.clone(),
+                provider.api_key.is_some(),
+            );
+            value["builtin"] = json!(provider.builtin);
+            value["oauth"] = json!(provider.oauth);
+            value["custom"] = json!(provider.custom);
+            value
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "providers": items }))
+}
+
+async fn create_omo_provider(context: &ServerContext, body: Value) -> ApiResult<Value> {
+    let key = requested_provider_key(&body).unwrap_or_else(|| provider_slug(&provider_name(&body)));
+    let config = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| json!({"name": provider_name(&body), "models": []}));
+    crate::coding::omo_native::providers::save_omo_native_provider(
+        db_state(context),
+        app(context),
+        crate::coding::omo_native::types::OmoNativeProviderInput {
+            key: key.clone(),
+            config,
+            api_key: body
+                .get("apiKey")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    get_provider(context, "omo_native", &key).await
+}
+
+async fn update_omo_provider(context: &ServerContext, id: &str, body: Value) -> ApiResult<Value> {
+    let listing = list_omo_providers(context).await?;
+    let existing = listing
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["providerKey"] == id))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("OMO provider '{id}' not found")))?;
+    let mut config = existing
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let patch = body
+        .get("provider")
+        .cloned()
+        .unwrap_or_else(|| body.clone());
+    super::redact::merge_patch_preserving_secrets(&mut config, patch);
+    crate::coding::omo_native::providers::save_omo_native_provider(
+        db_state(context),
+        app(context),
+        crate::coding::omo_native::types::OmoNativeProviderInput {
+            key: id.to_string(),
+            config,
+            api_key: body
+                .get("apiKey")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
+    )
+    .await
+    .map_err(internal)?;
+    get_provider(context, "omo_native", id).await
+}
+
+async fn delete_omo_provider(context: &ServerContext, id: &str) -> ApiResult<Value> {
+    crate::coding::omo_native::providers::delete_omo_native_provider(
+        db_state(context),
+        app(context),
+        id.to_string(),
+        true,
+    )
+    .await
+    .map_err(internal)?;
+    Ok(json!({"deleted": id}))
+}
+
+async fn apply_omo_provider(
+    context: &ServerContext,
+    id: &str,
+    model_id: Option<&str>,
+) -> ApiResult<Value> {
+    let listing = list_omo_providers(context).await?;
+    let model_id = model_id.map(str::to_string).or_else(|| {
+        listing
+            .get("providers")
+            .and_then(Value::as_array)
+            .and_then(|items| items.iter().find(|item| item["providerKey"] == id))
+            .and_then(|item| item.get("provider"))
+            .and_then(|provider| provider.get("models"))
+            .and_then(Value::as_array)
+            .and_then(|models| models.first())
+            .and_then(|model| {
+                model
+                    .get("id")
+                    .or_else(|| model.get("model"))
+                    .and_then(Value::as_str)
+            })
+            .map(str::to_string)
+    });
+    let model_id =
+        model_id.ok_or_else(|| ApiError::bad_request("This provider has no models to apply"))?;
+    crate::coding::omo_native::commands::save_omo_native_model_settings(
+        db_state(context),
+        app(context),
+        crate::coding::omo_native::types::OmoNativeModelSettingsInput {
+            default_provider: Some(id.to_string()),
+            default_model: Some(model_id.clone()),
+            default_thinking_level: None,
+        },
+    )
+    .await
+    .map_err(internal)?;
+    Ok(json!({"applied": id, "modelId": model_id}))
+}
+
+async fn list_family_providers(context: &ServerContext, cli: &str) -> ApiResult<Value> {
+    let config = family_runtime_config(context, cli).await?;
+    let providers = config
+        .get("providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let items = providers
+        .into_iter()
+        .map(|provider| {
+            let mut value = provider.clone();
+            let has_key = provider.get("apiKey").is_some_and(|value| !value.is_null());
+            redact_value(&mut value);
+            value["hasApiKey"] = Value::Bool(has_key);
+            value
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "providers": items, "providerKind": "channel" }))
+}
+
+async fn family_runtime_config(context: &ServerContext, cli: &str) -> ApiResult<Value> {
+    let state = db_state(context);
+    let value = if cli == "workbuddy" {
+        serde_json::to_value(
+            crate::coding::workbuddy::commands::read_workbuddy_runtime_config(state)
+                .await
+                .map_err(internal)?,
+        )?
+    } else {
+        serde_json::to_value(
+            crate::coding::codebuddy::commands::read_codebuddy_runtime_config(state)
+                .await
+                .map_err(internal)?,
+        )?
+    };
+    Ok(value)
+}
+
+async fn create_family_provider(
+    context: &ServerContext,
+    cli: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    let base_url = body
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("'baseUrl' is required for this CLI"))?;
+    let api_key = body
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let models = body
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let first_model = models
+        .first()
+        .cloned()
+        .or_else(|| {
+            body.get("modelId")
+                .and_then(Value::as_str)
+                .map(|id| json!({"id": id}))
+        })
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "This CLI derives channels from models.json; provide at least one model (id) when creating a channel",
+            )
+        })?;
+    let model_id = first_model
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::bad_request("Each model needs an 'id'"))?;
+    if cli == "workbuddy" {
+        crate::coding::workbuddy::commands::save_workbuddy_model(
+            db_state(context),
+            crate::coding::workbuddy::types::WorkbuddyModelInput {
+                previous_id: None,
+                id: model_id.to_string(),
+                name: first_model
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(model_id)
+                    .to_string(),
+                vendor: body
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                base_url: base_url.to_string(),
+                api_key: api_key.to_string(),
+                max_input_tokens: None,
+                max_output_tokens: None,
+                temperature: None,
+                supports_tool_call: true,
+                supports_images: false,
+                supports_reasoning: false,
+                only_reasoning: false,
+                use_custom_protocol: false,
+                can_disable_thinking: false,
+                default_effort: None,
+                supported_efforts: Vec::new(),
+            },
+            app(context),
+        )
+        .await
+        .map_err(internal)?;
+    } else {
+        crate::coding::codebuddy::commands::save_codebuddy_model(
+            db_state(context),
+            crate::coding::codebuddy::types::CodebuddyModelInput {
+                previous_id: None,
+                id: model_id.to_string(),
+                name: first_model
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(model_id)
+                    .to_string(),
+                vendor: body
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                base_url: base_url.to_string(),
+                api_key: api_key.to_string(),
+                max_input_tokens: None,
+                max_output_tokens: None,
+                temperature: None,
+                supports_tool_call: true,
+                supports_images: false,
+                supports_reasoning: false,
+                only_reasoning: false,
+                use_custom_protocol: false,
+                can_disable_thinking: false,
+                default_effort: None,
+                supported_efforts: Vec::new(),
+            },
+            app(context),
+        )
+        .await
+        .map_err(internal)?;
+    }
+    let channel_id = family_channel_id(base_url, api_key);
+    get_provider(context, cli, &channel_id).await
+}
+
+async fn update_family_provider(
+    context: &ServerContext,
+    cli: &str,
+    id: &str,
+    _body: Value,
+) -> ApiResult<Value> {
+    // Channel identity is (baseUrl, apiKey); changing either creates a new
+    // channel. Model-level edits use the model endpoints instead.
+    get_provider(context, cli, id).await
+}
+
+async fn delete_family_provider(context: &ServerContext, cli: &str, id: &str) -> ApiResult<Value> {
+    let config = family_runtime_config(context, cli).await?;
+    let channel = config
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["id"] == id))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("Channel '{id}' not found")))?;
+    let base_url = channel
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let api_key = channel
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if cli == "workbuddy" {
+        crate::coding::workbuddy::commands::delete_workbuddy_provider(
+            db_state(context),
+            base_url,
+            api_key,
+            app(context),
+        )
+        .await
+        .map_err(internal)?;
+    } else {
+        crate::coding::codebuddy::commands::delete_codebuddy_provider(
+            db_state(context),
+            base_url,
+            api_key,
+            app(context),
+        )
+        .await
+        .map_err(internal)?;
+    }
+    Ok(json!({"deleted": id}))
+}
+
+fn family_channel_id(base_url: &str, api_key: &str) -> String {
+    // Mirrors `workbuddy_family::channel::channel_id`.
+    let seed = format!("{base_url}\u{1f}{api_key}");
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in seed.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("channel-{hash:016x}")
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+pub async fn list_models(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+) -> ApiResult<Value> {
+    let provider = get_provider(context, cli, provider_id).await?;
+    let models = extract_models(cli, &provider);
+    Ok(json!({ "models": models }))
+}
+
+fn extract_models(cli: &str, provider: &Value) -> Vec<Value> {
+    if matches!(cli, "workbuddy" | "codebuddy") {
+        return provider
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+    }
+    if matches!(
+        cli,
+        "opencode" | "openclaw" | "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native"
+    ) {
+        let base = provider.get("provider").unwrap_or(provider);
+        return models_from_value(base.get("models"));
+    }
+    let settings = provider
+        .get("settingsConfig")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if cli == "zcode" {
+        return models_from_value(settings.get("models"));
+    }
+    if cli == "claudecode" || cli == "claudedesktop" {
+        let env = settings
+            .get("env")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        return [
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_FABLE_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION",
+            "ANTHROPIC_REASONING_MODEL",
+        ]
+        .iter()
+        .filter_map(|key| env.get(*key).and_then(Value::as_str))
+        .map(|id| json!({"id": id}))
+        .collect();
+    }
+    if cli == "gemini" || cli == "geminicli" {
+        let env = settings
+            .get("env")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        return env
+            .get("GEMINI_MODEL")
+            .and_then(Value::as_str)
+            .map(|id| vec![json!({"id": id})])
+            .unwrap_or_default();
+    }
+    let catalog = settings
+        .get("modelCatalog")
+        .and_then(|catalog| catalog.get("models"))
+        .cloned();
+    let mut models = models_from_value(catalog.as_ref());
+    if cli == "codex" {
+        if let Some(default_model) = codex_default_model(&settings) {
+            if !models.iter().any(|model| model["id"] == default_model) {
+                models.insert(0, json!({"id": default_model, "default": true}));
+            }
+        }
+    }
+    models
+}
+
+fn models_from_value(value: Option<&Value>) -> Vec<Value> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(id) => Some(json!({"id": id})),
+                Value::Object(object) => {
+                    let id = object
+                        .get("id")
+                        .or_else(|| object.get("model"))
+                        .or_else(|| object.get("modelId"))
+                        .and_then(Value::as_str)?;
+                    let mut out = object.clone();
+                    out.insert("id".to_string(), json!(id));
+                    Some(Value::Object(out))
+                }
+                _ => None,
+            })
+            .collect(),
+        Some(Value::Object(map)) => map.keys().map(|key| json!({"id": key})).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn codex_default_model(settings: &Value) -> Option<String> {
+    let config = settings.get("config").and_then(Value::as_str)?;
+    let parsed = config.parse::<toml_edit::DocumentMut>().ok()?;
+    parsed
+        .get("chat")
+        .and_then(|chat| chat.get("model"))
+        .and_then(|value| value.as_str())
+        .or_else(|| parsed.get("model").and_then(|value| value.as_str()))
+        .map(str::to_string)
+}
+
+pub async fn add_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    body: Value,
+) -> ApiResult<Value> {
+    let model_id = body
+        .get("modelId")
+        .or_else(|| body.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("'modelId' is required"))?
+        .to_string();
+    match cli {
+        "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            add_model_to_settings(cli, &mut settings, &model_id, &body)?;
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await
+        }
+        "zcode" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            let mut models = settings
+                .get("models")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            models.push(body.get("model").cloned().unwrap_or_else(|| {
+                json!({
+                    "modelId": model_id,
+                    "id": model_id,
+                })
+            }));
+            settings.insert("models".to_string(), Value::Array(models));
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await
+        }
+        "opencode" | "openclaw" => {
+            add_file_model(context, cli, provider_id, &model_id, &body).await
+        }
+        "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native" => {
+            add_runtime_model(context, cli, provider_id, &model_id, &body).await
+        }
+        "workbuddy" | "codebuddy" => {
+            add_family_model(context, cli, provider_id, &model_id, &body).await
+        }
+        "antigravity" => Err(ApiError::read_only("Antigravity has no custom models")),
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+fn add_model_to_settings(
+    cli: &str,
+    settings: &mut Map<String, Value>,
+    model_id: &str,
+    body: &Value,
+) -> ApiResult<()> {
+    match cli {
+        "claudecode" | "claudedesktop" => {
+            let env = settings
+                .entry("env".to_string())
+                .or_insert_with(|| json!({}));
+            if !env.is_object() {
+                *env = json!({});
+            }
+            let role = body.get("role").and_then(Value::as_str).unwrap_or("model");
+            let key = match role {
+                "haiku" => "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "sonnet" => "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "opus" => "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "fable" => "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                "reasoning" => "ANTHROPIC_REASONING_MODEL",
+                _ => "ANTHROPIC_MODEL",
+            };
+            env[key] = json!(model_id);
+        }
+        "codex" | "grok" | "kimi" => {
+            let catalog = settings
+                .entry("modelCatalog".to_string())
+                .or_insert_with(|| json!({"models": []}));
+            if !catalog.is_object() {
+                *catalog = json!({"models": []});
+            }
+            if !catalog.get("models").is_some_and(Value::is_array) {
+                catalog["models"] = json!([]);
+            }
+            let models = catalog["models"].as_array_mut().expect("array");
+            if !models.iter().any(|model| {
+                model.get("model").and_then(Value::as_str) == Some(model_id)
+                    || model.get("key").and_then(Value::as_str) == Some(model_id)
+            }) {
+                let mut entry = body.get("model").cloned().unwrap_or_else(|| json!({}));
+                if !entry.is_object() {
+                    entry = json!({});
+                }
+                entry["model"] = json!(model_id);
+                models.push(entry);
+            }
+        }
+        "geminicli" => {
+            let env = settings
+                .entry("env".to_string())
+                .or_insert_with(|| json!({}));
+            if !env.is_object() {
+                *env = json!({});
+            }
+            env["GEMINI_MODEL"] = json!(model_id);
+        }
+        _ => return Err(ApiError::not_found("Unknown database CLI")),
+    }
+    Ok(())
+}
+
+async fn add_file_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+    body: &Value,
+) -> ApiResult<Value> {
+    let patch_model = body.get("model").cloned().unwrap_or_else(|| json!({}));
+    if cli == "opencode" {
+        let mut config = read_opencode_config_value(context).await?;
+        let provider = config
+            .get_mut("provider")
+            .and_then(Value::as_object_mut)
+            .and_then(|providers| providers.get_mut(provider_id))
+            .ok_or_else(|| {
+                ApiError::not_found(format!("OpenCode provider '{provider_id}' not found"))
+            })?;
+        if !provider.get("models").is_some_and(Value::is_object) {
+            provider["models"] = json!({});
+        }
+        let mut model = patch_model;
+        if !model.is_object() {
+            model = json!({});
+        }
+        model["name"] = model
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| json!(model_id));
+        config["provider"][provider_id]["models"][model_id] = model;
+        save_opencode_config_value(context, config).await?;
+    } else {
+        let mut config = read_openclaw_config_value(context).await?;
+        let provider = config
+            .get_mut("models")
+            .and_then(|models| models.get_mut("providers"))
+            .and_then(Value::as_object_mut)
+            .and_then(|providers| providers.get_mut(provider_id))
+            .ok_or_else(|| {
+                ApiError::not_found(format!("OpenClaw provider '{provider_id}' not found"))
+            })?;
+        if !provider.get("models").is_some_and(Value::is_array) {
+            provider["models"] = json!([]);
+        }
+        let models = provider["models"].as_array_mut().expect("array");
+        let mut model = patch_model;
+        if !model.is_object() {
+            model = json!({});
+        }
+        model["id"] = json!(model_id);
+        if !models.iter().any(|item| item["id"] == model_id) {
+            models.push(model);
+        }
+        save_openclaw_config_value(context, config).await?;
+    }
+    list_models(context, cli, provider_id).await
+}
+
+async fn add_runtime_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+    body: &Value,
+) -> ApiResult<Value> {
+    let runtime_cli = runtime_cli_from_key(cli)?;
+    let raw = runtime_config(context, runtime_cli).await?;
+    let mut provider = raw
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["providerKey"] == provider_id))
+        .and_then(|item| item.get("modelsProvider").or_else(|| item.get("provider")))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("Provider '{provider_id}' not found")))?;
+    let mut models = provider.get("models").cloned().unwrap_or_else(|| json!([]));
+    let mut model = body.get("model").cloned().unwrap_or_else(|| json!({}));
+    if !model.is_object() {
+        model = json!({});
+    }
+    model["id"] = json!(model_id);
+    match &mut models {
+        Value::Array(items) => {
+            if !items.iter().any(|item| item["id"] == model_id) {
+                items.push(model);
+            }
+        }
+        Value::Object(map) => {
+            map.insert(model_id.to_string(), model);
+        }
+        _ => {
+            models = json!([model]);
+        }
+    }
+    provider["models"] = models;
+    save_runtime_provider(context, runtime_cli, provider_id, provider, None).await?;
+    list_models(context, cli, provider_id).await
+}
+
+fn runtime_cli_from_key(cli: &str) -> ApiResult<RuntimeCli> {
+    match cli {
+        "pi" => Ok(RuntimeCli::Pi),
+        "oh_my_pi" => Ok(RuntimeCli::Omp),
+        "hermes" => Ok(RuntimeCli::Hermes),
+        "dsh" => Ok(RuntimeCli::Dsh),
+        _ => Err(ApiError::not_found(format!(
+            "'{cli}' is not a runtime-config CLI"
+        ))),
+    }
+}
+
+async fn add_family_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+    body: &Value,
+) -> ApiResult<Value> {
+    let config = family_runtime_config(context, cli).await?;
+    let channel = config
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["id"] == provider_id))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("Channel '{provider_id}' not found")))?;
+    let base_url = channel
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let api_key = channel
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let input = json!({
+        "previousId": null,
+        "id": model_id,
+        "name": body.get("name").and_then(Value::as_str).unwrap_or(model_id),
+        "vendor": channel.get("name").and_then(Value::as_str).unwrap_or_default(),
+        "baseUrl": base_url,
+        "apiKey": api_key,
+        "supportsToolCall": body.get("supportsToolCall").and_then(Value::as_bool).unwrap_or(true),
+        "supportsImages": body.get("supportsImages").and_then(Value::as_bool).unwrap_or(false),
+        "supportsReasoning": body.get("supportsReasoning").and_then(Value::as_bool).unwrap_or(false),
+        "onlyReasoning": body.get("onlyReasoning").and_then(Value::as_bool).unwrap_or(false),
+        "useCustomProtocol": body.get("useCustomProtocol").and_then(Value::as_bool).unwrap_or(false),
+        "canDisableThinking": body.get("canDisableThinking").and_then(Value::as_bool).unwrap_or(false),
+        "maxInputTokens": body.get("maxInputTokens"),
+        "maxOutputTokens": body.get("maxOutputTokens"),
+        "temperature": body.get("temperature"),
+        "defaultEffort": body.get("defaultEffort"),
+        "supportedEfforts": body.get("supportedEfforts").cloned().unwrap_or_else(|| json!([])),
+    });
+    if cli == "workbuddy" {
+        let input: crate::coding::workbuddy::types::WorkbuddyModelInput =
+            serde_json::from_value(input)
+                .map_err(|error| invalid(format!("Invalid WorkBuddy model: {error}")))?;
+        crate::coding::workbuddy::commands::save_workbuddy_model(
+            db_state(context),
+            input,
+            app(context),
+        )
+        .await
+        .map_err(internal)?;
+    } else {
+        let input: crate::coding::codebuddy::types::CodebuddyModelInput =
+            serde_json::from_value(input)
+                .map_err(|error| invalid(format!("Invalid CodeBuddy model: {error}")))?;
+        crate::coding::codebuddy::commands::save_codebuddy_model(
+            db_state(context),
+            input,
+            app(context),
+        )
+        .await
+        .map_err(internal)?;
+    }
+    list_models(context, cli, provider_id).await
+}
+
+pub async fn delete_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<Value> {
+    match cli {
+        "workbuddy" | "codebuddy" => {
+            if cli == "workbuddy" {
+                crate::coding::workbuddy::commands::delete_workbuddy_model(
+                    db_state(context),
+                    model_id.to_string(),
+                    app(context),
+                )
+                .await
+                .map_err(internal)?;
+            } else {
+                crate::coding::codebuddy::commands::delete_codebuddy_model(
+                    db_state(context),
+                    model_id.to_string(),
+                    app(context),
+                )
+                .await
+                .map_err(internal)?;
+            }
+            Ok(json!({"deleted": model_id}))
+        }
+        "antigravity" => Err(ApiError::read_only("Antigravity has no custom models")),
+        "claudecode" | "claudedesktop" | "codex" | "grok" | "kimi" | "geminicli" | "zcode" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            remove_model_from_settings(cli, &mut settings, model_id);
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await?;
+            Ok(json!({"deleted": model_id}))
+        }
+        "opencode" | "openclaw" => {
+            delete_file_model(context, cli, provider_id, model_id).await?;
+            Ok(json!({"deleted": model_id}))
+        }
+        "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native" => {
+            delete_runtime_model(context, cli, provider_id, model_id).await?;
+            Ok(json!({"deleted": model_id}))
+        }
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+fn remove_model_from_settings(cli: &str, settings: &mut Map<String, Value>, model_id: &str) {
+    match cli {
+        "claudecode" | "claudedesktop" => {
+            if let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) {
+                for key in [
+                    "ANTHROPIC_MODEL",
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    "ANTHROPIC_DEFAULT_FABLE_MODEL",
+                    "CLAUDE_CODE_SUBAGENT_MODEL",
+                    "ANTHROPIC_CUSTOM_MODEL_OPTION",
+                    "ANTHROPIC_REASONING_MODEL",
+                ] {
+                    if env.get(key).and_then(Value::as_str) == Some(model_id) {
+                        env.remove(key);
+                    }
+                }
+            }
+        }
+        "codex" | "grok" | "kimi" => {
+            if let Some(models) = settings
+                .get_mut("modelCatalog")
+                .and_then(|catalog| catalog.get_mut("models"))
+                .and_then(Value::as_array_mut)
+            {
+                models.retain(|model| {
+                    model.get("model").and_then(Value::as_str) != Some(model_id)
+                        && model.get("key").and_then(Value::as_str) != Some(model_id)
+                });
+            }
+        }
+        "geminicli" => {
+            if let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) {
+                if env.get("GEMINI_MODEL").and_then(Value::as_str) == Some(model_id) {
+                    env.remove("GEMINI_MODEL");
+                }
+            }
+        }
+        "zcode" => {
+            if let Some(models) = settings.get_mut("models").and_then(Value::as_array_mut) {
+                models.retain(|model| {
+                    model.get("modelId").and_then(Value::as_str) != Some(model_id)
+                        && model.get("id").and_then(Value::as_str) != Some(model_id)
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn delete_file_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<()> {
+    if cli == "opencode" {
+        let mut config = read_opencode_config_value(context).await?;
+        if let Some(models) = config
+            .get_mut("provider")
+            .and_then(Value::as_object_mut)
+            .and_then(|providers| providers.get_mut(provider_id))
+            .and_then(|provider| provider.get_mut("models"))
+            .and_then(Value::as_object_mut)
+        {
+            models.remove(model_id);
+        }
+        save_opencode_config_value(context, config).await
+    } else {
+        let mut config = read_openclaw_config_value(context).await?;
+        if let Some(models) = config
+            .get_mut("models")
+            .and_then(|models| models.get_mut("providers"))
+            .and_then(Value::as_object_mut)
+            .and_then(|providers| providers.get_mut(provider_id))
+            .and_then(|provider| provider.get_mut("models"))
+            .and_then(Value::as_array_mut)
+        {
+            models.retain(|model| model["id"] != model_id);
+        }
+        save_openclaw_config_value(context, config).await
+    }
+}
+
+async fn delete_runtime_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<()> {
+    let runtime_cli = runtime_cli_from_key(cli)?;
+    let raw = runtime_config(context, runtime_cli).await?;
+    let mut provider = raw
+        .get("providers")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["providerKey"] == provider_id))
+        .and_then(|item| item.get("modelsProvider").or_else(|| item.get("provider")))
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("Provider '{provider_id}' not found")))?;
+    match provider.get_mut("models") {
+        Some(Value::Array(items)) => items.retain(|model| model["id"] != model_id),
+        Some(Value::Object(map)) => {
+            map.remove(model_id);
+        }
+        _ => {}
+    }
+    save_runtime_provider(context, runtime_cli, provider_id, provider, None).await
+}
+
+pub async fn set_default_model(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    model_id: &str,
+) -> ApiResult<Value> {
+    match cli {
+        "claudecode" | "claudedesktop" | "geminicli" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            add_model_to_settings(cli, &mut settings, model_id, &json!({"role": "model"}))?;
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await?;
+            Ok(json!({"defaultModel": model_id}))
+        }
+        "grok" | "kimi" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            settings.insert("defaultModelKey".to_string(), json!(model_id));
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await?;
+            Ok(json!({"defaultModel": model_id}))
+        }
+        "codex" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            let config = settings
+                .get("config")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let patched = patch_codex_toml_default_model(&config, model_id)?;
+            settings.insert("config".to_string(), json!(patched));
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await?;
+            Ok(json!({"defaultModel": model_id}))
+        }
+        "zcode" => {
+            let mut raw = raw_db_provider(context, cli, provider_id).await?;
+            let mut settings = settings_config_object(&raw);
+            settings.insert("defaultModelId".to_string(), json!(model_id));
+            set_settings_config(&mut raw, settings);
+            update_db_provider(context, cli, provider_id, raw).await?;
+            Ok(json!({"defaultModel": model_id}))
+        }
+        "opencode" | "openclaw" | "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native" => {
+            apply_provider(context, cli, provider_id, Some(model_id)).await
+        }
+        "workbuddy" | "codebuddy" | "antigravity" => Err(ApiError::read_only(
+            "This CLI has no editable default-model setting",
+        )),
+        other => Err(ApiError::not_found(format!("Unknown CLI '{other}'"))),
+    }
+}
+
+fn patch_codex_toml_default_model(existing: &str, model_id: &str) -> ApiResult<String> {
+    use toml_edit::{DocumentMut, Item, Value as TomlValue};
+    let mut document = if existing.trim().is_empty() {
+        DocumentMut::new()
+    } else {
+        existing
+            .parse::<DocumentMut>()
+            .map_err(|error| invalid(format!("Invalid TOML: {error}")))?
+    };
+    document["model"] = Item::Value(TomlValue::from(model_id));
+    if document.get("chat").is_some() {
+        document["chat"]["model"] = Item::Value(TomlValue::from(model_id));
+    }
+    Ok(document.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Test / fetch models
+// ---------------------------------------------------------------------------
+
+pub async fn test_provider(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    body: &Value,
+) -> ApiResult<Value> {
+    let provider = get_provider(context, cli, provider_id).await?;
+    let model_ids = body
+        .get("modelIds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| {
+            extract_models(cli, &provider)
+                .into_iter()
+                .filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_string))
+                .take(1)
+                .collect()
+        });
+    let model_ids = if model_ids.is_empty() {
+        return Err(ApiError::bad_request("This provider has no model to test"));
+    } else {
+        model_ids
+    };
+    let prompt = body
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("say hi!");
+    let timeout_secs = body
+        .get("timeoutSecs")
+        .and_then(Value::as_u64)
+        .unwrap_or(30);
+
+    if let Some(gateway_cli) = gateway_cli_key(cli) {
+        let request = crate::coding::proxy_gateway::types::GatewayConnectivityTestRequest {
+            cli_key: gateway_cli,
+            provider_id: provider_id.to_string(),
+            prompt: prompt.to_string(),
+            stream: Some(true),
+            model_ids: model_ids.clone(),
+            timeout_secs: Some(timeout_secs),
+            vision_probe: false,
+        };
+        let result =
+            crate::coding::proxy_gateway::commands::proxy_gateway_test_provider_model_connectivity(
+                context
+                    .app
+                    .state::<crate::coding::proxy_gateway::ProxyGatewayState>(),
+                db_state(context),
+                context.app.state::<crate::plugins::PluginManagerState>(),
+                request,
+            )
+            .await;
+        if let Ok(response) = result {
+            return Ok(super::routes::redacted(serde_json::to_value(response)?));
+        }
+    }
+
+    let connection = provider_connection(cli, &provider)?;
+    let request = crate::coding::open_code::models_api::ConnectivityTestRequest {
+        npm: connection.npm,
+        api_format: None,
+        provider_id: Some(provider_id.to_string()),
+        base_url: connection.base_url,
+        api_key: connection.api_key,
+        reasoning_effort: None,
+        headers: connection.headers,
+        prompt: prompt.to_string(),
+        temperature: None,
+        max_tokens: None,
+        max_output_tokens: None,
+        stream: Some(true),
+        body: None,
+        model_ids,
+        timeout_secs: Some(timeout_secs),
+        config_value_mode: None,
+        vision_probe: false,
+    };
+    let response = crate::coding::open_code::models_api::test_provider_model_connectivity(
+        db_state(context),
+        request,
+    )
+    .await
+    .map_err(internal)?;
+    Ok(super::routes::redacted(serde_json::to_value(response)?))
+}
+
+struct ProviderConnection {
+    npm: String,
+    base_url: String,
+    api_key: Option<String>,
+    headers: Option<Value>,
+}
+
+fn provider_connection(cli: &str, provider: &Value) -> ApiResult<ProviderConnection> {
+    let default_npm = "@ai-sdk/openai-compatible".to_string();
+    if matches!(
+        cli,
+        "opencode" | "pi" | "oh_my_pi" | "hermes" | "dsh" | "omo_native"
+    ) {
+        let base = provider.get("provider").unwrap_or(provider);
+        let npm = base
+            .get("npm")
+            .and_then(Value::as_str)
+            .unwrap_or(&default_npm)
+            .to_string();
+        let options = base.get("options").unwrap_or(base);
+        let base_url = options
+            .get("baseURL")
+            .or_else(|| options.get("baseUrl"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        return Ok(ProviderConnection {
+            npm,
+            base_url,
+            api_key: options
+                .get("apiKey")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            headers: options.get("headers").cloned(),
+        });
+    }
+    if matches!(cli, "workbuddy" | "codebuddy") {
+        return Ok(ProviderConnection {
+            npm: default_npm,
+            base_url: provider
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            api_key: provider
+                .get("apiKey")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            headers: None,
+        });
+    }
+    let settings = provider
+        .get("settingsConfig")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    match cli {
+        "claudecode" | "claudedesktop" => {
+            let env = settings.get("env").cloned().unwrap_or_else(|| json!({}));
+            Ok(ProviderConnection {
+                npm: default_npm,
+                base_url: env
+                    .get("ANTHROPIC_BASE_URL")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                api_key: env
+                    .get("ANTHROPIC_AUTH_TOKEN")
+                    .or_else(|| env.get("ANTHROPIC_API_KEY"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                headers: None,
+            })
+        }
+        "codex" => {
+            let api_key = settings
+                .get("auth")
+                .and_then(|auth| auth.get("OPENAI_API_KEY"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let base_url = codex_base_url(settings.get("config").and_then(Value::as_str));
+            Ok(ProviderConnection {
+                npm: default_npm,
+                base_url,
+                api_key,
+                headers: None,
+            })
+        }
+        "grok" => Ok(ProviderConnection {
+            npm: default_npm,
+            base_url: settings
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            api_key: settings
+                .get("auth")
+                .and_then(|auth| auth.get("API_KEY"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            headers: None,
+        }),
+        "kimi" => {
+            let key = settings
+                .get("defaultModelKey")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let base_url = settings
+                .get("providerConfigs")
+                .and_then(|configs| configs.get(key))
+                .and_then(|config| config.get("base_url"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            Ok(ProviderConnection {
+                npm: default_npm,
+                base_url,
+                api_key: settings
+                    .get("auth")
+                    .and_then(|auth| auth.get("API_KEY"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                headers: None,
+            })
+        }
+        "geminicli" => {
+            let env = settings.get("env").cloned().unwrap_or_else(|| json!({}));
+            Ok(ProviderConnection {
+                npm: "@ai-sdk/google".to_string(),
+                base_url: env
+                    .get("GOOGLE_GEMINI_BASE_URL")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                api_key: env
+                    .get("GEMINI_API_KEY")
+                    .or_else(|| env.get("GOOGLE_API_KEY"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                headers: None,
+            })
+        }
+        "zcode" => {
+            let config = settings.get("config").cloned().unwrap_or_else(|| json!({}));
+            Ok(ProviderConnection {
+                npm: default_npm,
+                base_url: config
+                    .get("api")
+                    .and_then(|api| api.get("baseUrl"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                api_key: config
+                    .get("access")
+                    .and_then(|access| access.get("apiKey"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                headers: None,
+            })
+        }
+        _ => Err(ApiError::not_found(format!(
+            "'{cli}' has no connectivity test"
+        ))),
+    }
+}
+
+fn codex_base_url(config: Option<&str>) -> String {
+    let Some(config) = config else {
+        return String::new();
+    };
+    let Ok(document) = config.parse::<toml_edit::DocumentMut>() else {
+        return String::new();
+    };
+    let provider_id = document
+        .get("model_provider")
+        .and_then(|value| value.as_str())
+        .unwrap_or("custom");
+    document
+        .get("model_providers")
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(|provider| provider.get("base_url"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn gateway_cli_key(cli: &str) -> Option<crate::coding::proxy_gateway::types::GatewayCliKey> {
+    use crate::coding::proxy_gateway::types::GatewayCliKey;
+    match cli {
+        "claudecode" => Some(GatewayCliKey::Claude),
+        "claudedesktop" => Some(GatewayCliKey::ClaudeDesktop),
+        "codex" => Some(GatewayCliKey::Codex),
+        "grok" => Some(GatewayCliKey::Grok),
+        "kimi" => Some(GatewayCliKey::Kimi),
+        "geminicli" => Some(GatewayCliKey::Gemini),
+        _ => None,
+    }
+}
+
+pub async fn fetch_models(
+    context: &ServerContext,
+    cli: &str,
+    provider_id: &str,
+    body: &Value,
+) -> ApiResult<Value> {
+    let provider = get_provider(context, cli, provider_id).await?;
+    let connection = provider_connection(cli, &provider)?;
+    let api_type = match body.get("apiType").and_then(Value::as_str) {
+        Some("native") => crate::coding::open_code::models_api::ApiType::Native,
+        _ => crate::coding::open_code::models_api::ApiType::OpenaiCompat,
+    };
+    let request = crate::coding::open_code::models_api::FetchModelsRequest {
+        provider_id: Some(provider_id.to_string()),
+        base_url: connection.base_url,
+        api_key: connection.api_key,
+        headers: connection.headers,
+        api_type,
+        sdk_type: body
+            .get("sdkType")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        custom_url: body
+            .get("customUrl")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        config_value_mode: None,
+    };
+    let response =
+        crate::coding::open_code::models_api::fetch_provider_models(db_state(context), request)
+            .await
+            .map_err(internal)?;
+    Ok(serde_json::to_value(response)?)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers used by routes for prompt/config dispatch
+// ---------------------------------------------------------------------------
+
+pub fn unsupported(cli: &str, feature: &str) -> ApiError {
+    ApiError::read_only(format!("{feature} is not supported for CLI '{cli}'"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aliases_normalize_to_the_canonical_seventeen() {
+        assert_eq!(normalize_cli_key("claude"), Some("claudecode"));
+        assert_eq!(normalize_cli_key("claude-code"), Some("claudecode"));
+        assert_eq!(normalize_cli_key("gemini"), Some("geminicli"));
+        assert_eq!(normalize_cli_key("OMP"), Some("oh_my_pi"));
+        assert_eq!(normalize_cli_key("oh-my-pi"), Some("oh_my_pi"));
+        assert_eq!(normalize_cli_key("omo"), Some("omo_native"));
+        assert_eq!(normalize_cli_key("nope"), None);
+        for key in CLI_KEYS {
+            assert!(normalize_cli_key(key).is_some(), "{key} must normalize");
+        }
+    }
+
+    #[test]
+    fn capability_matrix_covers_every_cli_and_marks_special_cases() {
+        let matrix = capability_matrix();
+        let rows = matrix["clis"].as_array().unwrap();
+        assert_eq!(rows.len(), 17);
+        let antigravity = rows
+            .iter()
+            .find(|row| row["cliKey"] == "antigravity")
+            .unwrap();
+        assert_eq!(antigravity["providerCrud"], false);
+        let codebuddy = rows
+            .iter()
+            .find(|row| row["cliKey"] == "codebuddy")
+            .unwrap();
+        assert_eq!(codebuddy["apply"], false);
+        let claude = rows
+            .iter()
+            .find(|row| row["cliKey"] == "claudecode")
+            .unwrap();
+        assert_eq!(claude["kind"], "database");
+        assert_eq!(claude["providerCrud"], true);
+    }
+
+    #[test]
+    fn family_channel_ids_are_stable_and_distinct() {
+        let one = family_channel_id("https://a.test", "sk-a");
+        let two = family_channel_id("https://a.test", "sk-a");
+        let three = family_channel_id("https://b.test", "sk-a");
+        assert_eq!(one, two);
+        assert_ne!(one, three);
+        assert!(one.starts_with("channel-"));
+        assert_eq!(one.len(), "channel-".len() + 16);
+    }
+
+    #[test]
+    fn canonical_fields_land_in_the_expected_cli_shapes() {
+        let mut claude = Map::new();
+        apply_canonical_fields(
+            "claudecode",
+            &json!({"baseUrl": "https://x.test", "apiKey": "sk-a", "model": "m1"}),
+            &mut claude,
+        );
+        assert_eq!(claude["env"]["ANTHROPIC_BASE_URL"], "https://x.test");
+        assert_eq!(claude["env"]["ANTHROPIC_AUTH_TOKEN"], "sk-a");
+        assert_eq!(claude["env"]["ANTHROPIC_MODEL"], "m1");
+
+        let mut gemini = Map::new();
+        apply_canonical_fields(
+            "geminicli",
+            &json!({"apiKey": "g-key", "baseUrl": "https://g.test"}),
+            &mut gemini,
+        );
+        assert_eq!(gemini["env"]["GEMINI_API_KEY"], "g-key");
+        assert_eq!(gemini["env"]["GOOGLE_GEMINI_BASE_URL"], "https://g.test");
+    }
+
+    #[test]
+    fn canonical_fields_build_typed_zcode_grok_and_kimi_settings() {
+        let mut zcode = Map::new();
+        apply_canonical_fields(
+            "zcode",
+            &json!({
+                "name": "My ZCode",
+                "baseUrl": "https://z.test",
+                "apiKey": "sk-z",
+                "model": "z-model",
+            }),
+            &mut zcode,
+        );
+        assert_eq!(zcode["providerId"], "custom:my-zcode");
+        assert_eq!(zcode["providerName"], "My ZCode");
+        assert_eq!(zcode["config"]["api"]["baseUrl"], "https://z.test");
+        assert_eq!(zcode["config"]["access"]["apiKey"], "sk-z");
+        assert_eq!(zcode["models"][0]["modelId"], "z-model");
+        assert_eq!(zcode["defaultModelId"], "z-model");
+        let parsed: crate::coding::zcode::types::ZcodeSettingsConfig =
+            serde_json::from_value(Value::Object(zcode)).unwrap();
+        assert_eq!(parsed.provider_id, "custom:my-zcode");
+        assert_eq!(parsed.models.len(), 1);
+        assert!(parsed.models[0].is_default);
+
+        let mut grok = Map::new();
+        apply_canonical_fields(
+            "grok",
+            &json!({
+                "baseUrl": "https://g.test",
+                "apiKey": "sk-g",
+                "model": "grok-4-fast",
+            }),
+            &mut grok,
+        );
+        assert_eq!(grok["auth"]["API_KEY"], "sk-g");
+        assert_eq!(grok["baseUrl"], "https://g.test");
+        assert_eq!(grok["modelCatalog"]["models"][0]["model"], "grok-4-fast");
+        assert_eq!(
+            grok["modelCatalog"]["models"][0]["baseUrl"],
+            "https://g.test"
+        );
+        assert_eq!(grok["defaultModelKey"], "grok-4-fast");
+
+        let mut kimi = Map::new();
+        apply_canonical_fields(
+            "kimi",
+            &json!({
+                "baseUrl": "https://k.test",
+                "apiKey": "sk-k",
+                "model": "kimi-k2",
+            }),
+            &mut kimi,
+        );
+        assert_eq!(kimi["auth"]["API_KEY"], "sk-k");
+        assert_eq!(
+            kimi["providerConfigs"]["custom"]["base_url"],
+            "https://k.test"
+        );
+        assert_eq!(kimi["modelCatalog"]["models"][0]["provider"], "custom");
+        assert_eq!(kimi["defaultModelKey"], "kimi-k2");
+    }
+
+    #[test]
+    fn codex_base_url_patch_keeps_existing_toml() {
+        let existing = "model = \"gpt-5\"\n";
+        let patched = patch_codex_toml(existing, Some("https://codex.test"), None).unwrap();
+        assert!(patched.contains("model = \"gpt-5\""));
+        assert!(patched.contains("base_url = \"https://codex.test\""));
+        assert!(patched.contains("model_provider"));
+    }
+}

@@ -19,7 +19,9 @@ use bytes::Bytes;
 use futures_util::Stream;
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-use super::protocol::{encode_abort, encode_credit, FRAME_OVERHEAD, STREAM_BUDGET};
+use super::protocol::{
+    encode_abort, encode_credit, CapturedWireRequest, FRAME_OVERHEAD, STREAM_BUDGET,
+};
 use super::HostInner;
 
 pub type PluginFetchBody = Pin<Box<dyn Stream<Item = Result<Bytes, String>> + Send>>;
@@ -29,6 +31,9 @@ pub struct PluginFetchResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: PluginFetchBody,
+    /// The outbound request the host captured for this fetch, when the
+    /// caller asked for a capture.
+    pub wire_request: Option<CapturedWireRequest>,
 }
 
 /// The one-shot abort a fetch owes the host if nobody consumes its reply.
@@ -196,6 +201,7 @@ mod tests {
                     tx: head_tx,
                     chunk_tx,
                     finished: finished.clone(),
+                    wire_request: None,
                 },
             );
         }

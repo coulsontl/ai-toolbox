@@ -230,8 +230,10 @@
         "notStored": "This detail was not stored. Enable the matching log item in gateway settings.",
         "requestHeaders": "Request Headers",
         "responseHeaders": "Response Headers",
+        "upstreamRequestHeaders": "Upstream Request Headers (Redacted)",
         "receivedBody": "Received request body (raw)",
-        "upstreamBody": "Actual upstream request body (rectified/converted)",
+        "upstreamBody": "Actual upstream request body (rectified/converted/middleware-rewritten)",
+        "pluginBody": "Final body sent by provider plugin",
         "lines": "{{count}} lines",
         "expand": "Expand",
         "collapse": "Collapse",
@@ -311,6 +313,12 @@
           "declared": "declared",
           "forwarded": "forwarded",
           "used": "used"
+        },
+        "rewriteKinds": {
+          "pluginMiddlewareRequest": "Plugin request rewrite",
+          "pluginMiddlewareProvider": "Plugin upstream rewrite",
+          "pluginMiddlewareResponse": "Plugin response rewrite",
+          "pluginProviderFetch": "Provider plugin rewrite"
         },
         "compaction": {
           "native": "Native compact",
@@ -1602,6 +1610,52 @@
       "restartRequired": "Saved for the next launch. Currently using: {{mode}}.",
       "failed": "Could not update rendering settings: {{error}}",
       "automaticFallback": "A display issue during startup triggered an automatic compatibility fallback."
+    },
+    "controlApi": {
+      "title": "Agent Integration (Local Control)",
+      "description": "Let local coding agents query and update AI Toolbox through a token-protected API bound to 127.0.0.1, with a desktop approval prompt for writes.",
+      "enabled": "Enable the local control API",
+      "enabledHelp": "Binds to 127.0.0.1 with a random bearer token. Turning this off makes every HTTP request fail immediately.",
+      "url": "Listen address",
+      "discoveryFile": "Discovery file (contains the token; never shown here)",
+      "statusRunning": "Running",
+      "statusStopped": "Stopped",
+      "refresh": "Refresh status",
+      "approvalMode": "Approval policy",
+      "approvalModeHelp": "Controls whether writes need desktop confirmation. The default asks every time.",
+      "approvalModeAlwaysAsk": "Ask every time",
+      "approvalModeAskHighRisk": "Ask for high risk only",
+      "approvalModeAutoApprove": "Approve everything",
+      "approvalModeReadOnly": "Read-only",
+      "approvalModeHint": {
+        "always_ask": "Every write waits for an explicit click. Local plugin reloads can be exempted separately.",
+        "ask_high_risk": "Reversible edits run automatically; deletes, remote installs and gateway start/stop still ask.",
+        "auto_approve": "Any caller holding the local token is trusted. Use only in a fully trusted automation environment.",
+        "read_only": "Queries only; every write returns 403 and the CLI exits with code 4."
+      },
+      "approvalTimeout": "Approval timeout",
+      "approvalTimeoutHelp": "Seconds to wait for a click, 15–300. The request returns 408 after it expires.",
+      "seconds": "sec",
+      "autoApproveLocalReload": "Auto-approve local plugin reloads",
+      "autoApproveLocalReloadHelp": "Only applies to the Ask every time policy and only to plugins loaded from a local directory.",
+      "cliTitle": "aitb command line",
+      "cliDescription": "Install it to run aitb status --json from a terminal so agents can read the discovery file and call the control plane.",
+      "cliPath": "Installed at",
+      "cliInstalledTag": "Installed",
+      "cliNotInstalledTag": "Not installed",
+      "cliInstall": "Install to PATH",
+      "cliRemove": "Remove from PATH",
+      "cliInstalled": "aitb was installed to PATH",
+      "cliRemoved": "aitb was removed",
+      "cliInstallFailed": "Failed to install aitb: {{error}}",
+      "cliRemoveFailed": "Failed to remove aitb: {{error}}",
+      "cliNotOnPath": "The install directory is not on the current PATH yet. Reopen the terminal or sign in again.",
+      "cliBuildHint": "aitb was not found. Build it first with cargo build --release --manifest-path cli/Cargo.toml.",
+      "cliSource": "Binary to install: {{path}}",
+      "securityNote": "The token is written only to a private control.json. This page, logs and HTTP responses never expose plaintext credentials.",
+      "loadFailed": "Failed to load local control settings: {{error}}",
+      "saveFailed": "Failed to save local control settings: {{error}}",
+      "saved": "Local control settings saved"
     }
   },
   "theme": {
@@ -6598,6 +6652,7 @@
       "usageEmpty": "Usage has not been read yet",
       "usageLoadFailed": "Failed to read usage: {{error}}",
       "usageError": "Usage note: {{error}}",
+      "usageRefreshFailedCached": "Refresh failed; showing cached usage",
       "usageUntil": "Valid until {{time}}",
       "signInExpired": "Credentials expired; sign in again",
       "walletBalance": "Balance {{balance}}",
@@ -7004,5 +7059,20 @@
         "pages": "Plugin pages"
       }
     }
+  },
+  "controlApiApproval": {
+    "title": "An agent wants to change AI Toolbox",
+    "riskHigh": "High risk",
+    "riskStandard": "Reversible change",
+    "countdown": "Times out in {{seconds}}s",
+    "deny": "Deny",
+    "allowOnce": "Allow once",
+    "action": "Action",
+    "target": "Target",
+    "highRiskNote": "This deletes data, installs remote code or changes gateway takeover state. Make sure the caller is trustworthy.",
+    "standardNote": "This writes local configuration. It can be reverted by editing again or restoring a backup.",
+    "queued": "{{count}} more request(s) queued",
+    "expired": "This approval request already expired or was resolved",
+    "resolveFailed": "Could not submit the approval decision: {{error}}"
   }
 }

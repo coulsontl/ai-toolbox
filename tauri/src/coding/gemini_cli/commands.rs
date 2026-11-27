@@ -1279,6 +1279,14 @@ pub async fn create_gemini_cli_provider_inner<R: tauri::Runtime>(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&provider.settings_config, &provider.category)?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        state,
+        Some(app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Gemini,
+        &provider.category,
+        &normalized_settings_config,
+        provider.meta.as_ref(),
+    )?;
     let now = Local::now().to_rfc3339();
     let content = GeminiCliProviderContent {
         name: provider.name,
@@ -1330,6 +1338,14 @@ pub async fn update_gemini_cli_provider(
     let db = state.db();
     let normalized_settings_config =
         normalize_provider_settings_for_storage(&provider.settings_config, &provider.category)?;
+    crate::coding::proxy_gateway::self_loop::ensure_cli_provider_not_gateway_self_loop(
+        &state,
+        Some(&app),
+        crate::coding::proxy_gateway::types::GatewayCliKey::Gemini,
+        &provider.category,
+        &normalized_settings_config,
+        provider.meta.as_ref(),
+    )?;
     let id = provider.id.clone();
     let now = Local::now().to_rfc3339();
     let existing_provider = get_gemini_provider_from_sqlite(db, &id)?

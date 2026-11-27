@@ -1190,7 +1190,8 @@ const ClaudeCodePage: React.FC = () => {
       }
     } catch (error) {
       console.error('Failed to save provider:', error);
-      message.error(t('common.error'));
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
       throw error;
     }
   };
@@ -1232,7 +1233,8 @@ const ClaudeCodePage: React.FC = () => {
       await loadConfig();
     } catch (error) {
       console.error('Failed to update provider:', error);
-      message.error(t('common.error'));
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      message.error(errorMsg || t('common.error'));
       throw error;
     }
   };
