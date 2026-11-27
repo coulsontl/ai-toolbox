@@ -128,24 +128,20 @@ pub(super) fn build_claude_settings(
 }
 
 /// `{"auth": {"OPENAI_API_KEY"?}, "config": "<TOML string>"}`.
-/// The TOML contains `model_provider = "<slug>"`, optional `model`, and a
-/// `[model_providers.<slug>]` table with `name`/`base_url`. If `config` is
-/// provided, it is used as the TOML `config` string verbatim.
+/// The TOML contains `model_provider = "custom"`, optional `model`, and a
+/// `[model_providers.custom]` table whose `name` is the provider display name.
+/// Reusing the shared `custom` id keeps imported records on the same provider
+/// bucket as every other AI Toolbox-managed Codex channel, so resuming one of
+/// their sessions never trips Codex's provider lookup. If `config` is provided,
+/// it is used as the TOML `config` string verbatim.
 pub(super) fn build_codex_settings(request: &DeepLinkImportRequest) -> Result<String, String> {
-    let slug = slugify(&request.name);
-    let slug = if matches!(slug.as_str(), "openai" | "ollama" | "lmstudio") {
-        format!("shared-{slug}")
-    } else {
-        slug
-    };
-
     let config_toml = match request.config.as_deref() {
         Some(cfg) if !cfg.trim().is_empty() => cfg.to_string(),
         _ => {
             let mut root = toml::map::Map::new();
             root.insert(
                 "model_provider".to_string(),
-                toml::Value::String(slug.clone()),
+                toml::Value::String("custom".to_string()),
             );
             if let Some(model) = &request.model {
                 root.insert("model".to_string(), toml::Value::String(model.clone()));
@@ -167,7 +163,7 @@ pub(super) fn build_codex_settings(request: &DeepLinkImportRequest) -> Result<St
                 );
             }
             let mut model_providers = toml::map::Map::new();
-            model_providers.insert(slug, toml::Value::Table(provider_table));
+            model_providers.insert("custom".to_string(), toml::Value::Table(provider_table));
             root.insert(
                 "model_providers".to_string(),
                 toml::Value::Table(model_providers),
@@ -619,11 +615,10 @@ mod tests {
         let v: Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(v["auth"]["OPENAI_API_KEY"], "sk-x");
         let config = v["config"].as_str().unwrap();
-        assert!(config.contains(r#"model_provider = "my-provider""#));
+        assert!(config.contains(r#"model_provider = "custom""#));
         assert!(config.contains("model = \"m1\""));
-        // `my-provider` is a valid TOML bare key (dashes allowed), so the
-        // table header is emitted without quotes.
-        assert!(config.contains("[model_providers.my-provider]"));
+        assert!(config.contains("[model_providers.custom]"));
+        assert!(!config.contains("[model_providers.my-provider]"));
         assert!(config.contains("base_url = \"https://api.example.com\""));
         assert!(config.contains("name = \"My Provider\""));
     }
@@ -690,9 +685,9 @@ base_url = "https://override.example.com"
         let settings = build_codex_settings(&req).unwrap();
         let v: Value = serde_json::from_str(&settings).unwrap();
         let config = v["config"].as_str().unwrap();
-        assert!(config.contains(r#"model_provider = "nomodel""#));
+        assert!(config.contains(r#"model_provider = "custom""#));
         assert!(!config.contains("model ="));
-        assert!(config.contains("[model_providers.nomodel]"));
+        assert!(config.contains("[model_providers.custom]"));
     }
 
     #[test]

@@ -1,32 +1,63 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Cursor};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{TimeZone, Utc};
 use regex::Regex;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::backup::Backup;
+use rusqlite::types::Value as SqlValue;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::official_accounts::auth_has_official_runtime;
 use uuid::Uuid;
 
-const STATE_DB_FILE_NAME: &str = "state_5.sqlite";
+const STATE_DB_PREFIX: &str = "state_";
+const STATE_DB_SUFFIX: &str = ".sqlite";
 const CONFIG_FILE_NAME: &str = "config.toml";
 const AUTH_FILE_NAME: &str = "auth.json";
 const OFFICIAL_MODEL_PROVIDER_ID: &str = "openai";
+const AI_TOOLBOX_LEGACY_PROVIDER_ID: &str = "ai-toolbox-gateway";
+const AI_TOOLBOX_LAUNCH_PROVIDER_PREFIX: &str = "aitb-launch-";
+const CODEX_SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
+const CODEX_SQLITE_HOME_CONFIG_KEY: &str = "sqlite_home";
 const SESSION_INDEX_FILE_NAME: &str = "session_index.jsonl";
 const SESSIONS_DIR_NAME: &str = "sessions";
+const ARCHIVED_SESSIONS_DIR_NAME: &str = "archived_sessions";
 const BACKUP_DIR_NAME: &str = "history_sync_backups";
+const ROLLOUT_COMPRESSED_SUFFIX: &str = ".jsonl.zst";
+const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 const SQLITE_LOCK_RETRY_LIMIT: usize = 40;
 const SQLITE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_millis(500);
+const SQLITE_BACKUP_STEP_DELAY: Duration = Duration::from_millis(50);
 const FILE_RETRY_LIMIT: usize = 20;
 const FILE_RETRY_DELAY: Duration = Duration::from_millis(100);
-const SQLITE_LOCKED_USER_MESSAGE: &str = "Codex is writing history (state_5.sqlite is locked). Finish the current Codex response/session or close Codex in WSL/VS Code, then try again.";
+const SQLITE_LOCKED_USER_MESSAGE: &str = "Codex is writing history (the Codex state database is locked). Finish the current Codex response/session or close Codex in WSL/VS Code, then try again.";
+
+const PROVIDER_KIND_CURRENT: &str = "current";
+const PROVIDER_KIND_AI_TOOLBOX_LEGACY: &str = "ai_toolbox_legacy";
+const PROVIDER_KIND_OFFICIAL: &str = "official";
+const PROVIDER_KIND_MISSING: &str = "missing";
+const PROVIDER_KIND_OTHER: &str = "other";
+
+/// Serializes every operation that rewrites Codex history.
+///
+/// `codex resume`, the unified-history toggle, and a manual history sync can be
+/// triggered from different commands at the same time. They share rollout
+/// files and the same state databases, so they must not interleave.
+static HISTORY_OP_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn lock_history_op() -> MutexGuard<'static, ()> {
+    HISTORY_OP_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +73,8 @@ pub struct CodexHistorySyncStatus {
     pub current_model: Option<String>,
     pub total_threads: usize,
     pub provider_mismatch_threads: usize,
+    #[serde(default)]
+    pub provider_breakdown: Vec<CodexHistoryProviderGroup>,
     pub model_mismatch_threads: usize,
     pub model_column_exists: bool,
     pub session_file_count: usize,
@@ -66,6 +99,43 @@ pub struct CodexHistorySourceOption {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub distro: Option<String>,
+}
+
+/// One `model_provider` bucket in the selected Codex history source.
+///
+/// `provider_id` is `None` for threads whose database row is NULL/empty and for
+/// rollout files that never recorded one. `kind` is one of `current`,
+/// `ai_toolbox_legacy`, `official`, `missing`, `other`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexHistoryProviderGroup {
+    pub provider_id: Option<String>,
+    pub kind: String,
+    pub thread_count: usize,
+    pub session_file_count: usize,
+}
+
+/// Background-only probe for legacy AI Toolbox provider sessions.
+///
+/// This is deliberately separate from [`get_status`]: the page calls it on
+/// every activation, so it must not spend 40 × 250 ms retrying a lock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexHistoryLegacyHint {
+    pub detected: bool,
+    pub thread_count: usize,
+    pub session_file_count: usize,
+    pub provider_ids: Vec<String>,
+}
+
+/// Which existing provider buckets the caller wants migrated.
+///
+/// Both fields being `None` preserves the pre-filter API behavior; any `Some`
+/// value makes the operation strictly selection-based.
+#[derive(Debug, Clone, Default)]
+pub struct CodexHistorySyncSelection {
+    pub source_providers: Option<Vec<String>>,
+    pub include_missing_provider: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +185,7 @@ struct Paths {
     config_path: PathBuf,
     db_path: PathBuf,
     sessions_dir: PathBuf,
+    archived_sessions_dir: PathBuf,
     session_index_path: PathBuf,
     auth_path: PathBuf,
     backup_dir: PathBuf,
@@ -124,6 +195,12 @@ struct Paths {
 struct CurrentTarget {
     provider: String,
     model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SelectionPlan {
+    providers: BTreeSet<String>,
+    include_missing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -153,7 +230,19 @@ struct SessionIndexEntry {
 #[serde(rename_all = "camelCase")]
 struct SessionMetaBackupEntry {
     relative_path: String,
+    /// Kept for backups written before multi-line session metadata support.
+    #[serde(default)]
     first_line: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    meta_lines: Vec<SessionMetaLineBackup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionMetaLineBackup {
+    /// Zero-based line number in the decompressed rollout.
+    line_index: usize,
+    content: String,
 }
 
 #[derive(Debug, Clone)]
@@ -176,9 +265,9 @@ struct IndexRebuildResult {
 }
 
 pub fn get_status(codex_home: &Path) -> Result<CodexHistorySyncStatus, String> {
-    let paths = resolve_paths(codex_home);
+    let paths = resolve_paths(codex_home)?;
     let target = read_current_target(&paths)?;
-    // Codex may hold state_5.sqlite while answering/autosaving (especially under WSL).
+    // Codex may hold the state database while answering/autosaving (especially under WSL).
     // Retry read-side inspection so opening the history sync modal is not a hard fail.
     let db_snapshot = retry_sqlite_operation(|| read_status_db_snapshot(&paths, &target))?.value;
     let session_records = scan_session_records(&paths)?;
@@ -186,6 +275,11 @@ pub fn get_status(codex_home: &Path) -> Result<CodexHistorySyncStatus, String> {
         .iter()
         .filter(|record| session_record_needs_sync(record, &target))
         .count();
+    let provider_breakdown = build_provider_breakdown(
+        &db_snapshot.provider_thread_counts,
+        &session_records,
+        &target,
+    );
     let session_index_entries = read_session_index(&paths.session_index_path)?;
     let missing_session_index_entries = db_snapshot
         .visible_thread_ids
@@ -211,6 +305,7 @@ pub fn get_status(codex_home: &Path) -> Result<CodexHistorySyncStatus, String> {
         current_model: target.model,
         total_threads: db_snapshot.total_threads,
         provider_mismatch_threads: db_snapshot.provider_mismatch_threads,
+        provider_breakdown,
         // History sync intentionally preserves existing model values. Keep the field for
         // API compatibility, but treat model differences as informational only.
         model_mismatch_threads: 0,
@@ -228,9 +323,71 @@ pub fn get_status(codex_home: &Path) -> Result<CodexHistorySyncStatus, String> {
     })
 }
 
+/// Cheap legacy-provider probe used by the page badge.
+///
+/// One read attempt, one 500 ms busy timeout, no retry loop: a lock or a
+/// transient I/O error degrades to "nothing detected" at the call site instead
+/// of blocking the page.
+/// A database on a Windows WSL UNC share cannot be locked through 9P: every
+/// open waits out the busy timeout and then fails with "database is locked".
+/// The background hint simply reports "nothing detected" instead of paying that
+/// cost on each page activation.
+fn is_windows_wsl_unc_path(path: &Path) -> bool {
+    cfg!(windows)
+        && path.to_str().is_some_and(|value| {
+            crate::coding::runtime_location::parse_wsl_unc_path(value).is_some()
+        })
+}
+
+fn empty_legacy_hint() -> CodexHistoryLegacyHint {
+    CodexHistoryLegacyHint {
+        detected: false,
+        thread_count: 0,
+        session_file_count: 0,
+        provider_ids: Vec::new(),
+    }
+}
+
+pub fn get_legacy_hint(codex_home: &Path) -> Result<CodexHistoryLegacyHint, String> {
+    if is_windows_wsl_unc_path(codex_home) {
+        return Ok(empty_legacy_hint());
+    }
+    let paths = resolve_paths(codex_home)?;
+    if is_windows_wsl_unc_path(&paths.db_path) {
+        return Ok(empty_legacy_hint());
+    }
+    let target = read_current_target(&paths)?;
+    // State DB only. Scanning (and decompressing) every rollout on each page
+    // activation would cost far more than the badge is worth.
+    let provider_thread_counts = read_provider_thread_counts(&paths.db_path)?;
+
+    let mut thread_count = 0;
+    let mut provider_ids = BTreeSet::new();
+    for (provider, count) in &provider_thread_counts {
+        let Some(provider) = provider.as_deref() else {
+            continue;
+        };
+        if provider == target.provider {
+            continue;
+        }
+        if is_ai_toolbox_legacy_provider(provider) {
+            thread_count += *count;
+            provider_ids.insert(provider.to_string());
+        }
+    }
+
+    Ok(CodexHistoryLegacyHint {
+        detected: thread_count > 0,
+        thread_count,
+        session_file_count: 0,
+        provider_ids: provider_ids.into_iter().collect(),
+    })
+}
+
 pub fn backup(codex_home: &Path, label: &str) -> Result<CodexHistoryBackupResult, String> {
+    let _guard = lock_history_op();
     let start = Instant::now();
-    let paths = resolve_paths(codex_home);
+    let paths = resolve_paths(codex_home)?;
     ensure_environment(&paths)?;
     let outcome = make_backup(&paths, label)?;
     Ok(CodexHistoryBackupResult {
@@ -240,15 +397,21 @@ pub fn backup(codex_home: &Path, label: &str) -> Result<CodexHistoryBackupResult
     })
 }
 
-pub fn sync(codex_home: &Path) -> Result<CodexHistorySyncResult, String> {
+pub fn sync(
+    codex_home: &Path,
+    selection: Option<&CodexHistorySyncSelection>,
+) -> Result<CodexHistorySyncResult, String> {
+    let _guard = lock_history_op();
     let start = Instant::now();
-    let paths = resolve_paths(codex_home);
+    let paths = resolve_paths(codex_home)?;
     let target = read_current_target(&paths)?;
+    let selection_plan = build_selection_plan(selection, &target)?;
     ensure_environment(&paths)?;
     let backup = make_backup(&paths, "pre-sync")?;
 
-    let db_sync = retry_sqlite_operation(|| sync_database(&paths.db_path, &target))?;
-    let session_sync = sync_session_records(&paths, &target)?;
+    let db_sync =
+        retry_sqlite_operation(|| sync_database(&paths.db_path, &target, selection_plan.as_ref()))?;
+    let session_sync = sync_session_records(&paths, &target, selection_plan.as_ref())?;
     let index_result = retry_sqlite_operation(|| rebuild_session_index(&paths))?.value;
     let status = get_status(codex_home)?;
 
@@ -270,8 +433,9 @@ pub fn sync(codex_home: &Path) -> Result<CodexHistorySyncResult, String> {
 }
 
 pub fn restore_latest(codex_home: &Path) -> Result<CodexHistoryRestoreResult, String> {
+    let _guard = lock_history_op();
     let start = Instant::now();
-    let paths = resolve_paths(codex_home);
+    let paths = resolve_paths(codex_home)?;
     ensure_environment(&paths)?;
     let latest_backup = list_backup_files(&paths.backup_dir)?
         .last()
@@ -298,17 +462,148 @@ pub fn restore_latest(codex_home: &Path) -> Result<CodexHistoryRestoreResult, St
     })
 }
 
-fn resolve_paths(codex_home: &Path) -> Paths {
+fn resolve_paths(codex_home: &Path) -> Result<Paths, String> {
+    let mut paths = base_paths(codex_home);
+    paths.db_path = resolve_state_db_path(codex_home, &paths.config_path)?;
+    Ok(paths)
+}
+
+fn base_paths(codex_home: &Path) -> Paths {
     let codex_home = codex_home.to_path_buf();
     Paths {
         config_path: codex_home.join(CONFIG_FILE_NAME),
-        db_path: codex_home.join(STATE_DB_FILE_NAME),
+        db_path: PathBuf::new(),
         sessions_dir: codex_home.join(SESSIONS_DIR_NAME),
+        archived_sessions_dir: codex_home.join(ARCHIVED_SESSIONS_DIR_NAME),
         session_index_path: codex_home.join(SESSION_INDEX_FILE_NAME),
         auth_path: codex_home.join(AUTH_FILE_NAME),
         backup_dir: codex_home.join(BACKUP_DIR_NAME),
         codex_home,
     }
+}
+
+/// Locate Codex's state database.
+///
+/// Codex's file name carries a schema version (`state_<N>.sqlite`), so the whole
+/// family is matched and the highest version wins. An explicitly configured
+/// SQLite home (`config.toml`'s `sqlite_home`, then `CODEX_SQLITE_HOME`) takes
+/// precedence over the Codex home itself, matching Codex's own `SqliteConfig`.
+fn resolve_state_db_path(codex_home: &Path, config_path: &Path) -> Result<PathBuf, String> {
+    let configured = sqlite_home_from_config(config_path).or_else(sqlite_home_from_env);
+    let mut searched = Vec::new();
+    for directory in configured
+        .into_iter()
+        .chain(std::iter::once(codex_home.to_path_buf()))
+    {
+        if searched.contains(&directory) {
+            continue;
+        }
+        if let Some(path) = highest_state_db_in(&directory) {
+            return Ok(path);
+        }
+        searched.push(directory);
+    }
+    Err(format!(
+        "Could not find a Codex state database (state_<N>.sqlite) in: {}",
+        searched
+            .iter()
+            .map(|directory| directory.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn highest_state_db_in(directory: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(directory).ok()?;
+    let mut best: Option<(u64, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(version) = name
+            .strip_prefix(STATE_DB_PREFIX)
+            .and_then(|rest| rest.strip_suffix(STATE_DB_SUFFIX))
+            .and_then(|version| version.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(seen, _)| version > *seen) {
+            best = Some((version, path));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+/// Every state database a Codex root can use, highest schema version each.
+///
+/// Unlike [`resolve_state_db_path`], this keeps both the Codex home database and
+/// the configured SQLite-home database: unified history migrates every database
+/// Codex might read. Directories without a matching file contribute nothing.
+pub(crate) fn discover_state_db_paths(codex_home: &Path, config_text: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(path) = highest_state_db_in(codex_home) {
+        push_unique_path(&mut paths, path);
+    }
+    let configured = sqlite_home_from_config_text(config_text).or_else(sqlite_home_from_env);
+    if let Some(directory) = configured {
+        if let Some(path) = highest_state_db_in(&directory) {
+            push_unique_path(&mut paths, path);
+        }
+    }
+    paths
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+}
+
+fn sqlite_home_from_config(config_path: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(config_path).ok()?;
+    sqlite_home_from_config_text(&text)
+}
+
+fn sqlite_home_from_config_text(config_text: &str) -> Option<PathBuf> {
+    let value = config_text.parse::<toml::Value>().ok()?;
+    let raw = value
+        .get(CODEX_SQLITE_HOME_CONFIG_KEY)
+        .and_then(toml::Value::as_str)?
+        .trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(resolve_user_path(raw))
+}
+
+fn sqlite_home_from_env() -> Option<PathBuf> {
+    let raw = std::env::var(CODEX_SQLITE_HOME_ENV).ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(resolve_user_path(raw))
+}
+
+fn resolve_user_path(raw: &str) -> PathBuf {
+    if raw == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return dirs::home_dir()
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(raw));
+    }
+    if let Some(rest) = raw.strip_prefix("~\\") {
+        return dirs::home_dir()
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(raw));
+    }
+    PathBuf::from(raw)
 }
 
 fn ensure_environment(paths: &Paths) -> Result<(), String> {
@@ -404,14 +699,21 @@ fn toml_string_value(value: Option<&toml::Value>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn open_read_connection(db_path: &Path) -> Result<Connection, String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| format!("Failed to open Codex history database: {error}"))?;
+/// Open a state database for SELECT-only use.
+///
+/// A read-only connection cannot reliably open a WAL database after Codex has
+/// exited and cleaned up the `-shm` file, so this opens normally and relies on
+/// callers issuing only reads. The busy timeout keeps a live Codex from turning
+/// a harmless inspection into an instant failure.
+pub(crate) fn open_history_read_connection(db_path: &Path) -> Result<Connection, String> {
+    let conn = Connection::open(db_path)
+        .map_err(|error| format!("Failed to open Codex history database: {error}"))?;
     apply_sqlite_busy_timeout(&conn)?;
     Ok(conn)
+}
+
+fn open_read_connection(db_path: &Path) -> Result<Connection, String> {
+    open_history_read_connection(db_path)
 }
 
 fn open_write_connection(db_path: &Path) -> Result<Connection, String> {
@@ -426,10 +728,30 @@ fn apply_sqlite_busy_timeout(conn: &Connection) -> Result<(), String> {
         .map_err(|error| format!("Failed to set Codex database busy timeout: {error}"))
 }
 
+/// Copy a state database through SQLite's online backup API.
+///
+/// `run_to_completion(c_int::MAX, …)` copies the whole WAL snapshot in one pass
+/// instead of the default small page steps (a 40 MB database otherwise takes
+/// minutes); a transient Busy/Locked step is retried after 50 ms.
+pub(crate) fn copy_sqlite_database(
+    source: &Connection,
+    destination_path: &Path,
+) -> Result<(), String> {
+    let mut destination = Connection::open(destination_path)
+        .map_err(|error| format!("Failed to open Codex history database copy: {error}"))?;
+    let backup = Backup::new(source, &mut destination)
+        .map_err(|error| format!("Failed to initialize Codex history database backup: {error}"))?;
+    backup
+        .run_to_completion(std::ffi::c_int::MAX, SQLITE_BACKUP_STEP_DELAY, None)
+        .map_err(|error| format!("Failed to copy Codex history database: {error}"))?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 struct StatusDbSnapshot {
     total_threads: usize,
     provider_mismatch_threads: usize,
+    provider_thread_counts: BTreeMap<Option<String>, usize>,
     model_column_exists: bool,
     visible_thread_ids: BTreeSet<String>,
 }
@@ -441,11 +763,16 @@ fn read_status_db_snapshot(
     let columns = read_thread_columns(&paths.db_path)?;
     let thread_rows = read_visible_thread_rows(&paths.db_path, &columns)?;
     let total_threads = read_total_thread_count(&paths.db_path)?;
-    let provider_mismatch_threads =
-        count_provider_mismatch_threads(&paths.db_path, &target.provider)?;
+    let provider_thread_counts = read_provider_thread_counts(&paths.db_path)?;
+    let provider_mismatch_threads = provider_thread_counts
+        .iter()
+        .filter(|(provider, _)| provider.as_deref() != Some(target.provider.as_str()))
+        .map(|(_, count)| *count)
+        .sum();
     Ok(StatusDbSnapshot {
         total_threads,
         provider_mismatch_threads,
+        provider_thread_counts,
         model_column_exists: columns.contains("model"),
         visible_thread_ids: thread_rows.into_iter().map(|row| row.id).collect(),
     })
@@ -478,18 +805,95 @@ fn read_total_thread_count(db_path: &Path) -> Result<usize, String> {
     .map_err(|error| format!("Failed to count Codex threads: {error}"))
 }
 
-fn count_provider_mismatch_threads(
-    db_path: &Path,
-    current_provider: &str,
-) -> Result<usize, String> {
+fn read_provider_thread_counts(db_path: &Path) -> Result<BTreeMap<Option<String>, usize>, String> {
     let conn = open_read_connection(db_path)?;
-    conn.query_row(
-        "SELECT COUNT(*) FROM threads WHERE model_provider IS NULL OR model_provider <> ?1",
-        [current_provider],
-        |row| row.get::<_, i64>(0),
-    )
-    .map(|value| value.max(0) as usize)
-    .map_err(|error| format!("Failed to count Codex provider mismatches: {error}"))
+    let mut statement = conn
+        .prepare("SELECT model_provider, COUNT(*) FROM threads GROUP BY model_provider")
+        .map_err(|error| format!("Failed to inspect Codex provider distribution: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            let provider: Option<String> = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((provider, count))
+        })
+        .map_err(|error| format!("Failed to read Codex provider distribution: {error}"))?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let (provider, count) =
+            row.map_err(|error| format!("Failed to parse Codex provider distribution: {error}"))?;
+        *counts
+            .entry(normalize_provider_id(provider.as_deref()))
+            .or_insert(0) += count.max(0) as usize;
+    }
+    Ok(counts)
+}
+
+fn normalize_provider_id(provider: Option<&str>) -> Option<String> {
+    provider
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn is_ai_toolbox_legacy_provider(provider: &str) -> bool {
+    provider == AI_TOOLBOX_LEGACY_PROVIDER_ID
+        || provider.starts_with(AI_TOOLBOX_LAUNCH_PROVIDER_PREFIX)
+}
+
+fn classify_history_provider(provider: Option<&str>, current_provider: &str) -> &'static str {
+    match provider {
+        Some(provider) if provider == current_provider => PROVIDER_KIND_CURRENT,
+        Some(provider) if is_ai_toolbox_legacy_provider(provider) => {
+            PROVIDER_KIND_AI_TOOLBOX_LEGACY
+        }
+        Some(OFFICIAL_MODEL_PROVIDER_ID) => PROVIDER_KIND_OFFICIAL,
+        Some(_) => PROVIDER_KIND_OTHER,
+        None => PROVIDER_KIND_MISSING,
+    }
+}
+
+fn provider_kind_rank(kind: &str) -> usize {
+    match kind {
+        PROVIDER_KIND_AI_TOOLBOX_LEGACY => 0,
+        PROVIDER_KIND_MISSING => 1,
+        PROVIDER_KIND_OTHER => 2,
+        PROVIDER_KIND_OFFICIAL => 3,
+        PROVIDER_KIND_CURRENT => 4,
+        _ => 5,
+    }
+}
+
+fn build_provider_breakdown(
+    provider_thread_counts: &BTreeMap<Option<String>, usize>,
+    session_records: &[SessionRecord],
+    target: &CurrentTarget,
+) -> Vec<CodexHistoryProviderGroup> {
+    let mut counts: BTreeMap<Option<String>, (usize, usize)> = BTreeMap::new();
+    for (provider, count) in provider_thread_counts {
+        counts.entry(provider.clone()).or_default().0 += *count;
+    }
+    for record in session_records {
+        counts.entry(record.model_provider.clone()).or_default().1 += 1;
+    }
+
+    let mut groups: Vec<CodexHistoryProviderGroup> = counts
+        .into_iter()
+        .map(
+            |(provider_id, (thread_count, session_file_count))| CodexHistoryProviderGroup {
+                kind: classify_history_provider(provider_id.as_deref(), &target.provider)
+                    .to_string(),
+                provider_id,
+                thread_count,
+                session_file_count,
+            },
+        )
+        .collect();
+    groups.sort_by(|left, right| {
+        provider_kind_rank(&left.kind)
+            .cmp(&provider_kind_rank(&right.kind))
+            .then_with(|| left.provider_id.cmp(&right.provider_id))
+    });
+    groups
 }
 
 fn read_visible_thread_rows(
@@ -547,17 +951,72 @@ fn read_optional_i64(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<
     }
 }
 
-fn sync_database(db_path: &Path, target: &CurrentTarget) -> Result<usize, String> {
+fn build_selection_plan(
+    selection: Option<&CodexHistorySyncSelection>,
+    target: &CurrentTarget,
+) -> Result<Option<SelectionPlan>, String> {
+    let Some(selection) = selection else {
+        return Ok(None);
+    };
+
+    let include_missing = selection.include_missing_provider.unwrap_or(false);
+    let mut providers = BTreeSet::new();
+    for provider in selection.source_providers.iter().flatten() {
+        let provider = provider.trim();
+        // The active provider is already routed correctly; keep it out of the
+        // update set so "selected" always means "will be rewritten".
+        if provider.is_empty() || provider == target.provider {
+            continue;
+        }
+        providers.insert(provider.to_string());
+    }
+
+    if providers.is_empty() && !include_missing {
+        return Err("No Codex history providers were selected for sync".to_string());
+    }
+
+    Ok(Some(SelectionPlan {
+        providers,
+        include_missing,
+    }))
+}
+
+fn sync_database(
+    db_path: &Path,
+    target: &CurrentTarget,
+    plan: Option<&SelectionPlan>,
+) -> Result<usize, String> {
     let mut conn = open_write_connection(db_path)?;
     let transaction = conn
         .transaction()
         .map_err(|error| format!("Failed to begin Codex history sync transaction: {error}"))?;
-    let updated = transaction
-        .execute(
-            "UPDATE threads SET model_provider = ?1 WHERE model_provider IS NULL OR model_provider <> ?1",
-            [target.provider.as_str()],
-        )
-        .map_err(|error| format!("Failed to sync Codex history database: {error}"))?;
+    let updated = match plan {
+        None => transaction
+            .execute(
+                "UPDATE threads SET model_provider = ?1 WHERE model_provider IS NULL OR model_provider <> ?1",
+                [target.provider.as_str()],
+            )
+            .map_err(|error| format!("Failed to sync Codex history database: {error}"))?,
+        Some(plan) => {
+            let mut clauses = Vec::new();
+            let mut params: Vec<SqlValue> = vec![SqlValue::Text(target.provider.clone())];
+            if plan.include_missing {
+                clauses.push("(model_provider IS NULL OR TRIM(model_provider) = '')".to_string());
+            }
+            if !plan.providers.is_empty() {
+                let placeholders = vec!["?"; plan.providers.len()].join(", ");
+                clauses.push(format!("TRIM(model_provider) IN ({placeholders})"));
+                params.extend(plan.providers.iter().cloned().map(SqlValue::Text));
+            }
+            let sql = format!(
+                "UPDATE threads SET model_provider = ?1 WHERE ({}) AND (model_provider IS NULL OR model_provider <> ?1)",
+                clauses.join(" OR ")
+            );
+            transaction
+                .execute(&sql, rusqlite::params_from_iter(params))
+                .map_err(|error| format!("Failed to sync Codex history database: {error}"))?
+        }
+    };
     transaction
         .commit()
         .map_err(|error| format!("Failed to commit Codex history sync: {error}"))?;
@@ -606,7 +1065,10 @@ fn is_sqlite_locked_error(error: &str) -> bool {
 
 fn scan_session_records(paths: &Paths) -> Result<Vec<SessionRecord>, String> {
     let mut files = Vec::new();
-    collect_rollout_jsonl_files(&paths.sessions_dir, &mut files)?;
+    collect_rollout_files(&paths.sessions_dir, &mut files)?;
+    collect_rollout_files(&paths.archived_sessions_dir, &mut files)?;
+    files.sort();
+    let files = dedupe_rollout_siblings(files);
     let mut records = Vec::new();
     for path in files {
         if let Some(record) = read_session_record(paths, &path)? {
@@ -616,7 +1078,7 @@ fn scan_session_records(paths: &Paths) -> Result<Vec<SessionRecord>, String> {
     Ok(records)
 }
 
-fn collect_rollout_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_rollout_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     if !dir.exists() {
         return Ok(());
     }
@@ -631,39 +1093,158 @@ fn collect_rollout_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(
             entry.map_err(|error| format!("Failed to read Codex session entry: {error}"))?;
         let path = entry.path();
         if path.is_dir() {
-            collect_rollout_jsonl_files(&path, files)?;
+            collect_rollout_files(&path, files)?;
             continue;
         }
         let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if file_name.starts_with("rollout-") && file_name.ends_with(".jsonl") {
+        if file_name.starts_with("rollout-") && is_rollout_session_file(&path) {
             files.push(path);
         }
     }
-    files.sort();
     Ok(())
 }
 
-fn read_session_record(paths: &Paths, path: &Path) -> Result<Option<SessionRecord>, String> {
+/// Whether a path is a rollout file in either representation (extension only).
+pub(crate) fn is_rollout_session_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.ends_with(".jsonl") || name.ends_with(ROLLOUT_COMPRESSED_SUFFIX))
+}
+
+pub(crate) fn is_compressed_rollout(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.ends_with(ROLLOUT_COMPRESSED_SUFFIX))
+}
+
+fn logical_rollout_path(path: &Path) -> PathBuf {
+    if !is_compressed_rollout(path) {
+        return path.to_path_buf();
+    }
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return path.to_path_buf();
+    };
+    let Some(plain_name) = name.strip_suffix(".zst") else {
+        return path.to_path_buf();
+    };
+    path.with_file_name(plain_name)
+}
+
+/// When both `x.jsonl` and `x.jsonl.zst` exist (mid-compression or a leftover
+/// archive), only the plain file is authoritative: it is the one Codex writes
+/// and it contains at least everything the compressed copy does.
+pub(crate) fn dedupe_rollout_siblings(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let plain: BTreeSet<PathBuf> = files
+        .iter()
+        .filter(|path| !is_compressed_rollout(path))
+        .cloned()
+        .collect();
+    files
+        .into_iter()
+        .filter(|path| !is_compressed_rollout(path) || !plain.contains(&logical_rollout_path(path)))
+        .collect()
+}
+
+fn read_first_line(path: &Path) -> Result<Option<String>, String> {
     let file = fs::File::open(path).map_err(|error| {
         format!(
             "Failed to open Codex session file {}: {error}",
             path.display()
         )
     })?;
-    let mut reader = BufReader::new(file);
     let mut first_line = String::new();
-    let read = reader.read_line(&mut first_line).map_err(|error| {
+    let read = if is_compressed_rollout(path) {
+        let decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
+            format!(
+                "Failed to decode Codex session file {}: {error}",
+                path.display()
+            )
+        })?;
+        BufReader::new(decoder)
+            .read_line(&mut first_line)
+            .map_err(|error| {
+                format!(
+                    "Failed to read Codex session file {}: {error}",
+                    path.display()
+                )
+            })?
+    } else {
+        BufReader::new(file)
+            .read_line(&mut first_line)
+            .map_err(|error| {
+                format!(
+                    "Failed to read Codex session file {}: {error}",
+                    path.display()
+                )
+            })?
+    };
+    if read == 0 {
+        return Ok(None);
+    }
+    Ok(Some(first_line.trim_end_matches(['\r', '\n']).to_string()))
+}
+
+pub(crate) fn read_session_text(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| {
         format!(
             "Failed to read Codex session file {}: {error}",
             path.display()
         )
     })?;
-    if read == 0 {
-        return Ok(None);
+    if !is_compressed_rollout(path) {
+        return String::from_utf8(bytes).map_err(|error| {
+            format!(
+                "Failed to decode Codex session file {}: {error}",
+                path.display()
+            )
+        });
     }
-    let normalized_first_line = first_line.trim_end_matches(['\r', '\n']).to_string();
+    let decoded = zstd::stream::decode_all(Cursor::new(bytes)).map_err(|error| {
+        format!(
+            "Failed to decompress Codex session file {}: {error}",
+            path.display()
+        )
+    })?;
+    String::from_utf8(decoded).map_err(|error| {
+        format!(
+            "Failed to decode Codex session file {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// Every `session_meta` line in a rollout, with its absolute line number.
+///
+/// A thread can append another `session_meta` when it is resumed, so restoring
+/// only line 0 would leave the later provider record stale.
+fn read_session_meta_lines(path: &Path) -> Result<Vec<SessionMetaLineBackup>, String> {
+    let text = read_session_text(path)?;
+    let mut meta_lines = Vec::new();
+    for (line_index, segment) in text.split_inclusive('\n').enumerate() {
+        let (line, _) = split_line_segment(segment);
+        if !line.contains("\"session_meta\"") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        meta_lines.push(SessionMetaLineBackup {
+            line_index,
+            content: line.to_string(),
+        });
+    }
+    Ok(meta_lines)
+}
+
+fn read_session_record(paths: &Paths, path: &Path) -> Result<Option<SessionRecord>, String> {
+    let Some(normalized_first_line) = read_first_line(path)? else {
+        return Ok(None);
+    };
     let value: Value = match serde_json::from_str(&normalized_first_line) {
         Ok(value) => value,
         Err(_) => return Ok(None),
@@ -685,10 +1266,9 @@ fn read_session_record(paths: &Paths, path: &Path) -> Result<Option<SessionRecor
     Ok(Some(SessionRecord {
         relative_path: relative_path(paths, path)?,
         path: path.to_path_buf(),
-        model_provider: payload
-            .get("model_provider")
-            .and_then(Value::as_str)
-            .map(ToString::to_string),
+        model_provider: normalize_provider_id(
+            payload.get("model_provider").and_then(Value::as_str),
+        ),
         first_line: normalized_first_line,
     }))
 }
@@ -718,19 +1298,50 @@ struct SessionSyncResult {
     first_error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+fn file_stamp(path: &Path) -> Result<FileStamp, String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "Failed to inspect Codex session file {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(FileStamp {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
+fn ensure_file_unchanged(path: &Path, before: FileStamp) -> Result<(), String> {
+    let after = file_stamp(path)?;
+    if after.modified != before.modified || after.len != before.len {
+        return Err(format!(
+            "Codex session file changed during history sync: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 fn sync_session_records(
     paths: &Paths,
     target: &CurrentTarget,
+    plan: Option<&SelectionPlan>,
 ) -> Result<SessionSyncResult, String> {
     let records = scan_session_records(paths)?;
     let mut updated = 0;
     let mut failed = 0;
     let mut first_error = None;
+    // Every rollout is inspected: a later `session_meta` line can still carry
+    // a provider that differs from the first one, and the file-level provider
+    // record only describes the first line.
     for record in records {
-        if !session_record_needs_sync(&record, target) {
-            continue;
-        }
-        match rewrite_session_meta_first_line(&record, target) {
+        match rewrite_session_meta_lines(&record.path, target, plan) {
             Ok(true) => updated += 1,
             Ok(false) => {}
             Err(error) => {
@@ -748,61 +1359,122 @@ fn sync_session_records(
     })
 }
 
-fn rewrite_session_meta_first_line(
-    record: &SessionRecord,
+fn rewrite_session_meta_lines(
+    path: &Path,
     target: &CurrentTarget,
+    plan: Option<&SelectionPlan>,
 ) -> Result<bool, String> {
-    let text = fs::read_to_string(&record.path).map_err(|error| {
-        format!(
-            "Failed to read Codex session file {}: {error}",
-            record.path.display()
-        )
-    })?;
-    let (first_line, line_ending, remainder) = split_first_line(&text);
-    let mut value: Value = serde_json::from_str(first_line).map_err(|error| {
-        format!(
-            "Failed to parse Codex session metadata {}: {error}",
-            record.path.display()
-        )
-    })?;
-    let payload = value
-        .get_mut("payload")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| {
-            format!(
-                "Codex session metadata missing payload: {}",
-                record.path.display()
-            )
-        })?;
+    let stamp = file_stamp(path)?;
+    let text = read_session_text(path)?;
+    let mut rewritten = String::with_capacity(text.len());
+    let mut changed = false;
+    for segment in text.split_inclusive('\n') {
+        let (line, newline) = split_line_segment(segment);
+        match rewrite_session_meta_line(line, target, plan)? {
+            Some(next_line) => {
+                rewritten.push_str(&next_line);
+                changed = true;
+            }
+            None => rewritten.push_str(line),
+        }
+        rewritten.push_str(newline);
+    }
+    if !changed {
+        return Ok(false);
+    }
+    ensure_file_unchanged(path, stamp)?;
+    write_session_text(path, &rewritten)?;
+    Ok(true)
+}
+
+fn rewrite_session_meta_line(
+    line: &str,
+    target: &CurrentTarget,
+    plan: Option<&SelectionPlan>,
+) -> Result<Option<String>, String> {
+    if !line.contains("\"session_meta\"") {
+        return Ok(None);
+    }
+    let mut value: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return Ok(None);
+    }
+    let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+
+    let current_provider =
+        normalize_provider_id(payload.get("model_provider").and_then(Value::as_str));
+    if current_provider.as_deref() == Some(target.provider.as_str()) {
+        return Ok(None);
+    }
+    let selected = match plan {
+        None => true,
+        Some(plan) => match current_provider.as_deref() {
+            None => plan.include_missing,
+            Some(provider) => plan.providers.contains(provider),
+        },
+    };
+    if !selected {
+        return Ok(None);
+    }
+
     payload.insert(
         "model_provider".to_string(),
         Value::String(target.provider.clone()),
     );
-    let new_first_line = serde_json::to_string(&value).map_err(|error| {
-        format!(
-            "Failed to serialize Codex session metadata {}: {error}",
-            record.path.display()
-        )
-    })?;
-    if new_first_line == first_line {
-        return Ok(false);
+    let next_line = serde_json::to_string(&value)
+        .map_err(|error| format!("Failed to serialize Codex session metadata: {error}"))?;
+    if next_line == line {
+        return Ok(None);
     }
-    let new_text = format!("{new_first_line}{line_ending}{remainder}");
-    write_atomic_with_retry(&record.path, new_text.as_bytes())?;
-    Ok(true)
+    Ok(Some(next_line))
 }
 
-fn split_first_line(text: &str) -> (&str, &str, &str) {
-    if let Some(index) = text.find('\n') {
-        let line_end = if index > 0 && text.as_bytes()[index - 1] == b'\r' {
-            index - 1
-        } else {
-            index
-        };
-        let ending = if line_end == index { "\n" } else { "\r\n" };
-        (&text[..line_end], ending, &text[index + 1..])
+pub(crate) fn write_session_text(path: &Path, text: &str) -> Result<(), String> {
+    let modified = fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    if !is_compressed_rollout(path) {
+        write_atomic_with_retry(path, text.as_bytes())?;
     } else {
-        (text, "", "")
+        let compressed = zstd::stream::encode_all(text.as_bytes(), ZSTD_COMPRESSION_LEVEL)
+            .map_err(|error| {
+                format!(
+                    "Failed to compress Codex session file {}: {error}",
+                    path.display()
+                )
+            })?;
+        write_atomic_with_retry(path, &compressed)?;
+    }
+    if let Some(modified) = modified {
+        // `codex resume` and the sidebar sort by mtime, and Codex preserves it
+        // when compressing. Rewriting metadata must not make an old session
+        // look freshly active. Unix only needs a read handle; Windows needs a
+        // writable one. A failed timestamp restore is not worth aborting.
+        let file = if cfg!(windows) {
+            fs::File::options().write(true).open(path)
+        } else {
+            fs::File::open(path)
+        };
+        let times = fs::FileTimes::new().set_modified(modified);
+        if let Err(error) = file.and_then(|file| file.set_times(times)) {
+            log::warn!("Failed to restore mtime of {}: {error}", path.display());
+        }
+    }
+    Ok(())
+}
+
+fn split_line_segment(segment: &str) -> (&str, &str) {
+    if let Some(stripped) = segment.strip_suffix('\n') {
+        if let Some(line) = stripped.strip_suffix('\r') {
+            (line, "\r\n")
+        } else {
+            (stripped, "\n")
+        }
+    } else {
+        (segment, "")
     }
 }
 
@@ -939,7 +1611,7 @@ pub(crate) fn rebuild_session_index_for_db(
         return Ok(0);
     }
 
-    let mut paths = resolve_paths(codex_home);
+    let mut paths = base_paths(codex_home);
     paths.db_path = db_path.to_path_buf();
     rebuild_session_index(&paths).map(|result| result.rewritten_entries)
 }
@@ -959,8 +1631,13 @@ fn make_backup(paths: &Paths, label: &str) -> Result<BackupOutcome, String> {
         )
     })?;
     let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let db_file_name = paths
+        .db_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("state.sqlite");
     let backup_path = paths.backup_dir.join(format!(
-        "state_5.sqlite.{label}.{timestamp}.{}.bak",
+        "{db_file_name}.{label}.{timestamp}.{}.bak",
         Uuid::new_v4().simple()
     ));
     backup_database_to_path(&paths.db_path, &backup_path)?;
@@ -971,8 +1648,7 @@ fn make_backup(paths: &Paths, label: &str) -> Result<BackupOutcome, String> {
 fn backup_database_to_path(db_path: &Path, backup_path: &Path) -> Result<(), String> {
     retry_sqlite_operation(|| {
         let conn = open_read_connection(db_path)?;
-        conn.backup(rusqlite::MAIN_DB, backup_path, None)
-            .map_err(|error| format!("Failed to backup Codex history database: {error}"))
+        copy_sqlite_database(&conn, backup_path)
     })
     .map(|_| ())
 }
@@ -985,13 +1661,14 @@ fn snapshot_metadata(paths: &Paths, backup_path: &Path) -> Result<(), String> {
             .map_err(|error| format!("Failed to write Codex session index backup: {error}"))?;
     }
     let records = scan_session_records(paths)?;
-    let entries: Vec<SessionMetaBackupEntry> = records
-        .into_iter()
-        .map(|record| SessionMetaBackupEntry {
+    let mut entries = Vec::with_capacity(records.len());
+    for record in records {
+        entries.push(SessionMetaBackupEntry {
+            meta_lines: read_session_meta_lines(&record.path)?,
             relative_path: record.relative_path,
             first_line: record.first_line,
-        })
-        .collect();
+        });
+    }
     let content = serde_json::to_string_pretty(&entries)
         .map_err(|error| format!("Failed to serialize Codex session metadata backup: {error}"))?;
     fs::write(session_meta_backup_path(backup_path), content)
@@ -1028,9 +1705,7 @@ fn restore_database_from_backup(db_path: &Path, backup_path: &Path) -> Result<()
     }
     // Caller already wraps this in retry_sqlite_operation for lock wait stats.
     let source = open_read_connection(backup_path)?;
-    source
-        .backup(rusqlite::MAIN_DB, db_path, None)
-        .map_err(|error| format!("Failed to restore Codex history database: {error}"))
+    copy_sqlite_database(&source, db_path)
 }
 
 fn restore_metadata_sidecars(paths: &Paths, backup_path: &Path) -> Result<(usize, usize), String> {
@@ -1059,14 +1734,55 @@ fn restore_metadata_sidecars(paths: &Paths, backup_path: &Path) -> Result<(usize
             skipped += 1;
             continue;
         }
-        let text = fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read Codex session file for restore: {error}"))?;
-        let (_, line_ending, remainder) = split_first_line(&text);
-        let new_text = format!("{}{}{}", entry.first_line, line_ending, remainder);
-        write_atomic_with_retry(&path, new_text.as_bytes())?;
-        restored += 1;
+        if restore_session_meta_entry(&path, &entry)? {
+            restored += 1;
+        } else {
+            skipped += 1;
+        }
     }
     Ok((restored, skipped))
+}
+
+fn restore_session_meta_entry(path: &Path, entry: &SessionMetaBackupEntry) -> Result<bool, String> {
+    let stamp = file_stamp(path)?;
+    let text = read_session_text(path)?;
+    let mut segments: Vec<String> = text
+        .split_inclusive('\n')
+        .map(ToString::to_string)
+        .collect();
+    let mut changed = false;
+
+    if !entry.meta_lines.is_empty() {
+        for meta_line in &entry.meta_lines {
+            let Some(segment) = segments.get_mut(meta_line.line_index) else {
+                continue;
+            };
+            let (_, newline) = split_line_segment(segment);
+            let next = format!("{}{}", meta_line.content, newline);
+            if *segment != next {
+                *segment = next;
+                changed = true;
+            }
+        }
+    } else if !entry.first_line.is_empty() {
+        if let Some(segment) = segments.get_mut(0) {
+            let (_, newline) = split_line_segment(segment);
+            let next = format!("{}{}", entry.first_line, newline);
+            if *segment != next {
+                *segment = next;
+                changed = true;
+            }
+        }
+    }
+
+    if !changed {
+        // Old backups store only the first line; a file that already matches
+        // still counts as restored (nothing to rewrite).
+        return Ok(!entry.meta_lines.is_empty() || !entry.first_line.is_empty());
+    }
+    ensure_file_unchanged(path, stamp)?;
+    write_session_text(path, &segments.concat())?;
+    Ok(true)
 }
 
 fn join_safe_relative(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
@@ -1089,7 +1805,7 @@ fn list_backup_files(backup_dir: &Path) -> Result<Vec<PathBuf>, String> {
     if !backup_dir.exists() {
         return Ok(Vec::new());
     }
-    let re = Regex::new(r"^state_5\.sqlite\..*\.bak$").unwrap();
+    let re = Regex::new(r"^state_\d+\.sqlite\..*\.bak$").unwrap();
     let mut entries = Vec::new();
     for entry in fs::read_dir(backup_dir).map_err(|error| {
         format!(
@@ -1213,6 +1929,452 @@ model = "gpt-new"
         }
     }
 
+    fn create_threads_db(path: &Path, providers: &[Option<&str>]) {
+        let conn = Connection::open(path).expect("open db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT,
+                model TEXT,
+                title TEXT,
+                updated_at INTEGER,
+                archived INTEGER
+            );
+            "#,
+        )
+        .expect("create threads table");
+        for (index, provider) in providers.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO threads (id, model_provider, model, title, updated_at, archived)
+                 VALUES (?1, ?2, NULL, NULL, 0, 0)",
+                rusqlite::params![format!("{index:08}-1111-1111-1111-111111111111"), *provider],
+            )
+            .expect("insert thread");
+        }
+    }
+
+    fn write_rollout(
+        root: &Path,
+        relative_dir: &str,
+        id: &str,
+        provider: Option<&str>,
+        compressed: bool,
+    ) -> PathBuf {
+        let dir = root.join(relative_dir);
+        fs::create_dir_all(&dir).expect("create rollout dir");
+        let mut payload = serde_json::json!({
+            "id": id,
+            "cwd": "/tmp/project",
+            "model": "gpt-old"
+        });
+        if let Some(provider) = provider {
+            payload["model_provider"] = serde_json::json!(provider);
+        }
+        let text = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type": "session_meta", "payload": payload}),
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {"type": "message", "role": "user", "content": "hello"}
+            })
+        );
+        let path = dir.join(format!(
+            "rollout-2026-05-21T00-00-00-{id}.jsonl{}",
+            if compressed { ".zst" } else { "" }
+        ));
+        if compressed {
+            fs::write(
+                &path,
+                zstd::stream::encode_all(text.as_bytes(), 3).expect("compress rollout"),
+            )
+            .expect("write compressed rollout");
+        } else {
+            fs::write(&path, text).expect("write rollout");
+        }
+        path
+    }
+
+    fn read_rollout_text(path: &Path) -> String {
+        let bytes = fs::read(path).expect("read rollout bytes");
+        if is_compressed_rollout(path) {
+            let decoded = zstd::stream::decode_all(Cursor::new(bytes)).expect("decompress");
+            String::from_utf8(decoded).expect("utf8 rollout")
+        } else {
+            String::from_utf8(bytes).expect("utf8 rollout")
+        }
+    }
+
+    fn provider_of(path: &Path) -> Option<String> {
+        let text = read_rollout_text(path);
+        let first_line = text.lines().next().expect("first line");
+        let value: Value = serde_json::from_str(first_line).expect("session meta json");
+        value
+            .get("payload")
+            .and_then(|payload| payload.get("model_provider"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    }
+
+    fn session_meta_providers(path: &Path) -> Vec<String> {
+        read_rollout_text(path)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|value| value.get("type").and_then(Value::as_str) == Some("session_meta"))
+            .filter_map(|value| {
+                value
+                    .get("payload")
+                    .and_then(|payload| payload.get("model_provider"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            })
+            .collect()
+    }
+
+    fn set_rollout_mtime(path: &Path, seconds: u64) {
+        let file = if cfg!(windows) {
+            fs::File::options().write(true).open(path)
+        } else {
+            fs::File::open(path)
+        };
+        file.expect("open rollout for mtime")
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+            )
+            .expect("set rollout mtime");
+    }
+
+    fn rollout_mtime(path: &Path) -> SystemTime {
+        fs::metadata(path)
+            .expect("rollout metadata")
+            .modified()
+            .expect("rollout modified time")
+    }
+
+    #[test]
+    fn sqlite_home_config_wins_and_newest_state_db_is_used() {
+        let env = TestCodexHistory::new();
+        let sqlite_home = env.root.join("custom-sqlite");
+        fs::create_dir_all(&sqlite_home).expect("create sqlite home");
+        create_threads_db(
+            &sqlite_home.join("state_4.sqlite"),
+            &[Some("ai-toolbox-gateway")],
+        );
+        create_threads_db(&sqlite_home.join("state_6.sqlite"), &[Some("old-provider")]);
+        // A newer database in the Codex home must not win over an explicitly
+        // configured SQLite home.
+        create_threads_db(&env.root.join("state_9.sqlite"), &[Some("new-provider")]);
+        fs::write(
+            env.root.join("config.toml"),
+            format!(
+                "model_provider = \"new-provider\"\nsqlite_home = {:?}\n",
+                sqlite_home.to_string_lossy()
+            ),
+        )
+        .expect("write config");
+
+        let status = get_status(&env.root).expect("status");
+
+        assert_eq!(
+            PathBuf::from(&status.db_path),
+            sqlite_home.join("state_6.sqlite")
+        );
+        assert_eq!(status.total_threads, 1);
+
+        let backup = backup(&env.root, "manual").expect("backup");
+        assert!(backup.backup_path.contains("state_6.sqlite.manual"));
+    }
+
+    #[test]
+    fn status_and_sync_cover_archived_and_compressed_rollouts() {
+        let env = TestCodexHistory::new();
+        env.create_db(true);
+        let compressed_path = write_rollout(
+            &env.root,
+            "archived_sessions/2026/05/21",
+            "aaaaaaaa-1111-1111-1111-111111111111",
+            Some("old-provider"),
+            true,
+        );
+
+        let status = get_status(&env.root).expect("status");
+        assert_eq!(status.session_file_count, 1);
+        assert_eq!(status.session_meta_mismatch_count, 1);
+        let legacy_group = status
+            .provider_breakdown
+            .iter()
+            .find(|group| group.provider_id.as_deref() == Some("old-provider"))
+            .expect("legacy group");
+        assert_eq!(legacy_group.kind, "other");
+        assert_eq!(legacy_group.thread_count, 2);
+        assert_eq!(legacy_group.session_file_count, 1);
+
+        let selection = CodexHistorySyncSelection {
+            source_providers: Some(vec!["old-provider".to_string()]),
+            include_missing_provider: Some(false),
+        };
+        let result = sync(&env.root, Some(&selection)).expect("sync selected");
+        assert_eq!(result.updated_thread_rows, 2);
+        assert_eq!(result.updated_session_files, 1);
+        assert_eq!(
+            provider_of(&compressed_path).as_deref(),
+            Some("new-provider")
+        );
+        assert!(read_rollout_text(&compressed_path).contains("hello"));
+
+        let restored = restore_latest(&env.root).expect("restore");
+        assert_eq!(restored.restored_session_meta_files, 1);
+        assert_eq!(
+            provider_of(&compressed_path).as_deref(),
+            Some("old-provider")
+        );
+    }
+
+    #[test]
+    fn provider_breakdown_classifies_and_sorts_groups() {
+        let env = TestCodexHistory::new();
+        create_threads_db(
+            &env.root.join("state_5.sqlite"),
+            &[
+                Some("aitb-launch-abc"),
+                Some("ai-toolbox-gateway"),
+                None,
+                Some("openai"),
+                Some("third-party"),
+                Some("new-provider"),
+            ],
+        );
+        write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "aaaaaaaa-1111-1111-1111-111111111111",
+            Some("ai-toolbox-gateway"),
+            false,
+        );
+        write_rollout(
+            &env.root,
+            "archived_sessions/2026/05/21",
+            "bbbbbbbb-1111-1111-1111-111111111111",
+            None,
+            false,
+        );
+        write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "cccccccc-1111-1111-1111-111111111111",
+            Some("openai"),
+            false,
+        );
+        write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "dddddddd-1111-1111-1111-111111111111",
+            Some("new-provider"),
+            false,
+        );
+
+        let status = get_status(&env.root).expect("status");
+        let summary: Vec<(Option<&str>, &str, usize, usize)> = status
+            .provider_breakdown
+            .iter()
+            .map(|group| {
+                (
+                    group.provider_id.as_deref(),
+                    group.kind.as_str(),
+                    group.thread_count,
+                    group.session_file_count,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            summary,
+            vec![
+                (Some("ai-toolbox-gateway"), "ai_toolbox_legacy", 1, 1),
+                (Some("aitb-launch-abc"), "ai_toolbox_legacy", 1, 0),
+                (None, "missing", 1, 1),
+                (Some("third-party"), "other", 1, 0),
+                (Some("openai"), "official", 1, 1),
+                (Some("new-provider"), "current", 1, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn targeted_sync_only_rewrites_selected_providers() {
+        let env = TestCodexHistory::new();
+        create_threads_db(
+            &env.root.join("state_5.sqlite"),
+            &[
+                Some("new-provider"),
+                Some("ai-toolbox-gateway"),
+                Some("openai"),
+                None,
+                Some("third-party"),
+            ],
+        );
+        let current_path = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "aaaaaaaa-1111-1111-1111-111111111111",
+            Some("new-provider"),
+            false,
+        );
+        let legacy_path = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "bbbbbbbb-1111-1111-1111-111111111111",
+            Some("ai-toolbox-gateway"),
+            false,
+        );
+        let official_path = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "cccccccc-1111-1111-1111-111111111111",
+            Some("openai"),
+            false,
+        );
+        let missing_path = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "dddddddd-1111-1111-1111-111111111111",
+            None,
+            false,
+        );
+        let other_path = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "eeeeeeee-1111-1111-1111-111111111111",
+            Some("third-party"),
+            false,
+        );
+
+        let selection = CodexHistorySyncSelection {
+            source_providers: Some(vec!["ai-toolbox-gateway".to_string()]),
+            include_missing_provider: Some(false),
+        };
+        let result = sync(&env.root, Some(&selection)).expect("sync legacy only");
+        assert_eq!(result.updated_thread_rows, 1);
+        assert_eq!(result.updated_session_files, 1);
+
+        assert_eq!(provider_of(&legacy_path).as_deref(), Some("new-provider"));
+        assert_eq!(provider_of(&official_path).as_deref(), Some("openai"));
+        assert_eq!(provider_of(&missing_path), None);
+        assert_eq!(provider_of(&other_path).as_deref(), Some("third-party"));
+        assert_eq!(provider_of(&current_path).as_deref(), Some("new-provider"));
+        let conn = Connection::open(env.root.join("state_5.sqlite")).expect("open db");
+        let official_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE model_provider = 'openai'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count official");
+        assert_eq!(official_rows, 1);
+
+        let missing_only = CodexHistorySyncSelection {
+            source_providers: Some(Vec::new()),
+            include_missing_provider: Some(true),
+        };
+        let result = sync(&env.root, Some(&missing_only)).expect("sync missing only");
+        assert_eq!(result.updated_thread_rows, 1);
+        assert_eq!(result.updated_session_files, 1);
+        assert_eq!(provider_of(&missing_path).as_deref(), Some("new-provider"));
+        assert_eq!(provider_of(&official_path).as_deref(), Some("openai"));
+
+        let empty_selection = CodexHistorySyncSelection {
+            source_providers: Some(Vec::new()),
+            include_missing_provider: Some(false),
+        };
+        let error = sync(&env.root, Some(&empty_selection)).expect_err("empty selection");
+        assert!(error.contains("No Codex history providers were selected"));
+
+        let no_match_selection = CodexHistorySyncSelection {
+            source_providers: Some(vec!["not-present".to_string()]),
+            include_missing_provider: Some(false),
+        };
+        let result = sync(&env.root, Some(&no_match_selection)).expect("no matching rows");
+        assert_eq!(result.updated_thread_rows, 0);
+        assert_eq!(result.updated_session_files, 0);
+    }
+
+    #[test]
+    fn backup_listing_accepts_legacy_and_current_state_db_names() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let names = [
+            "state_5.sqlite.pre-sync.20260101-000000.aaaaaaaa.bak",
+            "state_6.sqlite.manual.20260102-000000.bbbbbbbb.bak",
+            "state_6.sqlite.manual.20260102-000000.bbbbbbbb.bak.session_meta.json",
+            "unrelated.bak",
+        ];
+        for name in names {
+            fs::write(temp_dir.path().join(name), b"backup").expect("write backup");
+        }
+
+        let backups = list_backup_files(temp_dir.path()).expect("list backups");
+        let listed: BTreeSet<String> = backups
+            .iter()
+            .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
+            .map(ToString::to_string)
+            .collect();
+
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains("state_5.sqlite.pre-sync.20260101-000000.aaaaaaaa.bak"));
+        assert!(listed.contains("state_6.sqlite.manual.20260102-000000.bbbbbbbb.bak"));
+    }
+
+    #[test]
+    fn legacy_hint_reports_only_ai_toolbox_legacy_sessions() {
+        let env = TestCodexHistory::new();
+        create_threads_db(
+            &env.root.join("state_5.sqlite"),
+            &[
+                Some("ai-toolbox-gateway"),
+                Some("ai-toolbox-gateway"),
+                Some("aitb-launch-abc"),
+                Some("openai"),
+                Some("new-provider"),
+            ],
+        );
+        write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "aaaaaaaa-1111-1111-1111-111111111111",
+            Some("ai-toolbox-gateway"),
+            false,
+        );
+        write_rollout(
+            &env.root,
+            "archived_sessions/2026/05/21",
+            "bbbbbbbb-1111-1111-1111-111111111111",
+            Some("aitb-launch-abc"),
+            true,
+        );
+        write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "cccccccc-1111-1111-1111-111111111111",
+            Some("openai"),
+            false,
+        );
+
+        let hint = get_legacy_hint(&env.root).expect("hint");
+
+        assert!(hint.detected);
+        assert_eq!(hint.thread_count, 3);
+        // The hint is database-only: rollout files are never scanned, so a
+        // Codex home with no sessions/ directory still reports the same counts.
+        assert_eq!(hint.session_file_count, 0);
+        assert_eq!(
+            hint.provider_ids,
+            vec![
+                "ai-toolbox-gateway".to_string(),
+                "aitb-launch-abc".to_string()
+            ]
+        );
+    }
+
     #[test]
     fn sync_updates_provider_only_and_preserves_existing_models() {
         let env = TestCodexHistory::new();
@@ -1227,7 +2389,7 @@ model = "gpt-new"
         assert_eq!(status.model_mismatch_threads, 0);
         assert!(status.has_work);
 
-        let result = sync(&env.root).expect("sync");
+        let result = sync(&env.root, None).expect("sync");
 
         assert_eq!(result.updated_thread_rows, 2);
         assert_eq!(result.updated_session_files, 1);
@@ -1261,7 +2423,7 @@ model = "gpt-new"
         let env = TestCodexHistory::new();
         env.create_db(false);
 
-        let result = sync(&env.root).expect("sync legacy");
+        let result = sync(&env.root, None).expect("sync legacy");
 
         assert_eq!(result.updated_thread_rows, 1);
         let conn = Connection::open(env.root.join("state_5.sqlite")).expect("open db");
@@ -1364,7 +2526,7 @@ model = "gpt-new"
     fn sqlite_locked_error_message_is_actionable() {
         let message =
             format_sqlite_locked_error("Failed to inspect Codex threads table: database is locked");
-        assert!(message.contains("state_5.sqlite is locked"));
+        assert!(message.contains("the Codex state database is locked"));
         assert!(message.contains("Finish the current Codex response/session"));
         assert!(message.contains("database is locked"));
         assert!(is_sqlite_locked_error(
@@ -1399,7 +2561,7 @@ model = "gpt-new"
             "gpt-old",
         );
         backup(&env.root, "manual").expect("backup");
-        sync(&env.root).expect("sync");
+        sync(&env.root, None).expect("sync");
 
         let restored = restore_latest(&env.root).expect("restore");
 
@@ -1421,5 +2583,171 @@ model = "gpt-new"
             .to_string();
         assert!(first_line.contains("old-provider"));
         assert!(restored.safety_backup_path.contains("pre-restore"));
+    }
+
+    #[test]
+    fn sync_and_restore_preserve_rollout_mtime_for_plain_and_compressed_files() {
+        let env = TestCodexHistory::new();
+        env.create_db(false);
+        let plain = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "11111111-1111-1111-1111-111111111111",
+            Some("old-provider"),
+            false,
+        );
+        let compressed = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            "22222222-2222-2222-2222-222222222222",
+            Some("old-provider"),
+            true,
+        );
+        let stamp = 1_600_000_000_u64;
+        let expected_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(stamp);
+        set_rollout_mtime(&plain, stamp);
+        set_rollout_mtime(&compressed, stamp);
+
+        let result = sync(&env.root, None).expect("sync");
+
+        assert_eq!(result.updated_session_files, 2);
+        assert_eq!(provider_of(&plain).as_deref(), Some("new-provider"));
+        assert_eq!(provider_of(&compressed).as_deref(), Some("new-provider"));
+        assert_eq!(rollout_mtime(&plain), expected_mtime);
+        assert_eq!(rollout_mtime(&compressed), expected_mtime);
+
+        restore_latest(&env.root).expect("restore");
+
+        assert_eq!(provider_of(&plain).as_deref(), Some("old-provider"));
+        assert_eq!(provider_of(&compressed).as_deref(), Some("old-provider"));
+        assert_eq!(rollout_mtime(&plain), expected_mtime);
+        assert_eq!(rollout_mtime(&compressed), expected_mtime);
+    }
+
+    #[test]
+    fn sync_rewrites_every_session_meta_line_and_restore_puts_them_back() {
+        let env = TestCodexHistory::new();
+        env.create_db(false);
+        let dir = env.root.join("sessions/2026/05/21");
+        let path = dir.join("rollout-2026-05-21T00-00-00-multi.jsonl");
+        let meta_line = |provider: &str| {
+            serde_json::json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "11111111-1111-1111-1111-111111111111",
+                    "cwd": "/tmp/project",
+                    "model_provider": provider,
+                    "model": "gpt-old"
+                }
+            })
+            .to_string()
+        };
+        let response_line = serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": "hello"}
+        })
+        .to_string();
+        fs::write(
+            &path,
+            format!(
+                "{}\n{}\n{}\n",
+                meta_line("old-provider"),
+                response_line,
+                meta_line("old-provider")
+            ),
+        )
+        .expect("write resumed rollout");
+
+        sync(&env.root, None).expect("sync");
+        assert_eq!(
+            session_meta_providers(&path),
+            vec!["new-provider".to_string(), "new-provider".to_string()]
+        );
+
+        restore_latest(&env.root).expect("restore");
+        assert_eq!(
+            session_meta_providers(&path),
+            vec!["old-provider".to_string(), "old-provider".to_string()]
+        );
+    }
+
+    #[test]
+    fn sync_dedupes_plain_and_compressed_rollout_siblings() {
+        let env = TestCodexHistory::new();
+        env.create_db(false);
+        let id = "11111111-1111-1111-1111-111111111111";
+        let plain = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            id,
+            Some("old-provider"),
+            false,
+        );
+        let compressed = write_rollout(
+            &env.root,
+            "sessions/2026/05/21",
+            id,
+            Some("old-provider"),
+            true,
+        );
+        assert_eq!(
+            plain.with_file_name(format!(
+                "{}.zst",
+                plain.file_name().unwrap().to_string_lossy()
+            )),
+            compressed
+        );
+        assert_eq!(get_status(&env.root).expect("status").session_file_count, 1);
+
+        let result = sync(&env.root, None).expect("sync");
+
+        assert_eq!(result.updated_session_files, 1);
+        assert_eq!(provider_of(&plain).as_deref(), Some("new-provider"));
+        // The sibling archive is never the authoritative copy and is left alone.
+        assert_eq!(provider_of(&compressed).as_deref(), Some("old-provider"));
+    }
+
+    #[test]
+    fn read_connection_recovers_wal_database_without_shm() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let source_path = temp_dir.path().join("source.sqlite");
+        let source = Connection::open(&source_path).expect("open source db");
+        source
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT);
+                 INSERT INTO threads (id, model_provider) VALUES ('t1', 'old-provider');",
+            )
+            .expect("seed wal db");
+
+        let copy_dir = temp_dir.path().join("copy");
+        fs::create_dir_all(&copy_dir).expect("create copy dir");
+        let copied_path = copy_dir.join("state_5.sqlite");
+        fs::copy(&source_path, &copied_path).expect("copy main db");
+        let source_wal = PathBuf::from(format!("{}-wal", source_path.to_string_lossy()));
+        let copied_wal = PathBuf::from(format!("{}-wal", copied_path.to_string_lossy()));
+        assert!(source_wal.exists(), "wal file should exist while open");
+        fs::copy(&source_wal, &copied_wal).expect("copy wal");
+        let copied_shm = PathBuf::from(format!("{}-shm", copied_path.to_string_lossy()));
+        assert!(!copied_shm.exists(), "copy deliberately lacks -shm");
+
+        let counts = read_provider_thread_counts(&copied_path).expect("read wal db without shm");
+
+        assert_eq!(counts.get(&Some("old-provider".to_string())), Some(&1));
+        drop(source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_hint_skips_windows_wsl_unc_paths() {
+        for path in [
+            r"\\wsl.localhost\Ubuntu\home\me\.codex",
+            r"\\wsl$\Ubuntu\home\me\.codex",
+        ] {
+            let hint = get_legacy_hint(Path::new(path)).expect("hint should not touch disk");
+            assert!(!hint.detected);
+            assert_eq!(hint.thread_count, 0);
+            assert_eq!(hint.session_file_count, 0);
+        }
     }
 }

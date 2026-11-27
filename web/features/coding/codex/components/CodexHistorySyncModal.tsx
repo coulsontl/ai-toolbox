@@ -1,16 +1,33 @@
 import React from 'react';
-import { Alert, Button, Descriptions, Modal, Segmented, Space, Spin, Tag, Typography, message } from 'antd';
+import { Alert, Button, Checkbox, Descriptions, Modal, Segmented, Space, Spin, Table, Tag, Typography, message } from 'antd';
+import type { ColumnsType } from 'antd/es/table';
 import { DatabaseOutlined, FolderOpenOutlined, ReloadOutlined, SyncOutlined, UndoOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
-import type { CodexHistorySourceMode, CodexHistorySyncStatus } from '@/types/codex';
+import type {
+  CodexHistoryProviderGroup,
+  CodexHistoryProviderKind,
+  CodexHistorySourceMode,
+  CodexHistorySyncStatus,
+} from '@/types/codex';
 import {
   backupCodexHistory,
   getCodexHistorySyncStatus,
   restoreLatestCodexHistoryBackup,
   syncCodexHistory,
 } from '@/services/codexApi';
+import {
+  countCodexHistorySelectedGroups,
+  defaultCodexHistorySyncSelection,
+  emptyCodexHistorySyncSelection,
+  hasCrossUpstreamCodexHistorySelection,
+  isCodexHistoryGroupSelectable,
+  isCodexHistorySyncSelectionEmpty,
+  setCodexHistoryMissingProviderSelected,
+  setCodexHistoryProviderSelected,
+  type CodexHistorySyncSelection,
+} from '../utils/codexHistorySyncSelection';
 
 const { Text, Paragraph } = Typography;
 
@@ -28,7 +45,7 @@ const resolveInitialHistorySourceMode = (sourceMode: CodexHistorySourceMode): Co
 const isCodexHistoryDatabaseLockedError = (errorMessage: string): boolean => {
   const normalized = errorMessage.toLowerCase();
   return (
-    normalized.includes('state_5.sqlite is locked')
+    normalized.includes('state database is locked')
     || normalized.includes('database is locked')
     || normalized.includes('database table is locked')
     || normalized.includes('database is busy')
@@ -36,6 +53,33 @@ const isCodexHistoryDatabaseLockedError = (errorMessage: string): boolean => {
     || normalized.includes('codex is writing local history')
   );
 };
+
+const providerKindTagColor: Record<CodexHistoryProviderKind, string> = {
+  current: 'green',
+  ai_toolbox_legacy: 'orange',
+  official: 'blue',
+  missing: 'default',
+  other: 'default',
+};
+
+const providerKindLabelKey = (kind: CodexHistoryProviderKind): string => {
+  switch (kind) {
+    case 'current':
+      return 'codex.historySync.providerKindCurrent';
+    case 'ai_toolbox_legacy':
+      return 'codex.historySync.providerKindAiToolboxLegacy';
+    case 'official':
+      return 'codex.historySync.providerKindOfficial';
+    case 'missing':
+      return 'codex.historySync.providerKindMissing';
+    default:
+      return 'codex.historySync.providerKindOther';
+  }
+};
+
+const providerGroupRowKey = (group: CodexHistoryProviderGroup): string => (
+  group.kind === 'missing' ? '__missing_provider__' : (group.providerId ?? group.kind)
+);
 
 const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
   open,
@@ -45,6 +89,7 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const [status, setStatus] = React.useState<CodexHistorySyncStatus | null>(null);
+  const [selection, setSelection] = React.useState<CodexHistorySyncSelection>(emptyCodexHistorySyncSelection);
   const [loading, setLoading] = React.useState(false);
   const [actionLoading, setActionLoading] = React.useState<null | 'sync' | 'backup' | 'restore' | 'open'>(null);
   const [selectedSourceMode, setSelectedSourceMode] = React.useState<CodexHistorySourceMode>(() => resolveInitialHistorySourceMode(sourceMode));
@@ -65,6 +110,7 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
       setLoading(true);
       const result = await getCodexHistorySyncStatus(sourceModeToLoad);
       setStatus(result);
+      setSelection(defaultCodexHistorySyncSelection(result.providerBreakdown));
       if (showSuccess) {
         message.success(t('codex.historySync.statusSuccess'));
       }
@@ -80,6 +126,7 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
       const nextSourceMode = resolveInitialHistorySourceMode(sourceMode);
       setSelectedSourceMode(nextSourceMode);
       setStatus(null);
+      setSelection(emptyCodexHistorySyncSelection());
       void loadStatus(false, nextSourceMode);
     }
   }, [loadStatus, open, sourceMode]);
@@ -107,10 +154,16 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
     },
   ], [t, wslSource?.distro]);
 
+  const providerGroups = status?.providerBreakdown ?? [];
+  const crossUpstreamSelected = hasCrossUpstreamCodexHistorySelection(selection, providerGroups);
+  const selectionEmpty = isCodexHistorySyncSelectionEmpty(selection);
+  const selectedGroupCount = countCodexHistorySelectedGroups(selection);
+
   const handleSourceChange = React.useCallback((value: string | number) => {
     const nextSourceMode = value as CodexHistorySourceMode;
     setSelectedSourceMode(nextSourceMode);
     setStatus(null);
+    setSelection(emptyCodexHistorySyncSelection());
     void loadStatus(false, nextSourceMode);
   }, [loadStatus]);
 
@@ -150,22 +203,43 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
     if (!status) {
       return;
     }
-    if (!status.hasWork) {
-      message.info(t('codex.historySync.noWork'));
+    if (selectionEmpty) {
+      message.info(t('codex.historySync.noSelection'));
       return;
     }
+    const selectedProviderLabels = [
+      ...selection.sourceProviders,
+      ...(selection.includeMissingProvider ? [t('codex.historySync.providerKindMissing')] : []),
+    ];
+    const syncFilter = {
+      sourceProviders: selection.sourceProviders,
+      includeMissingProvider: selection.includeMissingProvider,
+    };
     Modal.confirm({
-      title: t('codex.historySync.syncConfirmTitle'),
-      content: t('codex.historySync.syncConfirmContent', {
-        provider: status.currentProvider,
-        source: sourceLabel(status),
-      }),
+      title: crossUpstreamSelected
+        ? t('codex.historySync.crossUpstreamConfirmTitle')
+        : t('codex.historySync.syncConfirmTitle'),
+      content: (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <span>
+            {t('codex.historySync.syncConfirmContent', {
+              source: sourceLabel(status),
+              count: selectedGroupCount,
+              providers: selectedProviderLabels.join(', '),
+              provider: status.currentProvider,
+            })}
+          </span>
+          {crossUpstreamSelected ? (
+            <Alert type="warning" showIcon description={t('codex.historySync.crossUpstreamWarning')} />
+          ) : null}
+        </div>
+      ),
       okText: t('codex.historySync.sync'),
       cancelText: t('common.cancel'),
       onOk: async () => {
         try {
           setActionLoading('sync');
-          const result = await syncCodexHistory(selectedSourceMode);
+          const result = await syncCodexHistory(selectedSourceMode, syncFilter);
           if (result.partialSuccess) {
             message.warning(t('codex.historySync.syncPartialSuccess', {
               threads: result.updatedThreadRows,
@@ -186,6 +260,7 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
             attempts: result.attempts,
           }));
           setStatus(result.status);
+          setSelection(defaultCodexHistorySyncSelection(result.status.providerBreakdown));
           onChanged?.();
         } catch (error) {
           message.error(formatHistorySyncError(error));
@@ -218,6 +293,7 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
             attempts: result.attempts,
           }));
           setStatus(result.status);
+          setSelection(defaultCodexHistorySyncSelection(result.status.providerBreakdown));
           onChanged?.();
         } catch (error) {
           message.error(formatHistorySyncError(error));
@@ -227,6 +303,71 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
       },
     });
   };
+
+  const providerColumns = React.useMemo<ColumnsType<CodexHistoryProviderGroup>>(() => [
+    {
+      title: '',
+      key: 'selection',
+      width: 44,
+      render: (_value, group) => {
+        const selectable = isCodexHistoryGroupSelectable(group);
+        if (group.kind === 'missing') {
+          return (
+            <Checkbox
+              checked={selection.includeMissingProvider}
+              disabled={!selectable}
+              onChange={(event) => setSelection((current) => (
+                setCodexHistoryMissingProviderSelected(current, event.target.checked)
+              ))}
+            />
+          );
+        }
+        const providerId = group.providerId ?? '';
+        return (
+          <Checkbox
+            checked={Boolean(providerId) && selection.sourceProviders.includes(providerId)}
+            disabled={!selectable || !providerId}
+            onChange={(event) => setSelection((current) => (
+              setCodexHistoryProviderSelected(current, providerId, event.target.checked)
+            ))}
+          />
+        );
+      },
+    },
+    {
+      title: t('codex.historySync.providerColumn'),
+      key: 'providerId',
+      render: (_value, group) => (
+        group.providerId
+          ? <Text code>{group.providerId}</Text>
+          : <Text type="secondary">{t('codex.historySync.providerNotRecorded')}</Text>
+      ),
+    },
+    {
+      title: t('codex.historySync.kindColumn'),
+      key: 'kind',
+      width: 150,
+      render: (_value, group) => (
+        <Tag color={providerKindTagColor[group.kind]}>
+          {t(providerKindLabelKey(group.kind))}
+        </Tag>
+      ),
+    },
+    {
+      title: t('codex.historySync.threadsColumn'),
+      dataIndex: 'threadCount',
+      key: 'threadCount',
+      width: 90,
+      align: 'right',
+    },
+    {
+      title: t('codex.historySync.sessionFilesColumn'),
+      dataIndex: 'sessionFileCount',
+      key: 'sessionFileCount',
+      width: 120,
+      align: 'right',
+    },
+  ], [selection, t]);
 
   const renderStatus = () => {
     if (!status) {
@@ -261,6 +402,21 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
             <Text code>{status.currentModel || t('codex.historySync.notDetected')}</Text>
           </Descriptions.Item>
         </Descriptions>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Text strong>{t('codex.historySync.providerBreakdown')}</Text>
+          <Table<CodexHistoryProviderGroup>
+            size="small"
+            columns={providerColumns}
+            dataSource={providerGroups}
+            rowKey={providerGroupRowKey}
+            pagination={false}
+            locale={{ emptyText: t('codex.historySync.providerBreakdownEmpty') }}
+          />
+          <Text type="secondary" style={{ fontSize: 10 }}>{t('codex.historySync.selectionHint')}</Text>
+          {crossUpstreamSelected ? (
+            <Alert type="warning" showIcon description={t('codex.historySync.crossUpstreamWarning')} />
+          ) : null}
+        </div>
         <Descriptions size="small" bordered column={2} title={t('codex.historySync.historyState')}>
           <Descriptions.Item label={t('codex.historySync.totalThreads')}>{status.totalThreads}</Descriptions.Item>
           <Descriptions.Item label={t('codex.historySync.providerMismatchThreads')}>{status.providerMismatchThreads}</Descriptions.Item>
@@ -285,7 +441,7 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
       title={<Space><DatabaseOutlined />{t('codex.historySync.title')}</Space>}
       open={open}
       onCancel={onCancel}
-      width={760}
+      width={840}
       footer={[
         <Button key="close" onClick={onCancel}>{t('common.close')}</Button>,
         <Button key="refresh" icon={<ReloadOutlined />} loading={loading} onClick={() => void loadStatus(true, selectedSourceMode)}>
@@ -300,7 +456,14 @@ const CodexHistorySyncModal: React.FC<CodexHistorySyncModalProps> = ({
         <Button key="restore" danger icon={<UndoOutlined />} loading={actionLoading === 'restore'} onClick={() => void restoreLatest()} disabled={!status?.latestBackupPath}>
           {t('codex.historySync.restoreLatest')}
         </Button>,
-        <Button key="sync" type="primary" icon={<SyncOutlined />} loading={actionLoading === 'sync'} onClick={() => void performSync()} disabled={!status?.hasWork}>
+        <Button
+          key="sync"
+          type="primary"
+          icon={<SyncOutlined />}
+          loading={actionLoading === 'sync'}
+          onClick={() => void performSync()}
+          disabled={!status || selectionEmpty}
+        >
           {t('codex.historySync.sync')}
         </Button>,
       ]}

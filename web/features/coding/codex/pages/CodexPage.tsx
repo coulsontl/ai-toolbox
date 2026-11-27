@@ -1,5 +1,5 @@
 import React from 'react';
-import { Typography, Button, Space, message, Modal, Collapse, Descriptions, Checkbox, Drawer, Input } from 'antd';
+import { Typography, Button, Space, message, Modal, Collapse, Descriptions, Checkbox, Drawer, Input, Badge, Tooltip } from 'antd';
 import { AppstoreOutlined, SyncOutlined, ClearOutlined, ExclamationCircleOutlined, LinkOutlined, DatabaseOutlined, ImportOutlined, FileTextOutlined, CopyOutlined, MessageOutlined, BulbOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
@@ -34,6 +34,7 @@ import type {
   ImportConflictInfo,
   ImportConflictAction,
   CodexDaemonRestartMode,
+  CodexHistoryLegacyHint,
 } from '@/types/codex';
 import {
   getCodexConfigFilePath,
@@ -62,6 +63,7 @@ import {
   setCodexUnifiedSessionHistory,
   hasCodexUnifiedHistoryBackup,
   restoreCodexUnifiedSessionHistory,
+  getCodexHistoryLegacyHint,
 } from '@/services/codexApi';
 import { codexPromptApi } from '@/services/codexPromptApi';
 import CodexDeviceAuthModal from '../components/CodexDeviceAuthModal';
@@ -533,6 +535,30 @@ const CodexPage: React.FC = () => {
     rememberedCodexSessionSourceMode = sourceMode;
     setSessionSourceMode(sourceMode);
   }, []);
+  // A silent, short-timeout probe: the badge is a hint, never an error surface.
+  const [codexHistoryLegacyHint, setCodexHistoryLegacyHint] = React.useState<CodexHistoryLegacyHint | null>(null);
+  const codexHistoryLegacyHintRequestRef = React.useRef(0);
+  const refreshCodexHistoryLegacyHint = React.useCallback(async (sourceMode: SessionSourceMode) => {
+    const requestId = codexHistoryLegacyHintRequestRef.current + 1;
+    codexHistoryLegacyHintRequestRef.current = requestId;
+    try {
+      const hint = await getCodexHistoryLegacyHint(sourceMode);
+      if (codexHistoryLegacyHintRequestRef.current === requestId) {
+        setCodexHistoryLegacyHint(hint.detected ? hint : null);
+      }
+    } catch {
+      if (codexHistoryLegacyHintRequestRef.current === requestId) {
+        setCodexHistoryLegacyHint(null);
+      }
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (!isActive) {
+      return;
+    }
+    void refreshCodexHistoryLegacyHint(sessionSourceMode);
+  }, [isActive, refreshCodexHistoryLegacyHint, sessionManagerRefreshNonce, sessionSourceMode]);
   const [settingsModalOpen, setSettingsModalOpen] = React.useState(false);
   const [savingCodexAuthPreservation, setSavingCodexAuthPreservation] = React.useState(false);
   const [savingCodexCliFullAccess, setSavingCodexCliFullAccess] = React.useState(false);
@@ -2857,18 +2883,29 @@ const CodexPage: React.FC = () => {
             onSourceModeChange={handleSessionSourceModeChange}
             extra={(
               <>
-                <Button
-                  type="link"
-                  size="small"
-                  style={{ fontSize: 12 }}
-                  icon={<SyncOutlined />}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setHistorySyncModalOpen(true);
-                  }}
+                <Tooltip
+                  title={codexHistoryLegacyHint
+                    ? t('codex.historySync.legacyHintTooltip', {
+                      threads: codexHistoryLegacyHint.threadCount,
+                      providers: codexHistoryLegacyHint.providerIds.join(', '),
+                    })
+                    : undefined}
                 >
-                  {t('codex.historySync.menu')}
-                </Button>
+                  <Badge dot={Boolean(codexHistoryLegacyHint)} size="small" offset={[-2, 2]}>
+                    <Button
+                      type="link"
+                      size="small"
+                      style={{ fontSize: 12 }}
+                      icon={<SyncOutlined />}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setHistorySyncModalOpen(true);
+                      }}
+                    >
+                      {t('codex.historySync.menu')}
+                    </Button>
+                  </Badge>
+                </Tooltip>
                 <Button
                   type="link"
                   size="small"
@@ -3032,6 +3069,7 @@ const CodexPage: React.FC = () => {
           onChanged={() => {
             setSessionManagerExpandNonce((current) => current + 1);
             setSessionManagerRefreshNonce((current) => current + 1);
+            void refreshCodexHistoryLegacyHint(sessionSourceMode);
           }}
         />
 

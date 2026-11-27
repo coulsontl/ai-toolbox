@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use chrono::Utc;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use toml_edit::{DocumentMut, Item};
@@ -15,14 +15,14 @@ use super::history_sync;
 
 pub(crate) const UNIFIED_HISTORY_PROVIDER_ID: &str = "custom";
 const OFFICIAL_HISTORY_PROVIDER_ID: &str = "openai";
-const STATE_DB_FILE_NAME: &str = "state_5.sqlite";
 const CONFIG_FILE_NAME: &str = "config.toml";
-const CODEX_SQLITE_HOME_ENV: &str = "CODEX_SQLITE_HOME";
 const SESSIONS_DIR_NAME: &str = "sessions";
 const ARCHIVED_SESSIONS_DIR_NAME: &str = "archived_sessions";
 const MIGRATION_BACKUP_DIR_NAME: &str = "unified-session-history-v1";
 const RESTORE_BACKUP_DIR_NAME: &str = "unified-session-history-restore-v1";
 const LEDGER_FILE_NAME: &str = "ledger.json";
+#[cfg(test)]
+const STATE_DB_FILE_NAME: &str = "state_5.sqlite";
 const WRITE_LOCK_RETRY_LIMIT: usize = 40;
 const WRITE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
 const FILE_RETRY_LIMIT: usize = 20;
@@ -198,6 +198,7 @@ pub fn has_codex_unified_history_backup(codex_home: &Path) -> bool {
 pub fn migrate_official_history_to_unified(
     codex_home: &Path,
 ) -> Result<CodexUnifiedHistoryMigrationResult, String> {
+    let _guard = history_sync::lock_history_op();
     let start = Instant::now();
     let config_text = fs::read_to_string(codex_home.join(CONFIG_FILE_NAME)).unwrap_or_default();
     if !config_routes_to_unified_history(&config_text) {
@@ -283,6 +284,7 @@ pub fn restore_official_history_from_unified_backups(
     codex_home: &Path,
     unified_history_enabled: bool,
 ) -> Result<CodexUnifiedHistoryRestoreResult, String> {
+    let _guard = history_sync::lock_history_op();
     let start = Instant::now();
     if unified_history_enabled {
         return Ok(CodexUnifiedHistoryRestoreResult {
@@ -404,12 +406,7 @@ fn rewrite_session_file_provider(
         .map_err(|error| format!("Failed to inspect {}: {error}", path.display()))?;
     let modified_before = metadata_before.modified().ok();
     let len_before = metadata_before.len();
-    let content = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "Failed to read Codex session file {}: {error}",
-            path.display()
-        )
-    })?;
+    let content = history_sync::read_session_text(path)?;
 
     let mut rewritten = String::with_capacity(content.len());
     let mut result = SessionRewriteResult::default();
@@ -441,7 +438,7 @@ fn rewrite_session_file_provider(
     ensure_file_unchanged(path, modified_before, len_before)?;
     backup_session_file(path, codex_home, backup_root)?;
     ensure_file_unchanged(path, modified_before, len_before)?;
-    write_atomic_with_retry(path, rewritten.as_bytes())?;
+    history_sync::write_session_text(path, &rewritten)?;
     Ok(result)
 }
 
@@ -499,7 +496,7 @@ fn collect_session_jsonl_files(codex_home: &Path) -> Vec<PathBuf> {
     collect_jsonl_files(&codex_home.join(SESSIONS_DIR_NAME), &mut files);
     collect_jsonl_files(&codex_home.join(ARCHIVED_SESSIONS_DIR_NAME), &mut files);
     files.sort();
-    files
+    history_sync::dedupe_rollout_siblings(files)
 }
 
 fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -512,64 +509,14 @@ fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) {
             collect_jsonl_files(&path, files);
             continue;
         }
-        if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+        if history_sync::is_rollout_session_file(&path) {
             files.push(path);
         }
     }
 }
 
 fn codex_state_db_paths(codex_home: &Path, config_text: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    push_unique_path(&mut paths, codex_home.join(STATE_DB_FILE_NAME));
-
-    if let Some(sqlite_home) = sqlite_home_from_codex_config(config_text) {
-        push_unique_path(&mut paths, sqlite_home.join(STATE_DB_FILE_NAME));
-    } else if let Some(sqlite_home) = sqlite_home_from_env() {
-        push_unique_path(&mut paths, sqlite_home.join(STATE_DB_FILE_NAME));
-    }
-
-    paths
-}
-
-fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
-    if !paths.contains(&path) {
-        paths.push(path);
-    }
-}
-
-fn sqlite_home_from_codex_config(config_text: &str) -> Option<PathBuf> {
-    let document = config_text.parse::<DocumentMut>().ok()?;
-    let raw = document.get("sqlite_home")?.as_str()?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    Some(resolve_user_path(raw))
-}
-
-fn sqlite_home_from_env() -> Option<PathBuf> {
-    let raw = std::env::var(CODEX_SQLITE_HOME_ENV).ok()?;
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    Some(resolve_user_path(raw))
-}
-
-fn resolve_user_path(raw: &str) -> PathBuf {
-    if raw == "~" {
-        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(raw));
-    }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        return dirs::home_dir()
-            .map(|home| home.join(rest))
-            .unwrap_or_else(|| PathBuf::from(raw));
-    }
-    if let Some(rest) = raw.strip_prefix("~\\") {
-        return dirs::home_dir()
-            .map(|home| home.join(rest))
-            .unwrap_or_else(|| PathBuf::from(raw));
-    }
-    PathBuf::from(raw)
+    history_sync::discover_state_db_paths(codex_home, config_text)
 }
 
 fn rebuild_session_index_for_state_db_paths(
@@ -606,7 +553,7 @@ fn migrate_state_db_provider(
         return Ok(thread_ids);
     }
 
-    backup_state_db(db_path, codex_home, backup_root)?;
+    backup_state_db(db_path, codex_home, backup_root, &conn)?;
     let transaction = conn
         .transaction()
         .map_err(|error| format!("Failed to begin Codex unified history transaction: {error}"))?;
@@ -710,14 +657,15 @@ fn open_write_connection(db_path: &Path) -> Result<Connection, String> {
 }
 
 fn open_read_connection(db_path: &Path) -> Result<Connection, String> {
-    Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| format!("Failed to open Codex history database: {error}"))
+    history_sync::open_history_read_connection(db_path)
 }
 
-fn backup_state_db(db_path: &Path, codex_home: &Path, backup_root: &Path) -> Result<(), String> {
+fn backup_state_db(
+    db_path: &Path,
+    codex_home: &Path,
+    backup_root: &Path,
+    source: &Connection,
+) -> Result<(), String> {
     let backup_path = backup_state_db_path(db_path, codex_home, backup_root);
     if let Some(parent) = backup_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -727,9 +675,7 @@ fn backup_state_db(db_path: &Path, codex_home: &Path, backup_root: &Path) -> Res
             )
         })?;
     }
-    let conn = open_read_connection(db_path)?;
-    conn.backup(rusqlite::MAIN_DB, &backup_path, None)
-        .map_err(|error| format!("Failed to backup Codex history database: {error}"))
+    history_sync::copy_sqlite_database(source, &backup_path)
 }
 
 fn backup_state_db_path(db_path: &Path, codex_home: &Path, backup_root: &Path) -> PathBuf {
@@ -737,10 +683,11 @@ fn backup_state_db_path(db_path: &Path, codex_home: &Path, backup_root: &Path) -
         return backup_root.join("state").join(relative_path);
     }
 
-    backup_root
-        .join("state")
-        .join("external")
-        .join(STATE_DB_FILE_NAME)
+    let file_name = db_path
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("state.sqlite"));
+    backup_root.join("state").join("external").join(file_name)
 }
 
 fn backup_session_file(path: &Path, codex_home: &Path, backup_root: &Path) -> Result<(), String> {
@@ -869,7 +816,8 @@ fn collect_restore_ledger_from_backup_generation(
 
     let mut session_files = Vec::new();
     collect_jsonl_files(&generation_root.join("jsonl"), &mut session_files);
-    for session_file in session_files {
+    session_files.sort();
+    for session_file in history_sync::dedupe_rollout_siblings(session_files) {
         session_ids.extend(collect_backup_session_ids_for_provider(
             &session_file,
             OFFICIAL_HISTORY_PROVIDER_ID,
@@ -903,7 +851,7 @@ fn collect_backup_session_ids_for_provider(
     path: &Path,
     provider_id: &str,
 ) -> Result<BTreeSet<String>, String> {
-    let content = fs::read_to_string(path).map_err(|error| {
+    let content = history_sync::read_session_text(path).map_err(|error| {
         format!(
             "Failed to read Codex unified history backup session file {}: {error}",
             path.display()
@@ -1291,5 +1239,186 @@ base_url = "https://example.com/v1"
             .expect("restore without ledger");
         assert_eq!(restore.restored_session_files, 1);
         assert_eq!(restore.restored_thread_rows, 1);
+    }
+
+    fn set_session_mtime(path: &Path, seconds: u64) {
+        let file = if cfg!(windows) {
+            fs::File::options().write(true).open(path)
+        } else {
+            fs::File::open(path)
+        };
+        file.expect("open session for mtime")
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+            )
+            .expect("set session mtime");
+    }
+
+    fn session_mtime(path: &Path) -> SystemTime {
+        fs::metadata(path)
+            .expect("session metadata")
+            .modified()
+            .expect("session modified time")
+    }
+
+    fn write_compressed_session(path: &Path, text: &str) {
+        fs::write(
+            path,
+            zstd::stream::encode_all(text.as_bytes(), 3).expect("compress session"),
+        )
+        .expect("write compressed session");
+    }
+
+    #[test]
+    fn migration_uses_highest_state_db_version() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp_dir.path();
+        fs::write(
+            codex_home.join(CONFIG_FILE_NAME),
+            inject_unified_session_history_config("").expect("inject"),
+        )
+        .expect("write config");
+
+        let seed_db = |name: &str, id: &str| {
+            let conn = Connection::open(codex_home.join(name)).expect("open db");
+            conn.execute_batch(&format!(
+                "
+                CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, updated_at INTEGER, model_provider TEXT);
+                INSERT INTO threads (id, title, updated_at, model_provider) VALUES
+                    ('{id}', 'official', 1, 'openai');
+                "
+            ))
+            .expect("seed db");
+        };
+        seed_db("state_5.sqlite", "s5");
+        seed_db("state_6.sqlite", "s6");
+
+        let migration =
+            migrate_official_history_to_unified(codex_home).expect("migrate highest state db");
+
+        assert_eq!(migration.migrated_thread_rows, 1);
+        let provider_of = |db_name: &str, id: &str| -> String {
+            let conn = Connection::open(codex_home.join(db_name)).expect("open db");
+            conn.query_row(
+                "SELECT model_provider FROM threads WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("provider")
+        };
+        assert_eq!(provider_of("state_6.sqlite", "s6"), "custom");
+        assert_eq!(provider_of("state_5.sqlite", "s5"), "openai");
+    }
+
+    #[test]
+    fn migrates_and_restores_compressed_rollout_preserving_mtime() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp_dir.path();
+        fs::write(
+            codex_home.join(CONFIG_FILE_NAME),
+            inject_unified_session_history_config("").expect("inject"),
+        )
+        .expect("write config");
+
+        let sessions_dir = codex_home.join(SESSIONS_DIR_NAME).join("2026").join("06");
+        fs::create_dir_all(&sessions_dir).expect("create sessions");
+        let session_path = sessions_dir.join("rollout-compressed.jsonl.zst");
+        write_compressed_session(
+            &session_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"openai\"}}\n{\"type\":\"response_item\",\"payload\":{\"text\":\"hello\"}}\n",
+        );
+        let stamp = 1_600_000_000_u64;
+        let expected_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(stamp);
+        set_session_mtime(&session_path, stamp);
+
+        let db_path = codex_home.join(STATE_DB_FILE_NAME);
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            "
+            CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, updated_at INTEGER, model_provider TEXT);
+            INSERT INTO threads (id, title, updated_at, model_provider) VALUES
+                ('s1', 'official', 1, 'openai');
+            ",
+        )
+        .expect("seed db");
+        drop(conn);
+
+        let migration =
+            migrate_official_history_to_unified(codex_home).expect("migrate compressed rollout");
+        assert_eq!(migration.migrated_session_files, 1);
+        assert!(session_path.exists());
+        assert!(!session_path
+            .with_file_name("rollout-compressed.jsonl")
+            .exists());
+        let migrated = history_sync::read_session_text(&session_path).expect("read migrated");
+        assert!(migrated.contains("\"model_provider\":\"custom\""));
+        assert_eq!(session_mtime(&session_path), expected_mtime);
+
+        let restore = restore_official_history_from_unified_backups(codex_home, false)
+            .expect("restore compressed rollout");
+        assert_eq!(restore.restored_session_files, 1);
+        let restored = history_sync::read_session_text(&session_path).expect("read restored");
+        assert!(restored.contains("\"model_provider\":\"openai\""));
+        assert_eq!(session_mtime(&session_path), expected_mtime);
+    }
+
+    #[test]
+    fn external_state_db_backup_keeps_actual_file_name() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp_dir.path().join(".codex");
+        let db_path = temp_dir.path().join("sqlite-home").join("state_7.sqlite");
+
+        let backup_path = backup_state_db_path(&db_path, &codex_home, temp_dir.path());
+
+        assert_eq!(
+            backup_path,
+            temp_dir
+                .path()
+                .join("state")
+                .join("external")
+                .join("state_7.sqlite")
+        );
+    }
+
+    #[test]
+    fn migration_dedupes_plain_and_compressed_rollout_siblings() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp_dir.path();
+        fs::write(
+            codex_home.join(CONFIG_FILE_NAME),
+            inject_unified_session_history_config("").expect("inject"),
+        )
+        .expect("write config");
+
+        let sessions_dir = codex_home.join(SESSIONS_DIR_NAME).join("2026").join("06");
+        fs::create_dir_all(&sessions_dir).expect("create sessions");
+        let session_text = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"openai\"}}\n";
+        let plain_path = sessions_dir.join("rollout-sibling.jsonl");
+        let compressed_path = sessions_dir.join("rollout-sibling.jsonl.zst");
+        fs::write(&plain_path, session_text).expect("write plain session");
+        write_compressed_session(&compressed_path, session_text);
+
+        let db_path = codex_home.join(STATE_DB_FILE_NAME);
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            "
+            CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, updated_at INTEGER, model_provider TEXT);
+            INSERT INTO threads (id, title, updated_at, model_provider) VALUES
+                ('s1', 'official', 1, 'openai');
+            ",
+        )
+        .expect("seed db");
+        drop(conn);
+
+        let migration =
+            migrate_official_history_to_unified(codex_home).expect("migrate sibling rollouts");
+
+        assert_eq!(migration.migrated_session_files, 1);
+        let plain = fs::read_to_string(&plain_path).expect("read plain session");
+        assert!(plain.contains("\"model_provider\":\"custom\""));
+        let compressed =
+            history_sync::read_session_text(&compressed_path).expect("read compressed sibling");
+        assert!(compressed.contains("\"model_provider\":\"openai\""));
     }
 }

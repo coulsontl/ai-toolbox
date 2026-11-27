@@ -2587,6 +2587,7 @@ pub fn run() {
             coding::codex::restart_codex_daemon,
             coding::codex::get_codex_root_path_info,
             coding::codex::get_codex_history_sync_status,
+            coding::codex::get_codex_history_legacy_hint,
             coding::codex::backup_codex_history,
             coding::codex::sync_codex_history,
             coding::codex::restore_latest_codex_history_backup,

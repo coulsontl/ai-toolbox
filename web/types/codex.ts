@@ -346,6 +346,27 @@ export interface CodexHistorySourceOption {
   distro?: string | null;
 }
 
+export type CodexHistoryProviderKind =
+  | 'current'
+  | 'ai_toolbox_legacy'
+  | 'official'
+  | 'missing'
+  | 'other';
+
+export interface CodexHistoryProviderGroup {
+  providerId?: string | null;
+  kind: CodexHistoryProviderKind;
+  threadCount: number;
+  sessionFileCount: number;
+}
+
+export interface CodexHistoryLegacyHint {
+  detected: boolean;
+  threadCount: number;
+  sessionFileCount: number;
+  providerIds: string[];
+}
+
 export interface CodexHistorySyncStatus {
   codexHome: string;
   configPath: string;
@@ -357,6 +378,7 @@ export interface CodexHistorySyncStatus {
   currentModel?: string;
   totalThreads: number;
   providerMismatchThreads: number;
+  providerBreakdown: CodexHistoryProviderGroup[];
   modelMismatchThreads: number;
   modelColumnExists: boolean;
   sessionFileCount: number;

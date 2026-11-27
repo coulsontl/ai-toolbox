@@ -71,7 +71,7 @@ fn codex_history_sync_round_trip_restores_latest_backup() {
     assert!(status.has_work);
     assert_eq!(status.provider_mismatch_threads, 1);
 
-    let sync_result = history_sync::sync(&env.root).expect("sync");
+    let sync_result = history_sync::sync(&env.root, None).expect("sync");
     assert_eq!(sync_result.updated_thread_rows, 1);
     assert_eq!(sync_result.updated_session_files, 1);
     assert!(!sync_result.partial_success);

@@ -90,6 +90,26 @@ const CODEX_BUNDLED_PLUS_PRO_MODELS: [(&str, &str); 7] = [
 pub struct CodexHistorySourceInput {
     #[serde(default)]
     pub source_mode: Option<String>,
+    /// Existing provider ids to migrate. `Some` (even an empty list) turns the
+    /// sync into a strictly selection-based operation.
+    #[serde(default)]
+    pub source_providers: Option<Vec<String>>,
+    /// Whether rows/files without a recorded `model_provider` are part of the
+    /// selection. Only meaningful together with `source_providers`.
+    #[serde(default)]
+    pub include_missing_provider: Option<bool>,
+}
+
+impl CodexHistorySourceInput {
+    fn sync_selection(&self) -> Option<history_sync::CodexHistorySyncSelection> {
+        if self.source_providers.is_none() && self.include_missing_provider.is_none() {
+            return None;
+        }
+        Some(history_sync::CodexHistorySyncSelection {
+            source_providers: self.source_providers.clone(),
+            include_missing_provider: self.include_missing_provider,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1229,13 +1249,29 @@ pub async fn sync_codex_history(
     state: tauri::State<'_, SqliteDbState>,
     input: Option<CodexHistorySourceInput>,
 ) -> Result<history_sync::CodexHistorySyncResult, String> {
+    let selection = input
+        .as_ref()
+        .and_then(CodexHistorySourceInput::sync_selection);
     let target = resolve_codex_history_source_target(&state.db(), input.as_ref()).await?;
     let root_dir = target.root_dir.clone();
-    let mut result = tauri::async_runtime::spawn_blocking(move || history_sync::sync(&root_dir))
-        .await
-        .map_err(|error| format!("Failed to sync Codex history: {error}"))??;
+    let mut result = tauri::async_runtime::spawn_blocking(move || {
+        history_sync::sync(&root_dir, selection.as_ref())
+    })
+    .await
+    .map_err(|error| format!("Failed to sync Codex history: {error}"))??;
     decorate_codex_history_status(&mut result.status, &target);
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn get_codex_history_legacy_hint(
+    state: tauri::State<'_, SqliteDbState>,
+    input: Option<CodexHistorySourceInput>,
+) -> Result<history_sync::CodexHistoryLegacyHint, String> {
+    let target = resolve_codex_history_source_target(&state.db(), input.as_ref()).await?;
+    tauri::async_runtime::spawn_blocking(move || history_sync::get_legacy_hint(&target.root_dir))
+        .await
+        .map_err(|error| format!("Failed to inspect Codex history legacy providers: {error}"))?
 }
 
 #[tauri::command]

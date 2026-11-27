@@ -28,6 +28,7 @@ import type {
   CodexHistoryBackupResult,
   CodexHistorySyncResult,
   CodexHistoryRestoreResult,
+  CodexHistoryLegacyHint,
   CodexUnifiedHistoryRestoreResult,
   CodexUnifiedSessionHistoryUpdateResult,
   CodexMemoriesSourceMode,
@@ -67,11 +68,25 @@ export const backupCodexHistory = async (
   });
 };
 
+export interface CodexHistorySyncFilter {
+  sourceProviders: string[];
+  includeMissingProvider: boolean;
+}
+
+export const getCodexHistoryLegacyHint = async (
+  sourceMode: CodexHistorySourceMode = 'all',
+): Promise<CodexHistoryLegacyHint> => {
+  return await invoke<CodexHistoryLegacyHint>('get_codex_history_legacy_hint', {
+    input: { sourceMode },
+  });
+};
+
 export const syncCodexHistory = async (
   sourceMode: CodexHistorySourceMode = 'all',
+  filter?: CodexHistorySyncFilter,
 ): Promise<CodexHistorySyncResult> => {
   return await invoke<CodexHistorySyncResult>('sync_codex_history', {
-    input: { sourceMode },
+    input: filter ? { sourceMode, ...filter } : { sourceMode },
   });
 };
 
