@@ -403,6 +403,33 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         "workbuddy",
         "codebuddy",
         "gateway",
+        "plugins",
+        "image",
+        "ssh",
+        "wsl",
+    ];
+    // Snapshot of the default list immediately before the "plugins" page was
+    // added (the plugin market and runtime pages are a top-level page, not a
+    // coding sidebar tab).
+    const PRE_PLUGINS_DEFAULT_VISIBLE_TABS: &[&str] = &[
+        "opencode",
+        "claudecode",
+        "claudedesktop",
+        "codex",
+        "grok",
+        "geminicli",
+        "antigravity",
+        "zcode",
+        "kimi",
+        "openclaw",
+        "pi",
+        "oh_my_pi",
+        "omo_native",
+        "hermes",
+        "dsh",
+        "workbuddy",
+        "codebuddy",
+        "gateway",
         "image",
         "ssh",
         "wsl",
@@ -464,6 +491,7 @@ fn normalize_visible_tabs_order(tabs: Vec<String>) -> Vec<String> {
         || string_vec_matches(&tabs, PRE_ANTIGRAVITY_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_ZCODE_DEFAULT_VISIBLE_TABS)
         || string_vec_matches(&tabs, PRE_WORKBUDDY_DEFAULT_VISIBLE_TABS)
+        || string_vec_matches(&tabs, PRE_PLUGINS_DEFAULT_VISIBLE_TABS)
     {
         return CURRENT_DEFAULT_VISIBLE_TABS
             .iter()
@@ -782,6 +810,64 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
+                "image",
+                "ssh",
+                "wsl",
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_tabs_pre_plugins_default_is_migrated() {
+        let settings = from_db_value(json!({
+            "visible_tabs": [
+                "opencode",
+                "claudecode",
+                "claudedesktop",
+                "codex",
+                "grok",
+                "geminicli",
+                "antigravity",
+                "zcode",
+                "kimi",
+                "openclaw",
+                "pi",
+                "oh_my_pi",
+                "omo_native",
+                "hermes",
+                "dsh",
+                "workbuddy",
+                "codebuddy",
+                "gateway",
+                "image",
+                "ssh",
+                "wsl",
+            ]
+        }));
+
+        assert_eq!(
+            settings.visible_tabs,
+            vec![
+                "opencode",
+                "claudecode",
+                "claudedesktop",
+                "codex",
+                "grok",
+                "geminicli",
+                "antigravity",
+                "zcode",
+                "kimi",
+                "openclaw",
+                "pi",
+                "oh_my_pi",
+                "omo_native",
+                "hermes",
+                "dsh",
+                "workbuddy",
+                "codebuddy",
+                "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
@@ -839,13 +925,17 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
             ]
         );
         assert_eq!(
-            settings.visible_tabs.iter().position(|tab| tab == "workbuddy"),
+            settings
+                .visible_tabs
+                .iter()
+                .position(|tab| tab == "workbuddy"),
             Some(15),
             "the new tabs land right after dsh, before gateway"
         );
@@ -897,6 +987,7 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
@@ -1007,6 +1098,7 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
@@ -1050,6 +1142,7 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
@@ -1124,6 +1217,7 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
@@ -1174,6 +1268,7 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",
@@ -1220,6 +1315,7 @@ mod tests {
                 "workbuddy",
                 "codebuddy",
                 "gateway",
+                "plugins",
                 "image",
                 "ssh",
                 "wsl",

@@ -3,8 +3,10 @@
 export interface ManagedSkill {
   id: string;
   name: string;
-  source_type: 'local' | 'git' | 'import' | 'central';
+  source_type: 'local' | 'git' | 'import' | 'central' | 'builtin';
   source_ref: string | null;
+  /** Version marker for built-in Skills (app version); null for regular Skills. */
+  source_revision?: string | null;
   central_path: string;
   created_at: number;
   updated_at: number;
@@ -203,7 +205,7 @@ export interface SkillGroup {
   label: string;
   note?: string | null;
   sort_index?: number;
-  sourceType: 'git' | 'local' | 'import' | 'central' | 'custom';
+  sourceType: 'git' | 'local' | 'import' | 'central' | 'builtin' | 'custom';
   skills: ManagedSkill[];
 }
 

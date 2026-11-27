@@ -1,0 +1,396 @@
+.sidebar {
+  display: flex;
+  width: 216px;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-card);
+  border-radius: 10px;
+  background: var(--color-bg-container);
+  transition: width 0.18s ease;
+}
+
+.sidebarCollapsed {
+  width: 56px;
+  align-items: center;
+  padding: 10px 8px;
+}
+
+/* Narrow windows keep the rail collapsed until opened, then float it over
+   the stage so the main work area never loses width. */
+.sidebarOverlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  box-shadow: var(--shadow-card-hover);
+}
+
+.header {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebarCollapsed .header {
+  justify-content: center;
+}
+
+.brandIcon {
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, var(--color-border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-bg-container));
+  color: var(--color-primary);
+}
+
+.brandTitle {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iconButton {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover:not(:disabled) {
+    background: var(--color-bg-hover);
+    color: var(--color-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+}
+
+.installButton {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 22%, var(--color-border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-bg-container));
+  color: var(--color-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+
+  &:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+    background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-container));
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+}
+
+.installButtonCollapsed {
+  width: 36px;
+  min-height: 32px;
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0;
+}
+
+.nav {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.sidebarCollapsed .nav {
+  width: 100%;
+  align-items: center;
+}
+
+.group {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebarCollapsed .group {
+  width: 100%;
+  align-items: center;
+}
+
+.groupLabel {
+  padding: 4px 8px;
+  overflow: hidden;
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groupDivider {
+  width: 28px;
+  height: 1px;
+  margin: 6px 0;
+  background: var(--color-border);
+}
+
+.navItem {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+}
+
+.sidebarCollapsed .navItem {
+  width: 40px;
+  min-height: 36px;
+  justify-content: center;
+  padding: 0;
+}
+
+.navItemActive {
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-container));
+  color: var(--color-primary);
+
+  &::before {
+    position: absolute;
+    top: 7px;
+    bottom: 7px;
+    left: 0;
+    width: 2px;
+    border-radius: 999px;
+    background: var(--color-primary);
+    content: '';
+  }
+
+  &:hover {
+    background: color-mix(in srgb, var(--color-primary) 11%, var(--color-bg-container));
+    color: var(--color-primary);
+  }
+}
+
+.navIcon {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.navLabel {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navCount {
+  display: inline-flex;
+  min-width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-text-tertiary) 10%, transparent);
+  color: var(--color-text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.navItemActive .navCount {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+}
+
+.footer {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.sidebarCollapsed .footer {
+  flex-direction: column;
+}
+
+.sidebarCollapsed .footer .iconButton {
+  width: 36px;
+  height: 32px;
+}
+
+.bunButton {
+  display: flex;
+  min-width: 0;
+  min-height: 30px;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 560;
+  white-space: nowrap;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+
+  &:hover:not(:disabled) {
+    border-color: var(--color-border-secondary);
+    background: var(--color-bg-hover);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    cursor: progress;
+    opacity: 0.65;
+  }
+}
+
+.bunButtonCollapsed {
+  width: 36px;
+  min-height: 32px;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 0;
+}
+
+.bunText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bunDot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-text-tertiary);
+}
+
+.bunDotReady {
+  background: var(--color-status-success);
+}
+
+.bunDotMissing {
+  background: var(--color-status-warning);
+}
+
+.spin {
+  animation: pluginSidebarSpin 0.78s linear infinite;
+}
+
+@keyframes pluginSidebarSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .installButton,
+  .navItem,
+  .iconButton,
+  .bunButton,
+  .spin {
+    transition: none;
+    animation: none;
+  }
+}

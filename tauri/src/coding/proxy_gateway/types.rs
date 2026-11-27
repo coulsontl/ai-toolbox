@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
+pub use crate::plugins::gateway_bridge::{PluginAccountStrategy, PluginProviderRef};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayCliKey {
@@ -478,6 +480,11 @@ pub struct ProviderGatewayMeta {
     /// because the prefix is authoritative.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_models: Vec<String>,
+    /// Set when this provider delegates transport to an installed gateway
+    /// plugin. Such a provider keeps no API key or base URL of its own: the
+    /// endpoint and credentials are resolved from the plugin host per request.
+    #[serde(default, rename = "pluginProvider", alias = "plugin_provider")]
+    pub plugin_provider: Option<PluginProviderRef>,
 }
 
 /// One user-defined exact model rewrite rule: when the CLI requests `from`
@@ -581,6 +588,7 @@ impl Default for ProviderGatewayMeta {
             model_rewrites: None,
             model_service_tiers: None,
             declared_models: Vec::new(),
+            plugin_provider: None,
         }
     }
 }

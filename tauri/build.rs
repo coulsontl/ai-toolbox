@@ -2,9 +2,21 @@ use std::env;
 use std::fs;
 
 fn main() {
+    configure_windows_stack_size();
     embed_windows_test_manifest();
     tauri_build::build();
     link_windows_unit_test_resource();
+}
+
+fn configure_windows_stack_size() {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        // Windows defaults main-thread stack reserve to 1 MiB (vs 8 MiB on macOS/Linux).
+        // Unoptimized debug builds with large Tauri IPC handlers + WebView2 callbacks can
+        // otherwise overflow the main-thread stack on startup (`0xc000041d`).
+        println!("cargo:rustc-link-arg-bins=/STACK:8388608");
+    }
 }
 
 fn embed_windows_test_manifest() {

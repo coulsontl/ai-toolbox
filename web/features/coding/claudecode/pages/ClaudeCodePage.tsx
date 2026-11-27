@@ -258,6 +258,9 @@ const ClaudeCodePage: React.FC = () => {
       return false;
     }
     const settingsConfig = parseClaudeSettingsConfig(primaryProvider.settingsConfig) as {
+      env?: {
+        ANTHROPIC_BASE_URL?: string;
+      };
       apiFormat?: unknown;
       api_format?: unknown;
       openrouter_compat_mode?: unknown;
@@ -271,7 +274,10 @@ const ClaudeCodePage: React.FC = () => {
         ? 'openai_chat'
         : undefined,
     );
-    return providerNeedsGatewayProxy(providerApiFormat, 'anthropic');
+    return providerNeedsGatewayProxy(providerApiFormat, 'anthropic', {
+      meta: primaryProvider.meta,
+      baseUrl: settingsConfig.env?.ANTHROPIC_BASE_URL?.trim(),
+    });
   }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const primaryGatewayProviderNeedsProxyReason = primaryGatewayProviderNeedsProxy ? 'protocol' : null;
 
@@ -693,6 +699,9 @@ const ClaudeCodePage: React.FC = () => {
     }
 
     const settingsConfig = parseClaudeSettingsConfig(provider.settingsConfig) as {
+      env?: {
+        ANTHROPIC_BASE_URL?: string;
+      };
       apiFormat?: unknown;
       api_format?: unknown;
       openrouter_compat_mode?: unknown;
@@ -705,7 +714,10 @@ const ClaudeCodePage: React.FC = () => {
       isGatewayConfigFlagEnabled(settingsConfig.openrouter_compat_mode) ? 'openai_chat' : undefined,
     );
     setConnectivityInfo(buildClaudeProviderConnectivityInfo(provider));
-    setConnectivityUsesGateway(providerNeedsGatewayProxy(providerApiFormat, 'anthropic'));
+    setConnectivityUsesGateway(providerNeedsGatewayProxy(providerApiFormat, 'anthropic', {
+      meta: provider.meta,
+      baseUrl: settingsConfig.env?.ANTHROPIC_BASE_URL?.trim(),
+    }));
     setConnectivityModalOpen(true);
   };
 
@@ -776,7 +788,10 @@ const ClaudeCodePage: React.FC = () => {
           ? 'openai_chat'
           : undefined,
       );
-      const useGateway = providerNeedsGatewayProxy(providerApiFormat, 'anthropic');
+      const useGateway = providerNeedsGatewayProxy(providerApiFormat, 'anthropic', {
+        meta: provider.meta,
+        baseUrl: settingsConfig.env?.ANTHROPIC_BASE_URL?.trim(),
+      });
 
       if (provider.category !== 'official' && !hasExplicitBaseUrl) {
         return {
@@ -1343,6 +1358,8 @@ const ClaudeCodePage: React.FC = () => {
           batchTesting={batchTestingProviders}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
           onAddProvider={handleAddProvider}
+          pluginCliKey="claudecode"
+          onPluginProviderChanged={() => loadConfig(true)}
           headerExtra={
             <GatewayFailoverButton
               cliKey="claude"

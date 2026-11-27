@@ -9,6 +9,7 @@ import { Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type {
   ProviderCardModels,
@@ -115,6 +116,7 @@ const OpenClawProviderCard: React.FC<OpenClawProviderCardProps> = ({
 }) => {
   const { t } = useTranslation();
   const baseUrl = config.baseUrl || '';
+  const pluginCardMeta = usePluginProviderCardMeta({ baseUrl, providerId });
   const apiKey = config.apiKey || '';
   const sdkName = openClawApiToNpm(config.api, config.baseUrl);
   const catalogModels = config.models || [];
@@ -181,6 +183,7 @@ const OpenClawProviderCard: React.FC<OpenClawProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: providerId,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -190,6 +193,7 @@ const OpenClawProviderCard: React.FC<OpenClawProviderCardProps> = ({
       onEdit,
       onCopy,
       onShare,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       // No header "应用": a provider is never switched on or off here.
       deleteConfirm: false,

@@ -10,7 +10,7 @@ pub use super::tool_adapters::CustomTool;
 pub struct Skill {
     pub id: String,
     pub name: String,
-    pub source_type: String, // "local" | "git" | "import" | "central"
+    pub source_type: String, // "local" | "git" | "import" | "central" | "builtin"
     pub source_ref: Option<String>,
     pub source_revision: Option<String>,
     pub central_path: String,
@@ -162,6 +162,9 @@ pub struct ManagedSkillDto {
     pub name: String,
     pub source_type: String,
     pub source_ref: Option<String>,
+    /// Revision marker exposed for display: the app version for built-in
+    /// Skills and the upstream revision for git-backed Skills.
+    pub source_revision: Option<String>,
     pub central_path: String,
     pub created_at: i64,
     pub updated_at: i64,

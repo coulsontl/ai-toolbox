@@ -11,19 +11,31 @@ pub fn from_db_skill(value: Value) -> Skill {
     let enabled_tools: Vec<String> = parse_string_array(value.get("enabled_tools"));
     let disabled_previous_tools: Vec<String> =
         parse_string_array(value.get("disabled_previous_tools"));
+    let source_type = value
+        .get("source_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local")
+        .to_string();
+    // Built-in Skills use a namespaced row id (`builtin:ai-toolbox`). The
+    // generic cleaner strips everything before the first colon, which would
+    // turn that id into a different row on the next write. Preserve it by
+    // source type and by the reserved prefix (the same id-level fallback used
+    // by `is_builtin_skill`).
+    let raw_id = value.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+    let id = if source_type == "builtin" || raw_id.starts_with("builtin:") {
+        raw_id.to_string()
+    } else {
+        db_extract_id(&value)
+    };
 
     Skill {
-        id: db_extract_id(&value),
+        id,
         name: value
             .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        source_type: value
-            .get("source_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("local")
-            .to_string(),
+        source_type,
         source_ref: value
             .get("source_ref")
             .and_then(|v| v.as_str())
@@ -474,6 +486,30 @@ pub fn to_custom_tool_payload(tool: &CustomTool) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn from_db_skill_preserves_builtin_namespaced_id() {
+        let builtin = from_db_skill(json!({
+            "id": "builtin:ai-toolbox",
+            "name": "ai-toolbox",
+            "source_type": "builtin",
+        }));
+        assert_eq!(builtin.id, "builtin:ai-toolbox");
+
+        // The reserved id alone keeps protection working even if an older row
+        // predates `source_type = "builtin"`.
+        let legacy = from_db_skill(json!({
+            "id": "builtin:ai-toolbox",
+            "name": "ai-toolbox",
+        }));
+        assert_eq!(legacy.id, "builtin:ai-toolbox");
+
+        let regular = from_db_skill(json!({
+            "id": "local:`abc-123`",
+            "name": "regular",
+        }));
+        assert_eq!(regular.id, "abc-123");
+    }
 
     #[test]
     fn skill_preferences_default_view_mode_falls_back_to_flat() {

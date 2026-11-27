@@ -6,6 +6,10 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::adapter::parse_sync_details;
+use super::builtin::{
+    ensure_builtin_skills, guard_builtin_delete, guard_builtin_disable,
+    guard_builtin_metadata_edit, is_builtin_skill,
+};
 use super::cache_cleanup::{
     cleanup_git_cache_dirs, get_git_cache_cleanup_days, get_git_cache_ttl_secs,
     set_git_cache_cleanup_days as set_cleanup_days,
@@ -1139,6 +1143,12 @@ pub async fn skills_get_managed_skills(
     app: tauri::AppHandle,
     state: State<'_, SqliteDbState>,
 ) -> Result<Vec<ManagedSkillDto>, String> {
+    // Startup wiring also calls this, but the first UI query must work even if
+    // the app started before the built-in Skill was written.
+    if let Err(error) = ensure_builtin_skills(&state).await {
+        log::warn!("Failed to ensure built-in Skills: {}", error);
+    }
+
     let skills = skill_store::get_managed_skills(&state).await?;
     let groups = skill_store::get_skill_groups(&state).await?;
     let group_names: HashMap<String, String> = groups
@@ -1177,6 +1187,7 @@ pub async fn skills_get_managed_skills(
             name: skill.name,
             source_type: skill.source_type,
             source_ref: skill.source_ref,
+            source_revision: skill.source_revision,
             central_path: resolved_path.to_string_lossy().to_string(),
             created_at: skill.created_at,
             updated_at: skill.updated_at,
@@ -1857,6 +1868,19 @@ pub(crate) async fn update_managed_skill_internal(
     skill_id: &str,
 ) -> Result<UpdateResultDto, String> {
     if let Some(mut skill) = skill_store::get_skill_by_id(state, skill_id).await? {
+        if is_builtin_skill(&skill) {
+            ensure_builtin_skills(state).await?;
+            let refreshed = skill_store::get_skill_by_id(state, skill_id)
+                .await?
+                .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
+            return Ok(UpdateResultDto {
+                skill_id: refreshed.id,
+                name: refreshed.name,
+                content_hash: refreshed.content_hash,
+                source_revision: refreshed.source_revision,
+                updated_targets: refreshed.enabled_tools,
+            });
+        }
         if skill.source_type == "central" {
             let source_path = resolve_skill_source_path(app, state, &skill).await?;
             if !source_path.is_dir() {
@@ -2009,6 +2033,9 @@ pub async fn skills_delete_managed(
     options: Option<DeleteManagedSkillOptionsDto>,
 ) -> Result<(), String> {
     let record = skill_store::get_skill_by_id(&state, &skillId).await?;
+    if let Some(skill) = record.as_ref() {
+        guard_builtin_delete(skill)?;
+    }
     let mut remove_failures: Vec<String> = Vec::new();
     if let Some(skill) = record {
         // Resolve central_path (handles cross-platform legacy paths)
@@ -2671,6 +2698,9 @@ pub async fn skills_update_metadata(
     userNote: Option<String>,
     tags: Option<Vec<String>>,
 ) -> Result<(), String> {
+    if let Some(skill) = skill_store::get_skill_by_id(&state, &skillId).await? {
+        guard_builtin_metadata_edit(&skill)?;
+    }
     skill_store::update_skill_metadata(
         &state,
         &skillId,
@@ -2688,7 +2718,21 @@ pub async fn skills_batch_update_group(
     skillIds: Vec<String>,
     groupId: Option<String>,
 ) -> Result<(), String> {
-    skill_store::update_skills_group(&state, &skillIds, normalize_optional_id(groupId)).await
+    let managed_skills = skill_store::get_managed_skills(&state).await?;
+    let editable_ids: Vec<String> = skillIds
+        .into_iter()
+        .filter(|skill_id| {
+            managed_skills
+                .iter()
+                .find(|skill| &skill.id == skill_id)
+                .map(|skill| !is_builtin_skill(skill))
+                .unwrap_or(true)
+        })
+        .collect();
+    if editable_ids.is_empty() {
+        return Ok(());
+    }
+    skill_store::update_skills_group(&state, &editable_ids, normalize_optional_id(groupId)).await
 }
 
 #[tauri::command]
@@ -2703,6 +2747,7 @@ pub async fn skills_set_management_enabled<R: Runtime>(
         let skill = skill_store::get_skill_by_id(&state, &skillId)
             .await?
             .ok_or_else(|| format!("Skill not found: {}", skillId))?;
+        guard_builtin_disable(&skill)?;
         let previous_tools = disabled_previous_tools_for_skill(&skill);
         let source_path = resolve_skill_source_path_for_cleanup(&app, &state, &skill).await;
         remove_skill_targets_best_effort(&state, &skill, source_path.as_deref()).await?;
@@ -2931,6 +2976,11 @@ async fn preflight_inventory_apply<R: Runtime>(
         let Some(skill) = match_inventory_skill(item, local_skills) else {
             continue;
         };
+        // Built-in Skills are versioned by the app; Inventory must not edit
+        // their content, metadata, or sync state.
+        if is_builtin_skill(skill) {
+            continue;
+        }
         let desired_tools = normalize_tool_ids(&item.enabled_tools);
         if desired_tools.is_empty() {
             continue;
@@ -3005,6 +3055,12 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
             continue;
         };
         matched_ids.insert(skill.id.clone());
+        // Inventory is a management manifest, not an override for built-ins.
+        // Skip them entirely so an absent or stale entry can never delete,
+        // disable, regroup, or retag the built-in Skill.
+        if is_builtin_skill(skill) {
+            continue;
+        }
         let group_id = item
             .group
             .as_ref()
@@ -3043,7 +3099,7 @@ pub async fn skills_apply_inventory_import<R: Runtime>(
 
     for skill in local_skills
         .iter()
-        .filter(|skill| !matched_ids.contains(&skill.id))
+        .filter(|skill| !matched_ids.contains(&skill.id) && !is_builtin_skill(skill))
     {
         let previous_tools = disabled_previous_tools_for_skill(skill);
         let source_path = resolve_skill_source_path_for_cleanup(&app, &state, skill).await;
@@ -3142,7 +3198,7 @@ async fn preview_inventory_import(
     }
     let local_missing_from_inventory: Vec<ManagedSkillSummaryDto> = local_skills
         .iter()
-        .filter(|skill| !matched_ids.contains(&skill.id))
+        .filter(|skill| !matched_ids.contains(&skill.id) && !is_builtin_skill(skill))
         .map(|skill| ManagedSkillSummaryDto {
             id: skill.id.clone(),
             name: skill.name.clone(),
@@ -3453,7 +3509,10 @@ pub async fn skills_get_skill_documents(
         .map_err(|e| format_error(e))?;
     let central_path = resolve_skill_central_path(&skill.central_path, &central_dir);
 
-    let candidates = ["SKILL.md", "README.md"];
+    // Nested reference documents are part of a Skill's read-only preview.
+    // The built-in `ai-toolbox` Skill ships `references/plugins.md`; other
+    // Skills may use the same convention.
+    let candidates = ["SKILL.md", "README.md", "references/plugins.md"];
     let documents = candidates
         .into_iter()
         .filter_map(|name| read_skill_document_file(&central_path, name))

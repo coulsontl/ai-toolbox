@@ -9,12 +9,16 @@ mod observability;
 mod observations;
 mod pipeline;
 mod providers;
+#[cfg(test)]
+pub(crate) use providers::provider_from_record_for_test;
 mod routes;
 mod side_stores;
 mod thinking_budget;
 mod upstream;
 mod websocket;
 
+pub(crate) use self::connectivity_test::test_gateway_provider_model_connectivity_with_plugins;
+#[cfg(test)]
 pub(crate) use self::connectivity_test::test_gateway_provider_model_connectivity;
 #[cfg(test)]
 pub(crate) use self::providers::ProviderAuthStrategy;
@@ -70,7 +74,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tauri::async_runtime::JoinHandle as TauriJoinHandle;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream as TokioTcpStream};
 
@@ -532,6 +536,9 @@ struct GatewayRuntimeContext {
     privacy: super::privacy::PrivacyRuntime,
     websocket_shutdown: tokio::sync::watch::Sender<bool>,
     listen_addr: Arc<RwLock<Option<SocketAddr>>>,
+    /// Present when the app has the plugin system registered. Proxy gateway
+    /// requests then reach plugin providers and run gateway middleware.
+    plugin_manager: Option<crate::plugins::PluginManagerState>,
 }
 
 #[derive(Clone)]
@@ -602,6 +609,7 @@ impl GatewayRuntimeContext {
             side_stores: side_stores::GatewaySideStores::default(),
             websocket_shutdown: tokio::sync::watch::channel(false).0,
             listen_addr: Arc::new(RwLock::new(None)),
+            plugin_manager: None,
         }
     }
 
@@ -616,8 +624,31 @@ impl GatewayRuntimeContext {
     }
 
     fn with_app_handle(mut self, app_handle: AppHandle) -> Self {
+        // The plugin manager is registered as managed state before the gateway
+        // can start, so every app-driven construction picks it up here without
+        // changing the existing start/restart signatures (tests keep building
+        // contexts without an app handle).
+        if self.plugin_manager.is_none() {
+            self.plugin_manager = app_handle
+                .try_state::<crate::plugins::PluginManagerState>()
+                .map(|manager| manager.inner().clone());
+        }
         self.app_handle = Some(app_handle);
         self
+    }
+
+    pub(super) fn with_plugin_manager(
+        mut self,
+        manager: crate::plugins::PluginManagerState,
+    ) -> Self {
+        self.plugin_manager = Some(manager);
+        self
+    }
+
+    fn middleware(&self) -> Option<&Arc<crate::plugins::middleware_rt::MiddlewareRuntime>> {
+        self.plugin_manager
+            .as_ref()
+            .map(|manager| manager.middleware())
     }
 
     fn record_request_arrival(&self, cli_key: GatewayCliKey) {
@@ -892,11 +923,7 @@ async fn handle_connection_with_body_limit(
             .await;
             let ended_at = Utc::now();
             observability::record_gateway_observability(
-                &request,
-                &response,
-                context,
-                started_at,
-                ended_at,
+                &request, &response, context, started_at, ended_at,
             );
             return write_result;
         }
@@ -1183,6 +1210,9 @@ pub(crate) async fn health_check_socket_async(addr: SocketAddr) -> ProxyGatewayH
 
 #[cfg(test)]
 mod tests {
+    use super::upstream::{
+        apply_response_middleware, plugin_models_response, sse_middleware_stream,
+    };
     use super::*;
     use crate::coding::proxy_gateway::cli_proxy::manifest::CliProxyManifest;
     use crate::coding::proxy_gateway::model_health::GatewayFailureKind;
@@ -1841,6 +1871,8 @@ base_url = "https://openai.example.com/v1"
             sort_index: None,
             meta: ProviderGatewayMeta::default(),
             model_mapping: UpstreamModelMapping::default(),
+
+            plugin_provider: None,
         };
         let headers = build_upstream_headers(&request, &provider, None).unwrap();
 
@@ -3494,8 +3526,12 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
         let loopback: SocketAddr = "127.0.0.1:37123".parse().unwrap();
 
         let mut health = debug_request("GET", "/health", b"");
-        health.headers.push(("Origin".into(), "https://evil.example".into()));
-        health.headers.push(("Host".into(), "evil.example:37123".into()));
+        health
+            .headers
+            .push(("Origin".into(), "https://evil.example".into()));
+        health
+            .headers
+            .push(("Host".into(), "evil.example:37123".into()));
         assert!(check_local_browser_guard(&health, Some(loopback), "127.0.0.1").is_none());
 
         let mut with_origin = debug_request("POST", "/anthropic/v1/messages", b"{}");
@@ -3533,6 +3569,389 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
                 "host {allowed_host} should be allowed"
             );
         }
+    }
+    // ---- gateway plugin middleware / provider bridge -----------------------
+
+    fn middleware_plugin_manager(
+        root: &std::path::Path,
+        source: &str,
+    ) -> crate::plugins::PluginManagerState {
+        use crate::plugins::types::{InstalledPluginRecord, PluginKind};
+
+        let directory = root.join("middleware-demo");
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("package.json"),
+            json!({"name": "middleware-demo", "magpie": {"middleware": "index.middleware.js"}})
+                .to_string(),
+        )
+        .unwrap();
+        std::fs::write(directory.join("index.middleware.js"), source).unwrap();
+
+        let plugin_db = SqliteDbState::in_memory_for_test().unwrap();
+        crate::plugins::store::upsert_installed_plugin(
+            &plugin_db,
+            &InstalledPluginRecord {
+                id: "middleware-demo".to_string(),
+                spec: "middleware-demo".to_string(),
+                package_name: "middleware-demo".to_string(),
+                display_name: "Middleware Demo".to_string(),
+                version: "1.0.0".to_string(),
+                kind: PluginKind::Middleware,
+                enabled: true,
+                source_type: "local".to_string(),
+                local_path: directory.to_string_lossy().to_string(),
+                middleware_entry: "index.middleware.js".to_string(),
+                ..InstalledPluginRecord::default()
+            },
+        )
+        .unwrap();
+
+        let manager = crate::plugins::PluginManager::new(plugin_db, root.join("app-data"));
+        tauri::async_runtime::block_on(manager.middleware().reload());
+        manager
+    }
+
+    #[test]
+    fn plugin_middleware_rewrites_the_request_body_before_forwarding() {
+        let (base_url, captured_rx) = start_test_upstream();
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        insert_claude_provider(
+            &db,
+            json!({
+                "name": "Middleware Upstream",
+                "category": "custom",
+                "settings_config": json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": base_url,
+                        "ANTHROPIC_AUTH_TOKEN": "test-key"
+                    }
+                })
+                .to_string(),
+                "extra_settings_config": "{}",
+                "is_applied": true,
+                "is_disabled": false,
+            }),
+        );
+
+        let plugin_root = tempfile::tempdir().unwrap();
+        let manager = middleware_plugin_manager(
+            plugin_root.path(),
+            r#"export function onRequest(body) { body.model = "middleware-model"; return body }"#,
+        );
+        let log_dir = tempfile::tempdir().unwrap();
+        let context = GatewayRuntimeContext::new(
+            ProxyGatewaySettings {
+                request_log_enabled: false,
+                metrics_enabled: false,
+                ..Default::default()
+            },
+            Some(db),
+            Some(ProxyGatewayPaths::new(log_dir.path())),
+        )
+        .with_plugin_manager(manager);
+
+        let response = tauri::async_runtime::block_on(route_request(
+            &debug_request(
+                "POST",
+                "/anthropic/v1/messages",
+                br#"{"model":"claude-sonnet-4-6","messages":[]}"#,
+            ),
+            &context,
+        ));
+        assert_eq!(response.status_code, 200);
+        let captured = captured_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured upstream request");
+        assert!(captured.contains(r#""model":"middleware-model""#));
+    }
+
+    #[test]
+    fn plugin_middleware_reject_prevents_the_upstream_request() {
+        let (base_url, captured_rx) = start_test_upstream();
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        insert_claude_provider(
+            &db,
+            json!({
+                "name": "Reject Upstream",
+                "category": "custom",
+                "settings_config": json!({
+                    "env": {
+                        "ANTHROPIC_BASE_URL": base_url,
+                        "ANTHROPIC_AUTH_TOKEN": "test-key"
+                    }
+                })
+                .to_string(),
+                "extra_settings_config": "{}",
+                "is_applied": true,
+                "is_disabled": false,
+            }),
+        );
+
+        let plugin_root = tempfile::tempdir().unwrap();
+        let manager = middleware_plugin_manager(
+            plugin_root.path(),
+            r#"export function onRequest(body, ctx) { ctx.reject(403, "blocked by policy"); return undefined }"#,
+        );
+        let context = GatewayRuntimeContext::new(
+            ProxyGatewaySettings {
+                request_log_enabled: false,
+                metrics_enabled: false,
+                ..Default::default()
+            },
+            Some(db),
+            None,
+        )
+        .with_plugin_manager(manager);
+
+        let response = tauri::async_runtime::block_on(route_request(
+            &debug_request(
+                "POST",
+                "/anthropic/v1/messages",
+                br#"{"model":"claude-sonnet-4-6","messages":[]}"#,
+            ),
+            &context,
+        ));
+        assert_eq!(response.status_code, 403);
+        assert_eq!(
+            response.error_category.as_deref(),
+            Some("middleware_rejected")
+        );
+        assert!(String::from_utf8_lossy(&response.body).contains("blocked by policy"));
+        assert!(captured_rx
+            .recv_timeout(Duration::from_millis(200))
+            .is_err());
+    }
+
+    #[test]
+    fn plugin_middleware_on_provider_isolates_failover_attempts() {
+        let (first_base_url, first_rx) =
+            start_test_upstream_with_response(500, "Internal Server Error", br#"{"error":"boom"}"#);
+        let (second_base_url, second_rx) = start_test_upstream();
+        let (_dir, db) = tauri::async_runtime::block_on(create_test_db());
+        for (name, base_url, sort_index) in [
+            ("First Upstream", first_base_url, 0),
+            ("Second Upstream", second_base_url, 1),
+        ] {
+            insert_claude_provider(
+                &db,
+                json!({
+                    "name": name,
+                    "category": "custom",
+                    "settings_config": json!({
+                        "env": {
+                            "ANTHROPIC_BASE_URL": base_url,
+                            "ANTHROPIC_AUTH_TOKEN": "test-key"
+                        }
+                    })
+                    .to_string(),
+                    "extra_settings_config": "{}",
+                    "is_applied": false,
+                    "is_disabled": false,
+                    "sort_index": sort_index,
+                }),
+            );
+        }
+
+        let plugin_root = tempfile::tempdir().unwrap();
+        let manager = middleware_plugin_manager(
+            plugin_root.path(),
+            r#"export function onProvider(body, ctx) { body.provider_tag = ctx.provider.name; return body }"#,
+        );
+        let context = GatewayRuntimeContext::new(
+            ProxyGatewaySettings {
+                request_log_enabled: false,
+                metrics_enabled: false,
+                per_provider_retry_count: 0,
+                max_retry_count: 2,
+                retry_interval_secs: 0,
+                ..Default::default()
+            },
+            Some(db),
+            None,
+        )
+        .with_plugin_manager(manager);
+
+        let response = tauri::async_runtime::block_on(route_request(
+            &debug_request(
+                "POST",
+                "/anthropic/v1/messages",
+                br#"{"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}]}"#,
+            ),
+            &context,
+        ));
+        assert_eq!(response.status_code, 200);
+        assert!(response.failover);
+
+        let first_captured = first_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured first attempt");
+        assert!(first_captured.contains(r#""provider_tag":"First Upstream""#));
+        assert!(!first_captured.contains("Second Upstream"));
+
+        let second_captured = second_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("captured second attempt");
+        assert!(second_captured.contains(r#""provider_tag":"Second Upstream""#));
+        assert!(!second_captured.contains("First Upstream"));
+    }
+
+    #[test]
+    fn plugin_middleware_on_event_replaces_and_drops_sse_frames() {
+        let plugin_root = tempfile::tempdir().unwrap();
+        let manager = middleware_plugin_manager(
+            plugin_root.path(),
+            r#"export const events = ["keep.me", "drop.me", "replace.me"]
+            export function onEvent(data) {
+                if (data.b === 2) return null;
+                if (data.c === 3) return { replaced: true };
+                return data;
+            }"#,
+        );
+        let middleware = manager.middleware().clone();
+        assert!(middleware.has_event_hooks());
+        let info = crate::plugins::middleware_rt::RequestInfo {
+            protocol: "anthropic_messages".to_string(),
+            model: "m".to_string(),
+            stream: true,
+            path: "/v1/messages".to_string(),
+            agent: String::new(),
+            caller: None,
+        };
+        let chunks: Vec<Result<Vec<u8>, String>> = vec![
+            Ok(b"event: keep.me\ndata: {\"a\":1}\n\nevent: drop".to_vec()),
+            Ok(b".me\ndata: {\"b\":2}\n\nevent: replace.me\ndata: {\"c\":3}\n\n".to_vec()),
+        ];
+        let stream: self::http_io::DebugBodyStream = Box::pin(futures_util::stream::iter(chunks));
+        let state = crate::plugins::middleware_rt::MiddlewareState::new();
+        let session = tauri::async_runtime::block_on(middleware.open_event_session(&info, &state))
+            .expect("event session");
+        let wrapped = sse_middleware_stream(stream, session);
+        let output = tauri::async_runtime::block_on(async {
+            wrapped
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, String>>()
+                .unwrap()
+                .concat()
+        });
+        let text = String::from_utf8_lossy(&output);
+        assert!(text.contains("event: keep.me"));
+        assert!(text.contains(r#"data: {"a":1}"#));
+        assert!(!text.contains("drop.me"));
+        assert!(text.contains("event: replace.me"));
+        assert!(text.contains(r#""replaced":true"#));
+    }
+
+    #[test]
+    fn plugin_middleware_on_response_rewrites_non_streaming_json() {
+        let plugin_root = tempfile::tempdir().unwrap();
+        let manager = middleware_plugin_manager(
+            plugin_root.path(),
+            r#"export function onResponse(body) { body.injected = true; return body }"#,
+        );
+        let context = GatewayRuntimeContext::new(
+            ProxyGatewaySettings {
+                request_log_enabled: false,
+                metrics_enabled: false,
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .with_plugin_manager(manager);
+        let request = debug_request(
+            "POST",
+            "/anthropic/v1/messages",
+            br#"{"model":"claude-sonnet-4-6","messages":[]}"#,
+        );
+        let route = match_gateway_route("/anthropic/v1/messages").unwrap();
+        let mut response = json_response(
+            200,
+            "OK",
+            json!({"ok": true}),
+            "anthropic",
+            None,
+            "test response",
+        );
+        let state = crate::plugins::middleware_rt::MiddlewareState::new();
+        tauri::async_runtime::block_on(apply_response_middleware(
+            &context,
+            &request,
+            &route,
+            &mut response,
+            &state,
+        ));
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["injected"], true);
+
+        // A context without the plugin manager leaves the body untouched.
+        let mut untouched = json_response(
+            200,
+            "OK",
+            json!({"ok": true}),
+            "anthropic",
+            None,
+            "test response",
+        );
+        let plain = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), None, None);
+        let plain_state = crate::plugins::middleware_rt::MiddlewareState::new();
+        tauri::async_runtime::block_on(apply_response_middleware(
+            &plain,
+            &request,
+            &route,
+            &mut untouched,
+            &plain_state,
+        ));
+        assert_eq!(
+            untouched.body,
+            serde_json::to_vec(&json!({"ok": true})).unwrap()
+        );
+    }
+
+    #[test]
+    fn plugin_route_models_lists_the_plugin_catalog() {
+        let endpoint = crate::plugins::gateway_bridge::PluginProviderEndpoint {
+            provider_id: "demo".to_string(),
+            plugin_spec: "demo-plugin".to_string(),
+            provider_name: "Demo".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            npm: "@ai-sdk/openai-compatible".to_string(),
+            target_protocol: crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiChat,
+            models: vec![crate::plugins::gateway_bridge::PluginModelInfo {
+                id: "demo-model".to_string(),
+                name: "Demo Model".to_string(),
+                npm: String::new(),
+            }],
+        };
+        let response = plugin_models_response(&endpoint);
+        assert_eq!(response.status_code, 200);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["object"], "list");
+        assert_eq!(body["data"][0]["id"], "demo-model");
+        assert_eq!(body["data"][0]["owned_by"], "demo");
+    }
+
+    #[test]
+    fn plugin_route_probe_is_answered_locally() {
+        let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), None, None);
+        for path in ["/plugin/demo", "/plugin/demo/v1", "/plugin/demo/v1beta"] {
+            let response = tauri::async_runtime::block_on(route_request(
+                &debug_request("GET", path, b""),
+                &context,
+            ));
+            assert_eq!(response.status_code, 200);
+        }
+        let missing = tauri::async_runtime::block_on(route_request(
+            &debug_request("GET", "/plugin/demo/v1/models", b""),
+            &context,
+        ));
+        assert_eq!(missing.status_code, 503);
+        assert_eq!(
+            missing.error_category.as_deref(),
+            Some("plugin_runtime_missing")
+        );
     }
 }
 
@@ -3576,8 +3995,8 @@ fn check_local_browser_guard(
         }
     }
 
-    let is_loopback_listener = listen_addr
-        .is_none_or(|addr| addr.ip().is_loopback() || addr.ip().is_unspecified());
+    let is_loopback_listener =
+        listen_addr.is_none_or(|addr| addr.ip().is_loopback() || addr.ip().is_unspecified());
     for (name, host_header) in &request.headers {
         if name.eq_ignore_ascii_case("host")
             && !is_allowed_gateway_host(host_header, configured_host, is_loopback_listener)

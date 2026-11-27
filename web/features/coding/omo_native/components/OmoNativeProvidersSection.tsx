@@ -720,6 +720,8 @@ const OmoNativeProvidersSection: React.FC<OmoNativeProvidersSectionProps> = ({
         onBatchTest={handleBatchTestProviders}
         batchTesting={batchTesting}
         onAddProvider={() => openProviderModal()}
+        pluginCliKey="omo_native"
+        onPluginProviderChanged={loadProviders}
         headerExtra={
           builtinCount > 0 ? (
             <Text type="secondary" style={{ fontSize: 12 }}>

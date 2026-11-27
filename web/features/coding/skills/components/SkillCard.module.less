@@ -293,6 +293,34 @@
   white-space: nowrap;
 }
 
+// Built-in Skills are versioned by the app: the footer shows a compact
+// "Built-in" badge plus the binary version instead of a clickable source.
+.builtinSource {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 60%;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.builtinSourceLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 5px;
+  border: 1px solid var(--color-border-card);
+  border-radius: 4px;
+  background: var(--color-bg-elevated);
+
+  > svg {
+    flex-shrink: 0;
+  }
+}
+
 .footerTime {
   flex-shrink: 0;
   color: var(--color-text-secondary);

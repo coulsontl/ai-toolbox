@@ -25,6 +25,7 @@ export interface SkillGroupLabels {
   groupImport: string;
   groupUngrouped: string;
   groupCentral?: string;
+  groupBuiltin?: string;
 }
 
 export type GitRepoInfoResolver = (
@@ -198,6 +199,15 @@ function buildSourceGroup(
       id: null,
       label: labels.groupCentral || 'Central',
       sourceType: 'central',
+    };
+  }
+
+  if (skill.source_type === 'builtin') {
+    return {
+      key: 'builtin',
+      id: null,
+      label: labels.groupBuiltin || 'AI Toolbox Built-in',
+      sourceType: 'builtin',
     };
   }
 

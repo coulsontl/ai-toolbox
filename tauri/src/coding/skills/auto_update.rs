@@ -12,6 +12,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::db::SqliteDbState;
 
+use super::builtin::ensure_builtin_skills;
 use super::commands::update_all_skills_internal;
 use super::cron_utils::parse_cron;
 use super::skill_store;
@@ -31,6 +32,15 @@ pub fn start(app: AppHandle) {
     }
 
     tauri::async_runtime::spawn(async move {
+        // The built-in Skill must exist on a fresh launch even before the user
+        // opens the Skills page. This task is started once during app setup,
+        // so it doubles as the startup wiring for that idempotent ensure.
+        if let Some(db) = app.try_state::<SqliteDbState>() {
+            if let Err(error) = ensure_builtin_skills(db.inner()).await {
+                log::warn!("Failed to ensure built-in Skills at startup: {}", error);
+            }
+        }
+
         tokio::time::sleep(GLOBAL_INITIAL_DELAY).await;
 
         // `last_run` tracks when we last executed a pass; cron fires strictly after it.

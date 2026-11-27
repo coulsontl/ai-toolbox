@@ -1397,6 +1397,8 @@ const ZcodePage: React.FC = () => {
             setIsCopyMode(false);
             setFormModalOpen(true);
           }}
+          pluginCliKey="zcode"
+          onPluginProviderChanged={() => loadConfig()}
           hint={
             <>
               <div>{t('zcode.pageHint')}</div>

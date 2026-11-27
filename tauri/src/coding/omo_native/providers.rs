@@ -22,7 +22,8 @@ use crate::db::SqliteDbState;
 // ============================================================================
 
 async fn agent_dir(db: &SqliteDbState) -> Result<std::path::PathBuf, String> {
-    let location = crate::coding::runtime_location::get_omo_native_runtime_location_async(db).await?;
+    let location =
+        crate::coding::runtime_location::get_omo_native_runtime_location_async(db).await?;
     Ok(location.host_path.clone())
 }
 
@@ -37,7 +38,10 @@ pub(super) async fn agent_dir_for(db: &SqliteDbState) -> Result<std::path::PathB
 /// keys must go through this so the app and the engine never edit two
 /// different files.
 pub fn resolve_omo_native_settings_file_name(agent_dir: &Path) -> &'static str {
-    if agent_dir.join(constants::OMO_NATIVE_SETTINGS_FILE_FALLBACK).exists() {
+    if agent_dir
+        .join(constants::OMO_NATIVE_SETTINGS_FILE_FALLBACK)
+        .exists()
+    {
         constants::OMO_NATIVE_SETTINGS_FILE_FALLBACK
     } else {
         constants::OMO_NATIVE_SETTINGS_FILE
@@ -48,8 +52,8 @@ fn read_json_object(path: &Path) -> Result<Option<Value>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
     let parsed: Value = json5::from_str(&content)
         .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
     Ok(Some(parsed))
@@ -284,7 +288,20 @@ pub async fn save_omo_native_provider(
     }
 
     let dir = agent_dir(&db).await?;
+    upsert_omo_native_provider_at(&dir, key, input.config, input.api_key.as_deref())?;
+    let _ = app.emit("config-changed", "omo_native");
+    Ok(())
+}
 
+/// Path-based provider upsert shared by the Tauri command and the gateway
+/// plugin integration: writes `models.json.providers.<key>` and clears the same
+/// key from `auth.json` so the engine's auth-first lookup cannot shadow it.
+pub(crate) fn upsert_omo_native_provider_at(
+    dir: &Path,
+    key: &str,
+    config: Value,
+    api_key: Option<&str>,
+) -> Result<(), String> {
     // --- models.json ---
     let models_path = dir.join(constants::OMO_NATIVE_MODELS_FILE);
     let mut models = read_json_object(&models_path)?.unwrap_or_else(|| json!({}));
@@ -300,16 +317,16 @@ pub async fn save_omo_native_provider(
         *providers = json!({});
     }
 
-    let mut config_to_store = input.config.clone();
+    let mut config_to_store = config.clone();
     // 显式传入的 key 优先（空串表示不动）；没传就沿用已有的 `apiKey`
     // ——包括从 `auth.json` 迁移过来的那个。
-    let api_key_to_store = match input.api_key.as_deref() {
+    let api_key_to_store = match api_key {
         Some(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
         Some(_) => None,
         None => provider_api_key(
             read_json_object(&dir.join(constants::OMO_NATIVE_AUTH_FILE))?.as_ref(),
             key,
-            &input.config,
+            &config,
             constants::is_builtin_provider(key),
         ),
     };
@@ -362,9 +379,26 @@ pub async fn save_omo_native_provider(
             }
         }
     }
-
-    let _ = app.emit("config-changed", "omo_native");
     Ok(())
+}
+
+/// Read one `models.json.providers.<key>` entry for in-place model refreshes.
+pub(crate) fn read_omo_native_provider_at(dir: &Path, key: &str) -> Result<Option<Value>, String> {
+    Ok(
+        read_json_object(&dir.join(constants::OMO_NATIVE_MODELS_FILE))?.and_then(|models| {
+            models
+                .get("providers")
+                .and_then(|providers| providers.get(key))
+                .cloned()
+        }),
+    )
+}
+
+/// Resolve the engine's agent directory from a plain DB handle.
+pub(crate) async fn omo_native_agent_dir_from_db(
+    db: &SqliteDbState,
+) -> Result<std::path::PathBuf, String> {
+    agent_dir(db).await
 }
 
 /// 按给定 key 顺序重排 `providers` 对象（纯逻辑，便于单测）。
@@ -654,7 +688,10 @@ mod tests {
     fn reorder_applies_the_given_order() {
         let mut map = map_with_keys(&["a", "b", "c"]);
 
-        reorder_provider_map(&mut map, &["c".to_string(), "a".to_string(), "b".to_string()]);
+        reorder_provider_map(
+            &mut map,
+            &["c".to_string(), "a".to_string(), "b".to_string()],
+        );
 
         assert_eq!(keys_of(&map), vec!["c", "a", "b"]);
         // 值跟着键走，不能只搬键名。
@@ -703,8 +740,13 @@ mod tests {
     #[test]
     fn custom_credential_is_read_from_models_json_api_key() {
         assert_eq!(
-            provider_api_key(None, "shangtang", &json!({ "apiKey": "sk-from-models" }), false)
-                .as_deref(),
+            provider_api_key(
+                None,
+                "shangtang",
+                &json!({ "apiKey": "sk-from-models" }),
+                false
+            )
+            .as_deref(),
             Some("sk-from-models"),
         );
     }
@@ -766,16 +808,28 @@ mod tests {
     #[test]
     fn blank_or_missing_api_key_is_not_a_credential() {
         assert_eq!(provider_api_key(None, "p", &json!({}), false), None);
-        assert_eq!(provider_api_key(None, "p", &json!({ "apiKey": "" }), false), None);
-        assert_eq!(provider_api_key(None, "p", &json!({ "apiKey": "   " }), false), None);
+        assert_eq!(
+            provider_api_key(None, "p", &json!({ "apiKey": "" }), false),
+            None
+        );
+        assert_eq!(
+            provider_api_key(None, "p", &json!({ "apiKey": "   " }), false),
+            None
+        );
         // 非字符串的 apiKey 不能当成凭据（引擎也不会读它）。
-        assert_eq!(provider_api_key(None, "p", &json!({ "apiKey": 42 }), false), None);
+        assert_eq!(
+            provider_api_key(None, "p", &json!({ "apiKey": 42 }), false),
+            None
+        );
     }
 
     #[test]
     fn credential_lookup_is_per_provider() {
         let auth = json!({ "other": { "key": "sk-other" } });
-        assert_eq!(provider_api_key(Some(&auth), "shangtang", &json!({}), false), None);
+        assert_eq!(
+            provider_api_key(Some(&auth), "shangtang", &json!({}), false),
+            None
+        );
     }
 
     #[test]
@@ -789,7 +843,10 @@ mod tests {
         assert_eq!(unescape_literal_config_value("trailing$"), "trailing$");
         // 与转义互逆（转义是幂等的反面：只能转义一次，所以往返只跑一轮）。
         for raw in ["sk-plain", "a$b", "a!b", "${ENV}", "$$", "!!", "$!"] {
-            assert_eq!(unescape_literal_config_value(&escape_literal_config_value(raw)), raw);
+            assert_eq!(
+                unescape_literal_config_value(&escape_literal_config_value(raw)),
+                raw
+            );
         }
     }
 }

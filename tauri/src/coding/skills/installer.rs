@@ -99,6 +99,9 @@ async fn prepare_install_target(
         if !overwrite {
             anyhow::bail!("SKILL_EXISTS|{}", name);
         }
+        if let Some(existing) = existing_skill.as_ref() {
+            super::builtin::guard_builtin_overwrite(existing).map_err(anyhow::Error::msg)?;
+        }
         if central_path.exists() {
             std::fs::remove_dir_all(&central_path)
                 .with_context(|| format!("failed to remove existing skill: {:?}", central_path))?;

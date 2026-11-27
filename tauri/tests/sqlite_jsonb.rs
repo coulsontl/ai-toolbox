@@ -14,8 +14,8 @@ use ai_toolbox_lib::db::helpers::{
 use ai_toolbox_lib::db::migrations::{self, TARGET_SCHEMA_VERSION};
 use ai_toolbox_lib::db::schema::{
     validate_identifier, Cli, CliConfigKind, DbTable, ImageEntityKind, JsonFieldPath,
-    McpEntityKind, OrderDirection, OrderField, OrderSpec, RelayKind, SkillEntityKind,
-    SyncEntityKind, ALL_TABLES,
+    McpEntityKind, OrderDirection, OrderField, OrderSpec, PluginEntityKind, RelayKind,
+    SkillEntityKind, SyncEntityKind, ALL_TABLES,
 };
 use ai_toolbox_lib::db::sqlite_state::{
     initialize_connection, SqliteDbState, SQLITE_MIGRATION_BACKUP_DIR,
@@ -499,11 +499,9 @@ fn already_migrated_v18_without_latency_samples_is_repaired_with_backup() {
         ).unwrap();
         assert_eq!((proxy_samples, session_samples), (4, 0));
         let state_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM usage_session_state",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM usage_session_state", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(state_count, 1);
         Ok(())
@@ -848,9 +846,13 @@ fn put_derives_columns_from_numeric_json_timestamps_without_changing_json_type()
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("read numeric timestamp");
-    let record = db_get(&conn, DbTable::ImageEntity(ImageEntityKind::Asset), "asset-1")
-        .expect("get image asset")
-        .expect("image asset record");
+    let record = db_get(
+        &conn,
+        DbTable::ImageEntity(ImageEntityKind::Asset),
+        "asset-1",
+    )
+    .expect("get image asset")
+    .expect("image asset record");
 
     assert_eq!(column_created_at, "1777777777");
     assert_eq!(json_created_type, "integer");
@@ -870,10 +872,16 @@ fn create_generates_clean_id_and_count_delete_work() {
     let id = created["id"].as_str().expect("id");
     assert_eq!(id.len(), 32);
     assert!(id.chars().all(|char| char.is_ascii_hexdigit()));
-    assert_eq!(db_count(&conn, DbTable::McpEntity(McpEntityKind::Server)).expect("count"), 1);
+    assert_eq!(
+        db_count(&conn, DbTable::McpEntity(McpEntityKind::Server)).expect("count"),
+        1
+    );
 
     assert!(db_delete(&conn, DbTable::McpEntity(McpEntityKind::Server), id).expect("delete"));
-    assert_eq!(db_count(&conn, DbTable::McpEntity(McpEntityKind::Server)).expect("count"), 0);
+    assert_eq!(
+        db_count(&conn, DbTable::McpEntity(McpEntityKind::Server)).expect("count"),
+        0
+    );
 }
 
 #[test]
@@ -1418,7 +1426,10 @@ fn v31_migration_adds_the_native_tools_column_without_touching_history() {
     }
     let db = SqliteDbState::open(path.clone()).unwrap();
     db.with_conn(|conn| {
-        assert_eq!(migrations::get_user_version(conn).unwrap(), TARGET_SCHEMA_VERSION);
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
         let totals: (i64, i64, i64, i64) = conn
             .query_row(
                 "SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens),
@@ -1428,7 +1439,11 @@ fn v31_migration_adds_the_native_tools_column_without_touching_history() {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .unwrap();
-        assert_eq!(totals, (2, 303, 36, 2), "history is preserved and unlabelled");
+        assert_eq!(
+            totals,
+            (2, 303, 36, 2),
+            "history is preserved and unlabelled"
+        );
         Ok(())
     })
     .unwrap();
@@ -1499,8 +1514,14 @@ fn v32_migration_adds_workbuddy_tables_to_an_already_v31_database() {
         }
         // The WorkBuddy/CodeBuddy provider tables folded too, under scopes that
         // must not collide with any other CLI's.
-        assert_eq!(db_count(conn, DbTable::CliProvider(Cli::Workbuddy)).unwrap(), 0);
-        assert_eq!(db_count(conn, DbTable::CliProvider(Cli::Codebuddy)).unwrap(), 0);
+        assert_eq!(
+            db_count(conn, DbTable::CliProvider(Cli::Workbuddy)).unwrap(),
+            0
+        );
+        assert_eq!(
+            db_count(conn, DbTable::CliProvider(Cli::Codebuddy)).unwrap(),
+            0
+        );
         assert_ne!(
             DbTable::CliProvider(Cli::Workbuddy).scope(),
             DbTable::CliProvider(Cli::Codebuddy).scope()
@@ -1559,11 +1580,9 @@ fn v33_consolidates_the_per_cli_tables_on_an_already_v32_database() {
 
         for table in ["cli_provider", "cli_official_account", "cli_config"] {
             let count: i64 = conn
-                .query_row(
-                    &format!("SELECT COUNT(*) FROM {table}"),
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .map_err(|error| format!("{table} missing after v33: {error}"))?;
             assert_eq!(count, 0, "{table} should start empty on this fixture");
         }
@@ -1662,15 +1681,21 @@ fn v33_moves_every_legacy_row_into_the_shared_tables_with_its_scope() {
 
         // The literal `common` id survives in both scopes instead of one
         // overwriting the other.
-        let claude_common =
-            db_get(conn, DbTable::CliConfig(Cli::Claude, CliConfigKind::Common), "common")
-                .unwrap()
-                .expect("claude common config");
+        let claude_common = db_get(
+            conn,
+            DbTable::CliConfig(Cli::Claude, CliConfigKind::Common),
+            "common",
+        )
+        .unwrap()
+        .expect("claude common config");
         assert_eq!(claude_common["config"], "{\"claude\":true}");
-        let codex_common =
-            db_get(conn, DbTable::CliConfig(Cli::Codex, CliConfigKind::Common), "common")
-                .unwrap()
-                .expect("codex common config");
+        let codex_common = db_get(
+            conn,
+            DbTable::CliConfig(Cli::Codex, CliConfigKind::Common),
+            "common",
+        )
+        .unwrap()
+        .expect("codex common config");
         assert_eq!(codex_common["config"], "{\"codex\":true}");
 
         // `is_applied` moved with the row, so the applied preset is still the
@@ -1911,24 +1936,36 @@ fn v35_folds_feature_tables_into_kind_scoped_entities() {
         assert_eq!(skill["created_at"], "ct");
         assert_eq!(skill["updated_at"], "ut");
         assert_eq!(
-            db_get(conn, DbTable::SkillEntity(SkillEntityKind::Preferences), "default")
-                .unwrap()
-                .expect("skill preferences")["default_view_mode"],
+            db_get(
+                conn,
+                DbTable::SkillEntity(SkillEntityKind::Preferences),
+                "default"
+            )
+            .unwrap()
+            .expect("skill preferences")["default_view_mode"],
             "flat"
         );
         assert_eq!(
-            db_get(conn, DbTable::SkillEntity(SkillEntityKind::Settings), "skills")
-                .unwrap()
-                .expect("skill settings")["git_cache_cleanup_days"],
+            db_get(
+                conn,
+                DbTable::SkillEntity(SkillEntityKind::Settings),
+                "skills"
+            )
+            .unwrap()
+            .expect("skill settings")["git_cache_cleanup_days"],
             30
         );
 
         // The same literal id `default` must survive in both the Skill and MCP
         // preferences kinds.
         assert_eq!(
-            db_get(conn, DbTable::McpEntity(McpEntityKind::Preferences), "default")
-                .unwrap()
-                .expect("mcp preferences")["show_in_tray"],
+            db_get(
+                conn,
+                DbTable::McpEntity(McpEntityKind::Preferences),
+                "default"
+            )
+            .unwrap()
+            .expect("mcp preferences")["show_in_tray"],
             true
         );
 
@@ -2275,7 +2312,9 @@ fn v36_reserves_pricing_basis_and_renames_session_ledger() {
         let mut pk: Vec<(i64, String)> = conn
             .prepare("PRAGMA table_info(usage_daily_rollups)")
             .unwrap()
-            .query_map([], |row| Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?)))
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?))
+            })
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
@@ -2353,7 +2392,9 @@ fn v36_reserves_pricing_basis_and_renames_session_ledger() {
         )
         .unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(
             count, 2,
@@ -2378,7 +2419,9 @@ fn v36_reserves_pricing_basis_and_renames_session_ledger() {
         )
         .unwrap();
         let count_with_tier: i64 = conn
-            .query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM usage_daily_rollups", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(count_with_tier, 3);
         conn.execute(
@@ -2565,18 +2608,26 @@ fn literal_config_ids_coexist_across_clis_and_kinds() {
     }
 
     for (cli, expected) in [(Cli::Claude, "claude"), (Cli::Codex, "codex")] {
-        let record = db_get(&conn, DbTable::CliConfig(cli, CliConfigKind::Common), "common")
-            .unwrap()
-            .expect("common config must survive its sibling");
+        let record = db_get(
+            &conn,
+            DbTable::CliConfig(cli, CliConfigKind::Common),
+            "common",
+        )
+        .unwrap()
+        .expect("common config must survive its sibling");
         assert_eq!(record["config"], expected);
     }
     for (cli, expected) in [
         (Cli::OhMyOpenAgent, "openagent"),
         (Cli::OhMyOpenCodeSlim, "slim"),
     ] {
-        let record = db_get(&conn, DbTable::CliConfig(cli, CliConfigKind::Global), "global")
-            .unwrap()
-            .expect("global config must survive its sibling");
+        let record = db_get(
+            &conn,
+            DbTable::CliConfig(cli, CliConfigKind::Global),
+            "global",
+        )
+        .unwrap()
+        .expect("global config must survive its sibling");
         assert_eq!(record["config"], expected);
     }
 
@@ -2666,9 +2717,11 @@ fn relay_kinds_do_not_see_each_other() {
             .len(),
         1
     );
-    assert!(db_list(&conn, DbTable::RelayEntity(RelayKind::Plugin), None)
-        .unwrap()
-        .is_empty());
+    assert!(
+        db_list(&conn, DbTable::RelayEntity(RelayKind::Plugin), None)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ---- schema parity: fresh install vs upgrade --------------------------------
@@ -2793,7 +2846,12 @@ fn pruning_the_checkin_ledger_drops_only_old_rows_in_its_own_scope() {
     let now = 1_800_000_000_000_i64;
 
     // Two recent and two expired ledger rows.
-    for (id, age_days) in [("recent-1", 1), ("recent-2", 89), ("old-1", 91), ("old-2", 400)] {
+    for (id, age_days) in [
+        ("recent-1", 1),
+        ("recent-2", 89),
+        ("old-1", 91),
+        ("old-2", 400),
+    ] {
         db_put(&conn, ledger, id, &json!({ "ts": now - age_days * day_ms })).unwrap();
     }
     // A channel row carrying the same `ts` shape must survive: different kind.
@@ -2843,4 +2901,141 @@ fn pruning_one_config_scope_leaves_the_others_alone() {
         1,
         "the other kind under the same cli_key must survive"
     );
+}
+
+/// v38 adds `plugin_entity` and seeds the built-in Magpie market. The fixture
+/// starts from a real file database at `user_version = 37` with the table
+/// absent, so it exercises the same upgrade path a released install takes.
+#[test]
+fn v38_migration_adds_plugin_entity_to_a_real_v37_database() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("already-v37.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        initialize_connection(&mut conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS plugin_entity;
+             PRAGMA user_version = 37;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO settings (id, data, created_at, updated_at)
+             VALUES ('app', jsonb('{\"theme\":\"dark\"}'), 'before', 'before')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let db = SqliteDbState::open(path.clone()).unwrap();
+    db.with_conn(|conn| {
+        assert_eq!(
+            migrations::get_user_version(conn).unwrap(),
+            TARGET_SCHEMA_VERSION
+        );
+        assert_eq!(
+            DbTable::PluginEntity(PluginEntityKind::InstalledPlugin).name(),
+            "plugin_entity",
+            "the schema enum must point at the v38 table"
+        );
+
+        // Existing rows survive the upgrade.
+        let theme: String = conn
+            .query_row(
+                "SELECT json_extract(data, '$.theme') FROM settings WHERE id = 'app'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(theme, "dark");
+
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name = 'plugin_entity'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_exists, 1);
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_plugin_entity_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_exists, 1);
+
+        let (url, builtin, enabled): (String, bool, bool) = conn
+            .query_row(
+                "SELECT json_extract(data, '$.url'),
+                        json_extract(data, '$.builtin'),
+                        json_extract(data, '$.enabled')
+                 FROM plugin_entity
+                 WHERE kind = 'market_source' AND id = 'magpie-community'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            url,
+            "https://raw.githubusercontent.com/magpie-community/plugins/main/registry.json"
+        );
+        assert!(builtin);
+        assert!(enabled);
+
+        // The shared helpers work against the new table with its (kind, id) PK.
+        db_put(
+            conn,
+            DbTable::PluginEntity(PluginEntityKind::InstalledPlugin),
+            "demo",
+            &json!({ "packageName": "demo", "enabled": true }),
+        )
+        .unwrap();
+        let record = db_get(
+            conn,
+            DbTable::PluginEntity(PluginEntityKind::InstalledPlugin),
+            "demo",
+        )
+        .unwrap()
+        .expect("installed plugin row");
+        assert_eq!(record["packageName"], "demo");
+        // The same id under another kind is a different row.
+        assert!(db_get(
+            conn,
+            DbTable::PluginEntity(PluginEntityKind::MarketSource),
+            "demo"
+        )
+        .unwrap()
+        .is_none());
+        Ok(())
+    })
+    .unwrap();
+    drop(db);
+
+    // Reopening is idempotent and still has exactly one built-in market row.
+    let mut conn = Connection::open(&path).unwrap();
+    migrations::run_all(&mut conn).unwrap();
+    assert_eq!(
+        migrations::get_user_version(&conn).unwrap(),
+        TARGET_SCHEMA_VERSION
+    );
+    let builtin_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM plugin_entity
+             WHERE kind = 'market_source' AND id = 'magpie-community'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(builtin_rows, 1);
+    let installed_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM plugin_entity WHERE kind = 'installed_plugin'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(installed_rows, 1, "the v38 row must survive a reopen");
 }

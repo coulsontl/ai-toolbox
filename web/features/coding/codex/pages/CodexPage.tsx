@@ -2697,6 +2697,8 @@ const CodexPage: React.FC = () => {
           batchTesting={batchTestingProviders}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
           onAddProvider={handleAddProvider}
+          pluginCliKey="codex"
+          onPluginProviderChanged={() => loadConfig(true)}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           headerExtra={

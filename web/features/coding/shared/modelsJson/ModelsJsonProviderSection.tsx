@@ -51,6 +51,8 @@ export interface ModelsJsonProviderSectionProps {
   onTestModels: (channel: WorkbuddyProviderView) => void;
   /** Opens the shared "fetch models" dialog for one channel. */
   onFetchModels: (channel: WorkbuddyProviderView) => void;
+  /** Re-read the page's channels after a plugin import / model sync. */
+  onPluginProviderChanged?: () => void | Promise<void>;
 }
 
 /**
@@ -86,8 +88,16 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
   onDeleteModels,
   onTestModels,
   onFetchModels,
+  onPluginProviderChanged,
 }) => {
   const { t } = useTranslation();
+  // The shared contract is `models.json`; the two products differ only in the
+  // backend's CLI key (`workbuddy` / `codebuddy`, the coding sub-tab keys).
+  const pluginCliKey = moduleKey === 'workbuddy'
+    ? 'workbuddy'
+    : moduleKey === 'codebuddy'
+      ? 'codebuddy'
+      : undefined;
 
   const [collapsed, setCollapsed] = React.useState(false);
   const [keyword, setKeyword] = React.useState('');
@@ -214,6 +224,8 @@ const ModelsJsonProviderSection: React.FC<ModelsJsonProviderSectionProps> = ({
       // (`models.json` is a flat list and the product never reads a channel
       // order back). The cards simply carry no grip, which is accurate.
       onAddProvider={onAddProvider}
+      pluginCliKey={pluginCliKey}
+      onPluginProviderChanged={onPluginProviderChanged}
       hint={hint}
     >
       {viewMode === 'card' ? (

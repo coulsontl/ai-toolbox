@@ -11,6 +11,7 @@ import {
 import { SkillCard } from './SkillCard';
 import type { SkillGroup, ToolOption, ManagedSkill } from '../types';
 import { getSkillGroupToolIds, isSkillUngroupedCustomGroup } from '../utils/skillGrouping';
+import { isBuiltinSkill } from '../utils/builtinSkill';
 import styles from './SkillsGroupedList.module.less';
 
 interface SkillsGroupedListProps {
@@ -77,11 +78,18 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
     );
   }
 
-  const isGroupAllSelected = (group: SkillGroup) =>
-    group.skills.length > 0 && group.skills.every((s) => selectedIds.has(s.id));
+  const selectableGroupSkills = (group: SkillGroup) =>
+    group.skills.filter((skill) => !isBuiltinSkill(skill));
 
-  const isGroupPartialSelected = (group: SkillGroup) =>
-    group.skills.some((s) => selectedIds.has(s.id)) && !isGroupAllSelected(group);
+  const isGroupAllSelected = (group: SkillGroup) => {
+    const skills = selectableGroupSkills(group);
+    return skills.length > 0 && skills.every((skill) => selectedIds.has(skill.id));
+  };
+
+  const isGroupPartialSelected = (group: SkillGroup) => {
+    const skills = selectableGroupSkills(group);
+    return skills.some((skill) => selectedIds.has(skill.id)) && !isGroupAllSelected(group);
+  };
 
   const renderGroupTools = (group: SkillGroup) => {
     const activeToolIds = new Set(getSkillGroupToolIds(group));
@@ -146,6 +154,7 @@ export const SkillsGroupedList: React.FC<SkillsGroupedListProps> = ({
                     checked={isGroupAllSelected(group)}
                     indeterminate={isGroupPartialSelected(group)}
                     ariaLabel={`${t('skills.batch.selectAll')} ${group.label}`}
+                    disabled={selectableGroupSkills(group).length === 0}
                     onChange={(checked) => onSelectAllGroup(group, checked)}
                   />
                 )}

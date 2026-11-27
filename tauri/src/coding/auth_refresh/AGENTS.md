@@ -2,7 +2,7 @@
 
 ## One-line role
 
-- Schedules **startup** and **interval** OAuth token freshness passes for official CLI accounts (Grok / Codex / Gemini CLI / Kimi / Antigravity).
+- Schedules **startup** and **interval** OAuth token freshness passes for official CLI accounts (Grok / Codex / Gemini CLI / Kimi / Antigravity) and for gateway plugin accounts (background OAuth renewal + optional daily check-in).
 - Does **not** own OAuth HTTP, auth file schemas, or quota/limits APIs.
 
 ## Source of Truth
@@ -32,6 +32,7 @@
 | Codex | yes | 12h | Lead 3d inside Codex ensure_fresh |
 | Kimi | yes | 15m | Lead inside Kimi ensure_fresh |
 | Antigravity | yes | 15m | Lead 5m inside Antigravity ensure_fresh; refresh takes the account-operation lock and only rewrites the live credential when the applied provider owns the applied account |
+| Plugins | yes | 15m | Delegates to `plugins::background_tasks::run_plugin_background_pass`: renews plugin OAuth tokens only when one is within 15 minutes of expiry (or expired with a refresh token), and runs due daily check-ins. Reads SQLite / `plugin-auth.json` first; never starts Bun without a candidate |
 
 ## Gotchas
 
@@ -39,6 +40,8 @@
 - Do not share one OAuth lock across tools; locks stay tool-local.
 - Startup is still `ensure_fresh(force=false)`: not near expiry ⇒ no HTTP refresh.
 - Failures are isolated per account / per tool (debug log only).
+- Plugin renewal goes through the Bun host's `keepSignedIn` RPC, which itself honours the plugin's `auth.keepAlive === false`; the shared scheduler never refreshes a plugin token directly.
+- Plugin check-in bookkeeping lives in `PluginAccountMetaRecord` (`auto_checkin`, `last_checkin_*`), not in this module; a `failed` outcome retries after 30 minutes, and `claimed` / `done` / `ineligible` / `inactive` / `captcha` settle the Beijing day.
 
 ## Minimal verification
 

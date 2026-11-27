@@ -7,6 +7,7 @@ import {
   Globe,
   GripVertical,
   MoreHorizontal,
+  Package,
   Plus,
   Power,
   RefreshCw,
@@ -27,6 +28,7 @@ import type { ManagedSkill, ToolOption } from '../types';
 import { toGitWebUrl } from '../utils/gitUrl';
 import { getSkillFolderOpenCandidates, getSkillManifestPath } from '../utils/skillPath';
 import { flattenDescription } from '../utils/skillDescription';
+import { isBuiltinSkill } from '../utils/builtinSkill';
 import { hashTagColorIndex, normalizeTagList } from '../utils/skillTags';
 import { GitHubSourceIcon, ToolIcon } from '@/features/coding/shared/toolIcon/ToolIcon';
 import styles from './SkillCard.module.less';
@@ -104,12 +106,16 @@ const SkillCardContent = React.memo(function SkillCardContent({
   const { t } = useTranslation();
 
   const typeKey = skill.source_type.toLowerCase();
+  const builtin = isBuiltinSkill(skill);
+  const builtinVersionText = t('skills.builtin.versionLabel', {
+    version: skill.source_revision || '',
+  });
   const sourceWarningMessage = skill.source_health === 'warning'
     ? (skill.source_error || t('skills.sourceWarningFallback'))
     : undefined;
   const cardClassName = [
     styles.card,
-    selectable && selected ? styles.cardSelected : undefined,
+    selectable && selected && !builtin ? styles.cardSelected : undefined,
     !skill.management_enabled ? styles.disabledCard : undefined,
     sourceWarningMessage ? styles.sourceWarningCard : undefined,
   ].filter(Boolean).join(' ');
@@ -144,11 +150,16 @@ const SkillCardContent = React.memo(function SkillCardContent({
   );
 
   const copyValue = React.useMemo(
-    () => toGitWebUrl(skill.source_ref) ?? repoInfo?.href ?? skill.source_ref ?? '',
-    [repoInfo, skill.source_ref],
+    () => (
+      builtin
+        ? skill.central_path
+        : toGitWebUrl(skill.source_ref) ?? repoInfo?.href ?? skill.source_ref ?? ''
+    ),
+    [builtin, repoInfo, skill.central_path, skill.source_ref],
   );
 
   const sourceLabel = React.useMemo(() => {
+    if (builtin) return t('skills.builtin.sourceLabel');
     if (typeKey.includes('git')) return repoInfo?.label ?? 'Git';
     if (skill.source_type === 'local') {
       const parts = (skill.source_ref || '').split(/[\/\\]/);
@@ -156,7 +167,7 @@ const SkillCardContent = React.memo(function SkillCardContent({
     }
     if (skill.source_type === 'central') return t('skills.sourceCentral');
     return skill.source_type;
-  }, [repoInfo, skill.source_ref, skill.source_type, t, typeKey]);
+  }, [builtin, repoInfo, skill.source_ref, skill.source_type, t, typeKey]);
 
   const handleCopy = async () => {
     if (!copyValue) return;
@@ -251,6 +262,9 @@ const SkillCardContent = React.memo(function SkillCardContent({
   }, [isUpdating, loading, onSetManagementEnabled, skill]);
 
   const iconTooltip = React.useMemo(() => {
+    if (builtin) {
+      return t('skills.builtin.readOnlyHint');
+    }
     if (typeKey.includes('git') && (repoUrl || skill.source_ref?.trim())) {
       return t('skills.openRepo');
     }
@@ -258,11 +272,13 @@ const SkillCardContent = React.memo(function SkillCardContent({
       return t('skills.openFolder');
     }
     return undefined;
-  }, [repoUrl, skill.source_ref, skill.source_type, t, typeKey]);
+  }, [builtin, repoUrl, skill.source_ref, skill.source_type, t, typeKey]);
 
-  const iconClickable = !!iconTooltip;
+  const iconClickable = !!iconTooltip && !builtin;
 
-  const iconNode = typeKey.includes('git') ? (
+  const iconNode = builtin ? (
+    <Package size={13} aria-hidden="true" />
+  ) : typeKey.includes('git') ? (
     <GitHubSourceIcon size={13} />
   ) : typeKey.includes('local') ? (
     <FolderOpen size={13} aria-hidden="true" />
@@ -305,31 +321,35 @@ const SkillCardContent = React.memo(function SkillCardContent({
   );
 
   const actionItems = React.useMemo<ManagementMenuItem[]>(
-    () => [
-      {
-        key: 'metadata',
-        icon: <Tags size={14} />,
-        label: t('skills.metadata.edit'),
-        onSelect: () => onEditMetadata(skill),
-        disabled: loading || isUpdating,
-      },
-      {
-        key: 'management-enabled',
-        icon: <Power size={14} />,
-        label: managementToggleLabel,
-        onSelect: handleToggleManagement,
-        disabled: loading || isUpdating,
-      },
-      {
-        key: 'delete',
-        danger: true,
-        icon: <Trash2 size={14} />,
-        label: t('skills.remove'),
-        onSelect: () => onDelete(skill.id),
-        disabled: loading || isUpdating,
-      },
-    ],
-    [handleToggleManagement, isUpdating, loading, managementToggleLabel, onDelete, onEditMetadata, skill, t],
+    () => (
+      builtin
+        ? []
+        : [
+          {
+            key: 'metadata',
+            icon: <Tags size={14} />,
+            label: t('skills.metadata.edit'),
+            onSelect: () => onEditMetadata(skill),
+            disabled: loading || isUpdating,
+          },
+          {
+            key: 'management-enabled',
+            icon: <Power size={14} />,
+            label: managementToggleLabel,
+            onSelect: handleToggleManagement,
+            disabled: loading || isUpdating,
+          },
+          {
+            key: 'delete',
+            danger: true,
+            icon: <Trash2 size={14} />,
+            label: t('skills.remove'),
+            onSelect: () => onDelete(skill.id),
+            disabled: loading || isUpdating,
+          },
+        ]
+    ),
+    [builtin, handleToggleManagement, isUpdating, loading, managementToggleLabel, onDelete, onEditMetadata, skill, t],
   );
 
   // Tag editing lives in the detail panel only; the card tag row is pure
@@ -353,11 +373,22 @@ const SkillCardContent = React.memo(function SkillCardContent({
       <div className={cardClassName} onClick={onOpenDetail ? handleCardClick : undefined}>
         <div className={styles.headerRow}>
           {selectable ? (
-            <ManagementCheckbox
-              ariaLabel={`${t('common.select')} ${skill.name}`}
-              checked={!!selected}
-              onChange={(checked) => onSelectChange?.(skill.id, checked)}
-            />
+            builtin ? (
+              <span title={t('skills.builtin.cannotDelete')}>
+                <ManagementCheckbox
+                  ariaLabel={`${t('skills.builtin.badge')} ${skill.name}`}
+                  checked={false}
+                  disabled
+                  onChange={() => undefined}
+                />
+              </span>
+            ) : (
+              <ManagementCheckbox
+                ariaLabel={`${t('common.select')} ${skill.name}`}
+                checked={!!selected}
+                onChange={(checked) => onSelectChange?.(skill.id, checked)}
+              />
+            )
           ) : dragHandle}
           {!selectable && !dragHandle && (
             <span
@@ -396,23 +427,27 @@ const SkillCardContent = React.memo(function SkillCardContent({
             >
               <Copy size={12} aria-hidden="true" />
             </button>
-            <ManagementMenu
-              items={actionItems}
-              title={t('skills.more')}
-              triggerClassName={styles.miniBtn}
-            >
-              <MoreHorizontal size={14} aria-hidden="true" />
-            </ManagementMenu>
-            <button
-              type="button"
-              className={styles.miniBtn}
-              title={t('skills.updateTooltip')}
-              aria-label={t('skills.updateTooltip')}
-              onClick={() => onUpdate(skill)}
-              disabled={loading || isUpdating || !skill.management_enabled}
-            >
-              <RefreshCw size={13} aria-hidden="true" />
-            </button>
+            {actionItems.length > 0 && (
+              <ManagementMenu
+                items={actionItems}
+                title={t('skills.more')}
+                triggerClassName={styles.miniBtn}
+              >
+                <MoreHorizontal size={14} aria-hidden="true" />
+              </ManagementMenu>
+            )}
+            {!builtin && (
+              <button
+                type="button"
+                className={styles.miniBtn}
+                title={t('skills.updateTooltip')}
+                aria-label={t('skills.updateTooltip')}
+                onClick={() => onUpdate(skill)}
+                disabled={loading || isUpdating || !skill.management_enabled}
+              >
+                <RefreshCw size={13} aria-hidden="true" />
+              </button>
+            )}
           </span>
         </div>
 
@@ -438,16 +473,28 @@ const SkillCardContent = React.memo(function SkillCardContent({
         </div>
 
         <div className={styles.footerRow}>
-          <button
-            type="button"
-            className={`${styles.sourceBtn}${iconClickable ? '' : ` ${styles.sourceBtnStatic}`}`}
-            title={iconTooltip ?? sourceLabel}
-            onClick={iconClickable ? handleIconClick : undefined}
-            disabled={!iconClickable}
-          >
-            {iconNode}
-            <span className={styles.sourceText}>{sourceLabel}</span>
-          </button>
+          {builtin ? (
+            <span
+              className={styles.builtinSource}
+              title={`${t('skills.builtin.badge')} · ${t('skills.builtin.readOnlyHint')}`}
+            >
+              <span className={styles.builtinSourceLabel} aria-label={t('skills.builtin.sourceLabel')}>
+                {iconNode}
+                <span className={styles.sourceText}>{builtinVersionText}</span>
+              </span>
+            </span>
+          ) : (
+            <button
+              type="button"
+              className={`${styles.sourceBtn}${iconClickable ? '' : ` ${styles.sourceBtnStatic}`}`}
+              title={iconTooltip ?? sourceLabel}
+              onClick={iconClickable ? handleIconClick : undefined}
+              disabled={!iconClickable}
+            >
+              {iconNode}
+              <span className={styles.sourceText}>{sourceLabel}</span>
+            </button>
+          )}
           <span className={styles.footerTime}>{formatRelative(skill.updated_at)}</span>
           <span className={styles.footerTools}>
             {syncedTools.map((tool) => {

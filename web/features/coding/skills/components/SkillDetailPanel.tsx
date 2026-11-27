@@ -7,6 +7,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  Package,
   Pencil,
   Plus,
   Power,
@@ -19,6 +20,7 @@ import { useTranslation } from 'react-i18next';
 import MarkdownPreview from '@/components/common/MarkdownPreview';
 import * as api from '../services/skillsApi';
 import type { ManagedSkill, SkillDocument, ToolOption } from '../types';
+import { isBuiltinSkill } from '../utils/builtinSkill';
 import { hashTagColorIndex, normalizeTagList } from '../utils/skillTags';
 import { toGitWebUrl } from '../utils/gitUrl';
 import { getSkillManifestPath } from '../utils/skillPath';
@@ -85,6 +87,8 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
   const [activeDoc, setActiveDoc] = React.useState<string | null>(null);
 
   const typeKey = skill.source_type.toLowerCase();
+  const builtin = isBuiltinSkill(skill);
+  const canEditTags = !!onUpdateTags && !builtin;
   const repoInfo = React.useMemo(() => getRepoInfo(skill.source_ref), [getRepoInfo, skill.source_ref]);
   const syncedToolIds = React.useMemo(
     () => new Set(skill.targets.map((target) => target.tool)),
@@ -117,7 +121,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
 
   const isUpdating = updatingSkillIds.includes(skill.id);
   // Shared disable state for the inline tag and group editors.
-  const metaEditDisabled = loading || isUpdating || !skill.management_enabled;
+  const metaEditDisabled = loading || isUpdating || !skill.management_enabled || builtin;
 
   // Load documents whenever the selected skill changes.
   React.useEffect(() => {
@@ -183,6 +187,10 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
   }, [skill.central_path, t]);
 
   const handleOpenSource = React.useCallback(async () => {
+    if (builtin) {
+      await handleOpenCentral();
+      return;
+    }
     if (typeKey.includes('git')) {
       // Prefer the original ref verbatim for http(s) URLs so subfolder /tree/
       // links open the exact skill page; SSH/SCP refs fall back to the
@@ -203,7 +211,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
     if (skill.source_type === 'local' && sourcePath) {
       void openExistingFolder(sourcePath);
     }
-  }, [handleOpenCentral, openExistingFolder, repoInfo, skill.source_ref, skill.source_type, typeKey]);
+  }, [builtin, handleOpenCentral, openExistingFolder, repoInfo, skill.source_ref, skill.source_type, typeKey]);
 
   // Tag editing mirrors the card's inline editor: Enter or blur commits,
   // Escape cancels. Mutations go through the page-level onUpdateTags callback.
@@ -227,6 +235,9 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
 
   const activeDocument = documents?.find((doc) => doc.filename === activeDoc) ?? null;
   const sourceLabel = React.useMemo(() => {
+    if (builtin) {
+      return t('skills.builtin.versionLabel', { version: skill.source_revision || '' });
+    }
     if (typeKey.includes('git')) return repoInfo?.label ?? skill.source_ref ?? 'Git';
     if (skill.source_type === 'local') {
       const path = skill.source_ref || '';
@@ -235,9 +246,11 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
     }
     if (skill.source_type === 'central') return t('skills.sourceCentral');
     return skill.source_type;
-  }, [repoInfo, skill.source_ref, skill.source_type, t, typeKey]);
+  }, [builtin, repoInfo, skill.source_ref, skill.source_revision, skill.source_type, t, typeKey]);
 
-  const sourceIconNode = typeKey.includes('git') ? (
+  const sourceIconNode = builtin ? (
+    <Package size={13} aria-hidden="true" />
+  ) : typeKey.includes('git') ? (
     <GitHubSourceIcon size={13} />
   ) : typeKey.includes('local') ? (
     <FolderOpen size={13} aria-hidden="true" />
@@ -260,7 +273,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
             <button
               type="button"
               className={styles.sourceBtn}
-              title={sourceLabel}
+              title={builtin ? t('skills.builtin.sourceLabel') : sourceLabel}
               onClick={handleOpenSource}
             >
               {sourceIconNode}
@@ -280,6 +293,12 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
           <p className={styles.description}>{skill.description}</p>
         ) : null}
 
+        {builtin && (
+          <p className={styles.builtinHint} title={t('skills.builtin.cannotEdit')}>
+            {t('skills.builtin.readOnlyHint')}
+          </p>
+        )}
+
         <button
           type="button"
           className={styles.pathRow}
@@ -291,7 +310,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
           <span className={styles.pathText}>{skill.central_path}</span>
         </button>
 
-        {(skill.user_group || skill.user_note || onEditMetadata) && (
+        {(skill.user_group || skill.user_note || (onEditMetadata && !builtin)) && (
           <div className={styles.metaCard}>
             <div className={styles.metaRows}>
               <div className={styles.metaRow}>
@@ -307,7 +326,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
                 </div>
               )}
             </div>
-            {onEditMetadata && (
+            {onEditMetadata && !builtin && (
               <button
                 type="button"
                 className={styles.metaEditBtn}
@@ -325,7 +344,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
           {skillTagList.map((tagItem) => (
             <span key={tagItem} className={`${styles.tagPill} ${tagPillColorClass(tagItem)}`}>
               <span className={styles.tagPillText} title={tagItem}>{tagItem}</span>
-              {onUpdateTags && (
+              {canEditTags && (
                 <button
                   type="button"
                   className={styles.tagRemoveBtn}
@@ -339,7 +358,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
               )}
             </span>
           ))}
-          {tagEditorOpen && onUpdateTags ? (
+          {tagEditorOpen && canEditTags ? (
             <>
               <input
                 className={styles.tagAddInput}
@@ -359,7 +378,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
                 {allTags.map((option) => (<option key={option} value={option} />))}
               </datalist>
             </>
-          ) : onUpdateTags && skillTagList.length === 0 ? (
+          ) : canEditTags && skillTagList.length === 0 ? (
             <button
               type="button"
               className={styles.tagAddEmptyPill}
@@ -371,7 +390,7 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
               <Plus size={11} aria-hidden="true" />
               {t('skills.tags.add')}
             </button>
-          ) : onUpdateTags && (
+          ) : canEditTags && (
             <button
               type="button"
               className={styles.tagAddBtn}
@@ -438,10 +457,11 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
                   <button
                     key={doc.filename}
                     type="button"
+                    title={doc.filename}
                     className={`${styles.docTab}${activeDoc === doc.filename ? ` ${styles.docTabActive}` : ''}`}
                     onClick={() => setActiveDoc(doc.filename)}
                   >
-                    {doc.filename}
+                    {doc.filename.split('/').pop() || doc.filename}
                   </button>
                 ))}
               </div>
@@ -495,36 +515,40 @@ export const SkillDetailPanel: React.FC<SkillDetailPanelProps> = ({
           <FolderOpen size={13} aria-hidden="true" />
           <span>{t('skills.openDataDir')}</span>
         </button>
-        <button
-          type="button"
-          className={styles.footerBtn}
-          title={t('skills.updateTooltip')}
-          disabled={loading || isUpdating || !skill.management_enabled}
-          onClick={() => onUpdate(skill)}
-        >
-          <RefreshCw size={13} aria-hidden="true" />
-          <span>{t('skills.update')}</span>
-        </button>
-        <button
-          type="button"
-          className={styles.footerBtn}
-          title={skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill')}
-          disabled={loading || isUpdating}
-          onClick={() => onSetManagementEnabled(skill, !skill.management_enabled)}
-        >
-          {skill.management_enabled ? <PowerOff size={13} aria-hidden="true" /> : <Power size={13} aria-hidden="true" />}
-          <span>{skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill')}</span>
-        </button>
-        <button
-          type="button"
-          className={`${styles.footerBtn} ${styles.footerBtnDanger}`}
-          title={t('skills.remove')}
-          disabled={loading || isUpdating}
-          onClick={() => onDelete(skill.id)}
-        >
-          <Trash2 size={13} aria-hidden="true" />
-          <span>{t('skills.remove')}</span>
-        </button>
+        {!builtin && (
+          <>
+            <button
+              type="button"
+              className={styles.footerBtn}
+              title={t('skills.updateTooltip')}
+              disabled={loading || isUpdating || !skill.management_enabled}
+              onClick={() => onUpdate(skill)}
+            >
+              <RefreshCw size={13} aria-hidden="true" />
+              <span>{t('skills.update')}</span>
+            </button>
+            <button
+              type="button"
+              className={styles.footerBtn}
+              title={skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill')}
+              disabled={loading || isUpdating}
+              onClick={() => onSetManagementEnabled(skill, !skill.management_enabled)}
+            >
+              {skill.management_enabled ? <PowerOff size={13} aria-hidden="true" /> : <Power size={13} aria-hidden="true" />}
+              <span>{skill.management_enabled ? t('skills.disableSkill') : t('skills.enableSkill')}</span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.footerBtn} ${styles.footerBtnDanger}`}
+              title={t('skills.remove')}
+              disabled={loading || isUpdating}
+              onClick={() => onDelete(skill.id)}
+            >
+              <Trash2 size={13} aria-hidden="true" />
+              <span>{t('skills.remove')}</span>
+            </button>
+          </>
+        )}
       </div>
     </aside>
   );

@@ -16,8 +16,10 @@ import { parseCodexSettingsConfig } from './codexSettingsConfig';
  * the user is still editing. Keeps the form hint and the stored-provider check
  * on one predicate instead of two copies of the comparison.
  */
-export const codexApiFormatNeedsGatewayProxy = (apiFormat?: string | null): boolean =>
-  providerNeedsGatewayProxy(apiFormat, 'openai_responses');
+export const codexApiFormatNeedsGatewayProxy = (
+  apiFormat?: string | null,
+  pluginSource?: { meta?: unknown; baseUrl?: string | null } | null,
+): boolean => providerNeedsGatewayProxy(apiFormat, 'openai_responses', pluginSource);
 
 /**
  * Does one Codex provider have to keep going through the gateway?
@@ -29,8 +31,16 @@ export const codexApiFormatNeedsGatewayProxy = (apiFormat?: string | null): bool
  * settings panel has to refuse the same action instead of quietly restoring a
  * config that cannot work.
  */
-export const codexProviderNeedsGatewayProxy = (provider: CodexProvider): boolean =>
-  codexApiFormatNeedsGatewayProxy(resolveCodexProviderApiFormat(provider));
+export const codexProviderNeedsGatewayProxy = (provider: CodexProvider): boolean => {
+  const settingsConfig = parseCodexSettingsConfig(provider.settingsConfig);
+  return codexApiFormatNeedsGatewayProxy(
+    resolveCodexProviderApiFormat(provider),
+    {
+      meta: provider.meta,
+      baseUrl: extractCodexBaseUrl(settingsConfig.config),
+    },
+  );
+};
 
 /**
  * The wire protocol a stored Codex provider speaks.

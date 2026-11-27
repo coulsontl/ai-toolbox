@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import CardShell from './CardShell';
+import ProviderPluginBadge from './ProviderPluginBadge';
 import { renderProviderPrimaryAction } from './providerCardActions';
 import {
   buildProviderCardMenuItems,
@@ -49,6 +50,7 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
     isDisabled,
     onToggleDisabled,
     connectivityStatus,
+    pluginBadge,
     selectable = false,
     selected = false,
     onSelectChange,
@@ -90,6 +92,7 @@ const ClaudeStyleCard: React.FC<ProviderCardVariantProps> = ({
               baseUrl={provider.baseUrl}
               style={{ fontSize: 14, fontWeight: 600 }}
             />
+            {pluginBadge && <ProviderPluginBadge badge={pluginBadge} />}
             {nameTags}
           </div>
 

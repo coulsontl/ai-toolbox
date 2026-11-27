@@ -1693,6 +1693,8 @@ const OpenClawPage: React.FC = () => {
               onBatchTest={handleBatchTestProviders}
               batchTesting={batchTestingProviders}
               onAddProvider={handleAddProvider}
+              pluginCliKey="openclaw"
+              onPluginProviderChanged={() => loadConfig(true)}
               footer={(
                 <Space wrap>
                   <Button

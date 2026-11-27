@@ -9,6 +9,7 @@ import { Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type {
   ProviderCardModels,
@@ -123,6 +124,10 @@ const HermesProviderCard: React.FC<HermesProviderCardProps> = ({
   const baseUrl = getStringField(providerConfig, 'base_url')
     || getStringField(providerConfig, 'baseUrl')
     || '';
+  const pluginCardMeta = usePluginProviderCardMeta({
+    baseUrl,
+    providerId: provider.providerKey,
+  });
   const apiKey = getStringField(providerConfig, 'api_key')
     || getStringField(providerConfig, 'apiKey')
     || '';
@@ -184,6 +189,7 @@ const HermesProviderCard: React.FC<HermesProviderCardProps> = ({
       draggable: !provider.isReadOnly && !selectable && !dragDisabled,
       sortableId: provider.providerKey,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -193,6 +199,7 @@ const HermesProviderCard: React.FC<HermesProviderCardProps> = ({
       onEdit,
       onCopy,
       onShare,
+      ...pluginCardMeta.pluginActions,
       // A read-only provider has no delete path at all; one that is the default
       // keeps the button but explains why it refuses.
       onDelete,

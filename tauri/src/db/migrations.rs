@@ -1,8 +1,8 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 use super::schema::{sql_string_literal, JsonFieldPath};
 
-pub const TARGET_SCHEMA_VERSION: i32 = 37;
+pub const TARGET_SCHEMA_VERSION: i32 = 38;
 const FUTURE_SCHEMA_ERROR_PREFIX: &str = "AI_TOOLBOX_SQLITE_SCHEMA_TOO_NEW";
 
 // ---- the consolidation table ------------------------------------------------
@@ -76,10 +76,18 @@ const CLI_CONFIG_TABLES: &[(&str, &str, &str)] = &[
     ("oh_my_pi_agents_config", "oh_my_pi", "agents"),
     ("omo_native_agents_config", "omo_native", "agents"),
     ("oh_my_openagent_config", "oh_my_openagent", "agents"),
-    ("oh_my_opencode_slim_config", "oh_my_opencode_slim", "agents"),
+    (
+        "oh_my_opencode_slim_config",
+        "oh_my_opencode_slim",
+        "agents",
+    ),
     // global: one singleton row per CLI, id `global`
     ("oh_my_openagent_global_config", "oh_my_openagent", "global"),
-    ("oh_my_opencode_slim_global_config", "oh_my_opencode_slim", "global"),
+    (
+        "oh_my_opencode_slim_global_config",
+        "oh_my_opencode_slim",
+        "global",
+    ),
 ];
 
 /// The nine `api2api_*` tables that were split by entity before the rename.
@@ -257,6 +265,9 @@ pub fn run_all(conn: &mut Connection) -> Result<(), String> {
     }
     if current_version < 37 {
         run_migration_step(conn, 37, migrate_v37)?;
+    }
+    if current_version < 38 {
+        run_migration_step(conn, 38, migrate_v38)?;
     }
 
     Ok(())
@@ -474,7 +485,11 @@ fn migrate_v8(conn: &Connection) -> Result<(), String> {
         create_jsonb_table(conn, table)?;
     }
 
-    for table in ["grok_provider", "grok_official_account", "grok_prompt_config"] {
+    for table in [
+        "grok_provider",
+        "grok_official_account",
+        "grok_prompt_config",
+    ] {
         create_json_index(conn, table, &JsonFieldPath::new("is_applied")?)?;
         create_json_index(conn, table, &JsonFieldPath::new("sort_index")?)?;
     }
@@ -544,8 +559,16 @@ fn migrate_v11(conn: &Connection) -> Result<(), String> {
 fn migrate_v12(conn: &Connection) -> Result<(), String> {
     create_jsonb_table(conn, "dsh_settings_config")?;
     create_jsonb_table(conn, "dsh_prompt_config")?;
-    create_json_index(conn, "dsh_prompt_config", &JsonFieldPath::new("is_applied")?)?;
-    create_json_index(conn, "dsh_prompt_config", &JsonFieldPath::new("sort_index")?)
+    create_json_index(
+        conn,
+        "dsh_prompt_config",
+        &JsonFieldPath::new("is_applied")?,
+    )?;
+    create_json_index(
+        conn,
+        "dsh_prompt_config",
+        &JsonFieldPath::new("sort_index")?,
+    )
 }
 
 fn migrate_v13(conn: &Connection) -> Result<(), String> {
@@ -786,7 +809,12 @@ fn migrate_v26(conn: &Connection) -> Result<(), String> {
 /// means "no premium tier billed".
 fn migrate_v27(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "service_tier", "TEXT")?;
-    add_column_if_missing(conn, "proxy_request_logs", "service_tier_multiplier", "TEXT")
+    add_column_if_missing(
+        conn,
+        "proxy_request_logs",
+        "service_tier_multiplier",
+        "TEXT",
+    )
 }
 
 fn migrate_v28(conn: &Connection) -> Result<(), String> {
@@ -813,7 +841,12 @@ fn migrate_v29(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "credits", "REAL")?;
     // Added before the rebuild so the INSERT ... SELECT below can copy it from
     // the old table; the rebuilt table declares it itself.
-    add_column_if_missing(conn, "usage_daily_rollups", "credits", "REAL NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        conn,
+        "usage_daily_rollups",
+        "credits",
+        "REAL NOT NULL DEFAULT 0",
+    )?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_request_logs_project
             ON proxy_request_logs(project_path);",
@@ -1247,8 +1280,18 @@ fn migrate_v35(conn: &Connection) -> Result<(), String> {
     for (old_table, target, kind) in FEATURE_ENTITY_TABLES {
         copy_scoped_rows(conn, old_table, target, &[("kind", kind)])?;
     }
-    copy_sync_config_rows(conn, "wsl_sync_config", "wsl_config", "wsl_defaults_version")?;
-    copy_sync_config_rows(conn, "ssh_sync_config", "ssh_config", "ssh_defaults_version")?;
+    copy_sync_config_rows(
+        conn,
+        "wsl_sync_config",
+        "wsl_config",
+        "wsl_defaults_version",
+    )?;
+    copy_sync_config_rows(
+        conn,
+        "ssh_sync_config",
+        "ssh_config",
+        "ssh_defaults_version",
+    )?;
 
     for table in FEATURE_LEGACY_TABLES {
         drop_table_if_exists(conn, table)?;
@@ -1362,24 +1405,18 @@ fn migrate_v36(conn: &Connection) -> Result<(), String> {
     // the rebuild. Reading the source columns conditionally keeps a partially
     // applied v36 from losing the dimensions it already recorded.
     if !table_has_column(conn, "usage_daily_rollups", "pricing_tier")? {
-        let request_model_source = if table_has_column(
-            conn,
-            "usage_daily_rollups",
-            "request_model",
-        )? {
-            "request_model"
-        } else {
-            "''"
-        };
-        let pricing_model_source = if table_has_column(
-            conn,
-            "usage_daily_rollups",
-            "pricing_model",
-        )? {
-            "pricing_model"
-        } else {
-            "''"
-        };
+        let request_model_source =
+            if table_has_column(conn, "usage_daily_rollups", "request_model")? {
+                "request_model"
+            } else {
+                "''"
+            };
+        let pricing_model_source =
+            if table_has_column(conn, "usage_daily_rollups", "pricing_model")? {
+                "pricing_model"
+            } else {
+                "''"
+            };
         conn.execute_batch(&format!(
             "CREATE TABLE usage_daily_rollups_v36 (
                 date TEXT NOT NULL,
@@ -1668,285 +1705,285 @@ fn create_model_pricing_table(conn: &Connection) -> Result<(), String> {
 }
 
 const MODEL_PRICING_SEED: &[(&str, &str, &str, &str, &str, &str)] = &[
-        (
-            "claude-opus-4-7",
-            "Claude Opus 4.7",
-            "5",
-            "25",
-            "0.50",
-            "6.25",
-        ),
-        (
-            "claude-opus-4-6-20260206",
-            "Claude Opus 4.6",
-            "5",
-            "25",
-            "0.50",
-            "6.25",
-        ),
-        (
-            "claude-sonnet-4-6-20260217",
-            "Claude Sonnet 4.6",
-            "3",
-            "15",
-            "0.30",
-            "3.75",
-        ),
-        (
-            "claude-opus-4-5-20251101",
-            "Claude Opus 4.5",
-            "5",
-            "25",
-            "0.50",
-            "6.25",
-        ),
-        (
-            "claude-sonnet-4-5-20250929",
-            "Claude Sonnet 4.5",
-            "3",
-            "15",
-            "0.30",
-            "3.75",
-        ),
-        (
-            "claude-haiku-4-5-20251001",
-            "Claude Haiku 4.5",
-            "1",
-            "5",
-            "0.10",
-            "1.25",
-        ),
-        (
-            "claude-opus-4-20250514",
-            "Claude Opus 4",
-            "15",
-            "75",
-            "1.50",
-            "18.75",
-        ),
-        (
-            "claude-opus-4-1-20250805",
-            "Claude Opus 4.1",
-            "15",
-            "75",
-            "1.50",
-            "18.75",
-        ),
-        (
-            "claude-sonnet-4-20250514",
-            "Claude Sonnet 4",
-            "3",
-            "15",
-            "0.30",
-            "3.75",
-        ),
-        (
-            "claude-3-5-haiku-20241022",
-            "Claude 3.5 Haiku",
-            "0.80",
-            "4",
-            "0.08",
-            "1",
-        ),
-        (
-            "claude-3-5-sonnet-20241022",
-            "Claude 3.5 Sonnet",
-            "3",
-            "15",
-            "0.30",
-            "3.75",
-        ),
-        ("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
-        ("gpt-5.5-low", "GPT-5.5", "5", "30", "0.50", "0"),
-        ("gpt-5.5-medium", "GPT-5.5", "5", "30", "0.50", "0"),
-        ("gpt-5.5-high", "GPT-5.5", "5", "30", "0.50", "0"),
-        ("gpt-5.5-xhigh", "GPT-5.5", "5", "30", "0.50", "0"),
-        ("gpt-5.4", "GPT-5.4", "2.50", "15", "0.25", "0"),
-        ("gpt-5.4-mini", "GPT-5.4 Mini", "0.75", "4.50", "0.075", "0"),
-        ("gpt-5.4-nano", "GPT-5.4 Nano", "0.20", "1.25", "0.02", "0"),
-        ("gpt-5.3-codex", "GPT-5.3 Codex", "1.75", "14", "0.175", "0"),
-        (
-            "gpt-5.3-codex-low",
-            "GPT-5.3 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        (
-            "gpt-5.3-codex-medium",
-            "GPT-5.3 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        (
-            "gpt-5.3-codex-high",
-            "GPT-5.3 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        (
-            "gpt-5.3-codex-xhigh",
-            "GPT-5.3 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        ("gpt-5.2", "GPT-5.2", "1.75", "14", "0.175", "0"),
-        ("gpt-5.2-low", "GPT-5.2", "1.75", "14", "0.175", "0"),
-        ("gpt-5.2-medium", "GPT-5.2", "1.75", "14", "0.175", "0"),
-        ("gpt-5.2-high", "GPT-5.2", "1.75", "14", "0.175", "0"),
-        ("gpt-5.2-xhigh", "GPT-5.2", "1.75", "14", "0.175", "0"),
-        ("gpt-5.2-codex", "GPT-5.2 Codex", "1.75", "14", "0.175", "0"),
-        (
-            "gpt-5.2-codex-low",
-            "GPT-5.2 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        (
-            "gpt-5.2-codex-medium",
-            "GPT-5.2 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        (
-            "gpt-5.2-codex-high",
-            "GPT-5.2 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        (
-            "gpt-5.2-codex-xhigh",
-            "GPT-5.2 Codex",
-            "1.75",
-            "14",
-            "0.175",
-            "0",
-        ),
-        ("gpt-5.1", "GPT-5.1", "1.25", "10", "0.125", "0"),
-        ("gpt-5.1-low", "GPT-5.1", "1.25", "10", "0.125", "0"),
-        ("gpt-5.1-medium", "GPT-5.1", "1.25", "10", "0.125", "0"),
-        ("gpt-5.1-high", "GPT-5.1", "1.25", "10", "0.125", "0"),
-        ("gpt-5.1-codex", "GPT-5.1 Codex", "1.25", "10", "0.125", "0"),
-        ("gpt-5", "GPT-5", "1.25", "10", "0.125", "0"),
-        ("gpt-5-low", "GPT-5", "1.25", "10", "0.125", "0"),
-        ("gpt-5-medium", "GPT-5", "1.25", "10", "0.125", "0"),
-        ("gpt-5-high", "GPT-5", "1.25", "10", "0.125", "0"),
-        ("gpt-5-codex", "GPT-5 Codex", "1.25", "10", "0.125", "0"),
-        ("gpt-5-codex-low", "GPT-5 Codex", "1.25", "10", "0.125", "0"),
-        (
-            "gpt-5-codex-medium",
-            "GPT-5 Codex",
-            "1.25",
-            "10",
-            "0.125",
-            "0",
-        ),
-        (
-            "gpt-5-codex-high",
-            "GPT-5 Codex",
-            "1.25",
-            "10",
-            "0.125",
-            "0",
-        ),
-        ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
-        ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
-        ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
-        ("o3", "OpenAI o3", "2", "8", "0.50", "0"),
-        ("o4-mini", "OpenAI o4-mini", "1.10", "4.40", "0.275", "0"),
-        (
-            "gemini-3.1-pro-preview",
-            "Gemini 3.1 Pro Preview",
-            "2",
-            "12",
-            "0.20",
-            "0",
-        ),
-        (
-            "gemini-3.1-flash-lite-preview",
-            "Gemini 3.1 Flash Lite Preview",
-            "0.25",
-            "1.50",
-            "0.025",
-            "0",
-        ),
-        (
-            "gemini-3-pro-preview",
-            "Gemini 3 Pro Preview",
-            "2",
-            "12",
-            "0.2",
-            "0",
-        ),
-        (
-            "gemini-3-flash-preview",
-            "Gemini 3 Flash Preview",
-            "0.5",
-            "3",
-            "0.05",
-            "0",
-        ),
-        (
-            "gemini-2.5-pro",
-            "Gemini 2.5 Pro",
-            "1.25",
-            "10",
-            "0.125",
-            "0",
-        ),
-        (
-            "gemini-2.5-flash",
-            "Gemini 2.5 Flash",
-            "0.3",
-            "2.5",
-            "0.03",
-            "0",
-        ),
-        (
-            "gemini-2.5-flash-lite",
-            "Gemini 2.5 Flash Lite",
-            "0.10",
-            "0.40",
-            "0.01",
-            "0",
-        ),
-        (
-            "gemini-2.0-flash",
-            "Gemini 2.0 Flash",
-            "0.10",
-            "0.40",
-            "0.025",
-            "0",
-        ),
-        (
-            "deepseek-v3.2",
-            "DeepSeek V3.2",
-            "0.28",
-            "0.42",
-            "0.028",
-            "0",
-        ),
-        (
-            "deepseek-chat",
-            "DeepSeek Chat",
-            "0.28",
-            "0.42",
-            "0.028",
-            "0",
-        ),
+    (
+        "claude-opus-4-7",
+        "Claude Opus 4.7",
+        "5",
+        "25",
+        "0.50",
+        "6.25",
+    ),
+    (
+        "claude-opus-4-6-20260206",
+        "Claude Opus 4.6",
+        "5",
+        "25",
+        "0.50",
+        "6.25",
+    ),
+    (
+        "claude-sonnet-4-6-20260217",
+        "Claude Sonnet 4.6",
+        "3",
+        "15",
+        "0.30",
+        "3.75",
+    ),
+    (
+        "claude-opus-4-5-20251101",
+        "Claude Opus 4.5",
+        "5",
+        "25",
+        "0.50",
+        "6.25",
+    ),
+    (
+        "claude-sonnet-4-5-20250929",
+        "Claude Sonnet 4.5",
+        "3",
+        "15",
+        "0.30",
+        "3.75",
+    ),
+    (
+        "claude-haiku-4-5-20251001",
+        "Claude Haiku 4.5",
+        "1",
+        "5",
+        "0.10",
+        "1.25",
+    ),
+    (
+        "claude-opus-4-20250514",
+        "Claude Opus 4",
+        "15",
+        "75",
+        "1.50",
+        "18.75",
+    ),
+    (
+        "claude-opus-4-1-20250805",
+        "Claude Opus 4.1",
+        "15",
+        "75",
+        "1.50",
+        "18.75",
+    ),
+    (
+        "claude-sonnet-4-20250514",
+        "Claude Sonnet 4",
+        "3",
+        "15",
+        "0.30",
+        "3.75",
+    ),
+    (
+        "claude-3-5-haiku-20241022",
+        "Claude 3.5 Haiku",
+        "0.80",
+        "4",
+        "0.08",
+        "1",
+    ),
+    (
+        "claude-3-5-sonnet-20241022",
+        "Claude 3.5 Sonnet",
+        "3",
+        "15",
+        "0.30",
+        "3.75",
+    ),
+    ("gpt-5.5", "GPT-5.5", "5", "30", "0.50", "0"),
+    ("gpt-5.5-low", "GPT-5.5", "5", "30", "0.50", "0"),
+    ("gpt-5.5-medium", "GPT-5.5", "5", "30", "0.50", "0"),
+    ("gpt-5.5-high", "GPT-5.5", "5", "30", "0.50", "0"),
+    ("gpt-5.5-xhigh", "GPT-5.5", "5", "30", "0.50", "0"),
+    ("gpt-5.4", "GPT-5.4", "2.50", "15", "0.25", "0"),
+    ("gpt-5.4-mini", "GPT-5.4 Mini", "0.75", "4.50", "0.075", "0"),
+    ("gpt-5.4-nano", "GPT-5.4 Nano", "0.20", "1.25", "0.02", "0"),
+    ("gpt-5.3-codex", "GPT-5.3 Codex", "1.75", "14", "0.175", "0"),
+    (
+        "gpt-5.3-codex-low",
+        "GPT-5.3 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    (
+        "gpt-5.3-codex-medium",
+        "GPT-5.3 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    (
+        "gpt-5.3-codex-high",
+        "GPT-5.3 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    (
+        "gpt-5.3-codex-xhigh",
+        "GPT-5.3 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    ("gpt-5.2", "GPT-5.2", "1.75", "14", "0.175", "0"),
+    ("gpt-5.2-low", "GPT-5.2", "1.75", "14", "0.175", "0"),
+    ("gpt-5.2-medium", "GPT-5.2", "1.75", "14", "0.175", "0"),
+    ("gpt-5.2-high", "GPT-5.2", "1.75", "14", "0.175", "0"),
+    ("gpt-5.2-xhigh", "GPT-5.2", "1.75", "14", "0.175", "0"),
+    ("gpt-5.2-codex", "GPT-5.2 Codex", "1.75", "14", "0.175", "0"),
+    (
+        "gpt-5.2-codex-low",
+        "GPT-5.2 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    (
+        "gpt-5.2-codex-medium",
+        "GPT-5.2 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    (
+        "gpt-5.2-codex-high",
+        "GPT-5.2 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    (
+        "gpt-5.2-codex-xhigh",
+        "GPT-5.2 Codex",
+        "1.75",
+        "14",
+        "0.175",
+        "0",
+    ),
+    ("gpt-5.1", "GPT-5.1", "1.25", "10", "0.125", "0"),
+    ("gpt-5.1-low", "GPT-5.1", "1.25", "10", "0.125", "0"),
+    ("gpt-5.1-medium", "GPT-5.1", "1.25", "10", "0.125", "0"),
+    ("gpt-5.1-high", "GPT-5.1", "1.25", "10", "0.125", "0"),
+    ("gpt-5.1-codex", "GPT-5.1 Codex", "1.25", "10", "0.125", "0"),
+    ("gpt-5", "GPT-5", "1.25", "10", "0.125", "0"),
+    ("gpt-5-low", "GPT-5", "1.25", "10", "0.125", "0"),
+    ("gpt-5-medium", "GPT-5", "1.25", "10", "0.125", "0"),
+    ("gpt-5-high", "GPT-5", "1.25", "10", "0.125", "0"),
+    ("gpt-5-codex", "GPT-5 Codex", "1.25", "10", "0.125", "0"),
+    ("gpt-5-codex-low", "GPT-5 Codex", "1.25", "10", "0.125", "0"),
+    (
+        "gpt-5-codex-medium",
+        "GPT-5 Codex",
+        "1.25",
+        "10",
+        "0.125",
+        "0",
+    ),
+    (
+        "gpt-5-codex-high",
+        "GPT-5 Codex",
+        "1.25",
+        "10",
+        "0.125",
+        "0",
+    ),
+    ("gpt-4.1", "GPT-4.1", "2", "8", "0.50", "0"),
+    ("gpt-4.1-mini", "GPT-4.1 Mini", "0.40", "1.60", "0.10", "0"),
+    ("gpt-4.1-nano", "GPT-4.1 Nano", "0.10", "0.40", "0.025", "0"),
+    ("o3", "OpenAI o3", "2", "8", "0.50", "0"),
+    ("o4-mini", "OpenAI o4-mini", "1.10", "4.40", "0.275", "0"),
+    (
+        "gemini-3.1-pro-preview",
+        "Gemini 3.1 Pro Preview",
+        "2",
+        "12",
+        "0.20",
+        "0",
+    ),
+    (
+        "gemini-3.1-flash-lite-preview",
+        "Gemini 3.1 Flash Lite Preview",
+        "0.25",
+        "1.50",
+        "0.025",
+        "0",
+    ),
+    (
+        "gemini-3-pro-preview",
+        "Gemini 3 Pro Preview",
+        "2",
+        "12",
+        "0.2",
+        "0",
+    ),
+    (
+        "gemini-3-flash-preview",
+        "Gemini 3 Flash Preview",
+        "0.5",
+        "3",
+        "0.05",
+        "0",
+    ),
+    (
+        "gemini-2.5-pro",
+        "Gemini 2.5 Pro",
+        "1.25",
+        "10",
+        "0.125",
+        "0",
+    ),
+    (
+        "gemini-2.5-flash",
+        "Gemini 2.5 Flash",
+        "0.3",
+        "2.5",
+        "0.03",
+        "0",
+    ),
+    (
+        "gemini-2.5-flash-lite",
+        "Gemini 2.5 Flash Lite",
+        "0.10",
+        "0.40",
+        "0.01",
+        "0",
+    ),
+    (
+        "gemini-2.0-flash",
+        "Gemini 2.0 Flash",
+        "0.10",
+        "0.40",
+        "0.025",
+        "0",
+    ),
+    (
+        "deepseek-v3.2",
+        "DeepSeek V3.2",
+        "0.28",
+        "0.42",
+        "0.028",
+        "0",
+    ),
+    (
+        "deepseek-chat",
+        "DeepSeek Chat",
+        "0.28",
+        "0.42",
+        "0.028",
+        "0",
+    ),
 ];
 
 /// Codex auxiliary-task observability: task kind and how the model was chosen.
@@ -1955,6 +1992,56 @@ const MODEL_PRICING_SEED: &[(&str, &str, &str, &str, &str, &str)] = &[
 fn migrate_v37(conn: &Connection) -> Result<(), String> {
     add_column_if_missing(conn, "proxy_request_logs", "aux_task", "TEXT")?;
     add_column_if_missing(conn, "proxy_request_logs", "aux_route_source", "TEXT")?;
+    Ok(())
+}
+
+/// The gateway plugin system's entity table and its built-in market source.
+///
+/// Installed packages, market sources, provider options, account metadata and
+/// the singleton settings record share `plugin_entity`, told apart by `kind`.
+/// The `magpie-community` market row is seeded here rather than by an
+/// application-level seed so an existing database upgraded from v37 already has
+/// it before the first plugin command runs. `INSERT OR IGNORE` deliberately
+/// keeps a user's disabled flag or edited URL on repeat runs.
+///
+/// Keep the id and URL in sync with `plugins::market::BUILTIN_MARKET_ID` /
+/// `BUILTIN_MARKET_URL`; this module must not depend on the plugins module.
+fn migrate_v38(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS plugin_entity (
+            kind TEXT NOT NULL,
+            id TEXT NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (kind, id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_plugin_entity_kind
+            ON plugin_entity(kind);",
+    )
+    .map_err(|error| format!("Failed to create plugin_entity: {error}"))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let data = serde_json::json!({
+        "name": "Magpie Community",
+        "url": "https://raw.githubusercontent.com/magpie-community/plugins/main/registry.json",
+        "enabled": true,
+        "builtin": true,
+        "pluginCount": 0,
+        "lastSyncedAt": serde_json::Value::Null,
+        "lastError": serde_json::Value::Null,
+    });
+    let data_json = serde_json::to_string(&data)
+        .map_err(|error| format!("Failed to serialize the built-in market source: {error}"))?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO plugin_entity (kind, id, data, created_at, updated_at)
+         VALUES ('market_source', 'magpie-community', jsonb(?1), ?2, ?2)",
+        params![data_json, now],
+    )
+    .map_err(|error| format!("Failed to seed the built-in market source: {error}"))?;
+
     Ok(())
 }
 
@@ -1979,7 +2066,11 @@ fn seed_model_pricing(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-fn create_json_index(conn: &Connection, table_name: &str, field_path: &JsonFieldPath) -> Result<(), String> {
+fn create_json_index(
+    conn: &Connection,
+    table_name: &str,
+    field_path: &JsonFieldPath,
+) -> Result<(), String> {
     let field_suffix = field_path.segments().join("_");
     let index_name = format!("idx_{table_name}_{field_suffix}");
     let json_path = sql_string_literal(&field_path.to_sql_path());
@@ -2013,5 +2104,59 @@ mod tests {
 
         assert!(table_has_column(&conn, "proxy_request_logs", "aux_task").unwrap());
         assert!(table_has_column(&conn, "proxy_request_logs", "aux_route_source").unwrap());
+    }
+
+    #[test]
+    fn migrate_v38_creates_plugin_entity_and_keeps_the_seeded_market() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+
+        migrate_v38(&conn).expect("first migration");
+        migrate_v38(&conn).expect("second migration");
+
+        let index_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_plugin_entity_kind'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_exists, 1);
+
+        let (url, builtin, enabled): (String, bool, bool) = conn
+            .query_row(
+                "SELECT json_extract(data, '$.url'),
+                        json_extract(data, '$.builtin'),
+                        json_extract(data, '$.enabled')
+                 FROM plugin_entity WHERE kind = 'market_source' AND id = 'magpie-community'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert!(url.ends_with("/magpie-community/plugins/main/registry.json"));
+        assert!(builtin);
+        assert!(enabled);
+
+        // A rerun must not reset a user's changes to the built-in row.
+        conn.execute(
+            "UPDATE plugin_entity SET data = jsonb('{\"enabled\":false}')
+             WHERE kind = 'market_source' AND id = 'magpie-community'",
+            [],
+        )
+        .unwrap();
+        migrate_v38(&conn).expect("third migration");
+        let enabled: i64 = conn
+            .query_row(
+                "SELECT json_extract(data, '$.enabled') FROM plugin_entity
+                 WHERE kind = 'market_source' AND id = 'magpie-community'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(enabled, 0);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM plugin_entity", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 }

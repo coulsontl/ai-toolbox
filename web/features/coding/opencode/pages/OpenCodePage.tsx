@@ -2600,6 +2600,8 @@ const OpenCodePage: React.FC = () => {
                 onBatchTest={handleBatchTestProviders}
                 batchTesting={batchTestingProviders}
                 onAddProvider={handleAddProvider}
+                pluginCliKey="opencode"
+                onPluginProviderChanged={() => loadConfig(false, true)}
                 footer={(
                   <Space wrap>
                     <Button

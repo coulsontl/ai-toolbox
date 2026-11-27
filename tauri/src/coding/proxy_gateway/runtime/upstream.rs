@@ -1,3 +1,5 @@
+use super::compat::codex_aux_response::{build_aux_sse, shape_aux_response};
+use super::compat::codex_aux_task::{classify_codex_aux_task, CodexAuxTask};
 use super::compat::codex_remote_compaction::{
     self as codex_remote_compaction, RemoteCompactionCompat, COMPACTION_MODE_FALLBACK,
     COMPACTION_MODE_LOCAL, COMPACTION_MODE_NATIVE, COMPACTION_MODE_SIMULATED,
@@ -34,12 +36,13 @@ use super::providers::{
     resolve_aggregate_route_with_selection, AggregateRoute, GatewayProviderSelection,
     ProviderAuthStrategy, UpstreamModelMapping, UpstreamProvider,
 };
-use super::routes::{build_target_url, match_gateway_route, split_request_target, GatewayRoute};
+use super::routes::{
+    build_target_url, match_gateway_route, match_plugin_route, split_request_target, GatewayRoute,
+    PluginRoute, PluginRouteKind,
+};
 use super::side_stores::{
     record_gemini_sse_stream, record_responses_sse_stream, GeminiShadowSessionKey,
 };
-use super::compat::codex_aux_response::{build_aux_sse, shape_aux_response};
-use super::compat::codex_aux_task::{classify_codex_aux_task, CodexAuxTask};
 use super::GatewayRuntimeContext;
 use super::{cache_injector, thinking_budget};
 use crate::coding::proxy_gateway::model_health::{self, GatewayFailureKind};
@@ -62,6 +65,12 @@ use crate::coding::proxy_gateway::usage_parser::{
 };
 use crate::db::SqliteDbState;
 use crate::http_client::{self, ProxyMode};
+use crate::plugins::gateway_bridge::{
+    self, PluginAccountStrategy, PluginGatewayBody, PluginProviderRef,
+};
+use crate::plugins::middleware_rt::{
+    EventOutcome, EventSession, MiddlewareState, ProviderTarget, RequestInfo, RequestOutcome,
+};
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
@@ -212,6 +221,14 @@ enum UpstreamResponse {
         headers: HeaderMap,
         body: Vec<u8>,
     },
+    /// A reply streamed by the plugin host. Headers and status are the
+    /// plugin's own; the body already carries decoded bytes (Bun decompresses
+    /// any content encoding), so no `content-encoding` header is kept.
+    PluginStream {
+        status: reqwest::StatusCode,
+        headers: HeaderMap,
+        body: PluginGatewayBody,
+    },
 }
 
 impl UpstreamResponse {
@@ -221,6 +238,7 @@ impl UpstreamResponse {
             Self::HeaderPreserving(response) => response.status(),
             Self::Hyper(response) => response.status(),
             Self::Buffered { status, .. } => *status,
+            Self::PluginStream { status, .. } => *status,
         }
     }
 
@@ -230,6 +248,7 @@ impl UpstreamResponse {
             Self::HeaderPreserving(response) => response.headers(),
             Self::Hyper(response) => response.headers(),
             Self::Buffered { headers, .. } => headers,
+            Self::PluginStream { headers, .. } => headers,
         }
     }
 
@@ -240,6 +259,50 @@ impl UpstreamResponse {
         match self {
             // Already in memory; there is nothing left to time out on.
             Self::Buffered { body, .. } => Ok(body),
+            Self::PluginStream { body, .. } => {
+                let timeout = timeout.unwrap_or_else(|| Duration::from_secs(60));
+                let collected = tokio::time::timeout(timeout, async {
+                    let mut out = Vec::new();
+                    let mut body = body;
+                    while let Some(chunk) = body.next().await {
+                        let chunk = chunk.map_err(|error| GatewayForwardError {
+                            message: format!("Failed to read plugin response body: {error}"),
+                            kind: GatewayFailureKind::Connection,
+                            upstream_request_body: None,
+                            upstream_response_body: None,
+                            upstream_response_body_bytes: 0,
+                        })?;
+                        if out.len().saturating_add(chunk.len())
+                            > super::header_preserving_client::MAX_HEADER_PRESERVING_BODY_BYTES
+                        {
+                            return Err(GatewayForwardError {
+                                message: format!(
+                                    "Plugin response body exceeded {} bytes",
+                                    super::header_preserving_client::MAX_HEADER_PRESERVING_BODY_BYTES
+                                ),
+                                kind: GatewayFailureKind::GatewayParse,
+                                upstream_request_body: None,
+                                upstream_response_body: None,
+                                upstream_response_body_bytes: 0,
+                            });
+                        }
+                        out.extend_from_slice(&chunk);
+                    }
+                    Ok(out)
+                })
+                .await
+                .map_err(|_| GatewayForwardError {
+                    message: format!(
+                        "Timed out reading plugin response body after {} seconds",
+                        timeout.as_secs()
+                    ),
+                    kind: GatewayFailureKind::Timeout,
+                    upstream_request_body: None,
+                    upstream_response_body: None,
+                    upstream_response_body_bytes: 0,
+                })??;
+                Ok(collected)
+            }
             Self::Reqwest(response) => {
                 let future = response.bytes();
                 let result = if let Some(timeout) = timeout {
@@ -332,6 +395,7 @@ impl UpstreamResponse {
             Self::Buffered { body, .. } => {
                 Box::pin(futures_util::stream::once(async move { Ok(body) }))
             }
+            Self::PluginStream { body, .. } => body,
             Self::Reqwest(response) => {
                 let body_stream = response.bytes_stream().map(|chunk| {
                     chunk
@@ -865,6 +929,10 @@ pub(super) async fn route_request_with_options(
         );
     }
 
+    if let Some(plugin_route) = match_plugin_route(&request.path) {
+        return route_plugin_request(request, context, &plugin_route).await;
+    }
+
     let Some(route) = match_gateway_route(&request.path) else {
         return json_response(
             404,
@@ -903,6 +971,33 @@ pub(super) async fn route_request_with_options(
         response.cli_key = Some(route.cli_key);
         return response;
     }
+
+    // Gateway middleware may rewrite or reject the request before any
+    // protocol conversion or provider selection happens. A plugin-free
+    // installation pays one atomic read here.
+    let middleware_state = MiddlewareState::new();
+    let mut middleware_request: Option<DebugHttpRequest> = None;
+    if let Some(middleware) = context.middleware() {
+        if middleware.has_request_hooks() {
+            let info = middleware_request_info(request, &route, source_protocol_from_route(&route));
+            match middleware
+                .run_on_request(&request.body, &info, &middleware_state)
+                .await
+            {
+                RequestOutcome::Continue(body) => {
+                    if body != request.body {
+                        let mut rewritten = request.clone();
+                        rewritten.body = body;
+                        middleware_request = Some(rewritten);
+                    }
+                }
+                RequestOutcome::Reject { status, message } => {
+                    return middleware_reject_response(&route, status, &message);
+                }
+            }
+        }
+    }
+    let request = middleware_request.as_ref().unwrap_or(request);
 
     // Count external arrivals once, before provider selection/retries and completion.
     // Local probes return above; in-app connectivity tests use a provider override.
@@ -950,10 +1045,22 @@ pub(super) async fn route_request_with_options(
                 return response;
             }
         };
-    let mut response =
-        forward_to_upstream(request, db, context, &route, options, privacy.as_ref()).await;
+    let mut response = forward_to_upstream(
+        request,
+        db,
+        context,
+        &route,
+        options,
+        privacy.as_ref(),
+        &middleware_state,
+    )
+    .await;
     if let Some(task) = (route.cli_key == GatewayCliKey::Codex)
-        .then(|| crate::coding::proxy_gateway::runtime::compat::codex_aux_task::classify_codex_aux_task(request))
+        .then(|| {
+            crate::coding::proxy_gateway::runtime::compat::codex_aux_task::classify_codex_aux_task(
+                request,
+            )
+        })
         .flatten()
     {
         if response.aux_task.is_none() {
@@ -979,6 +1086,10 @@ pub(super) async fn route_request_with_options(
     }
     if let Some(privacy) = privacy {
         privacy.set_usage_provider(response.provider_type.clone());
+        privacy.set_usage_gateway_generated(matches!(
+            (response.source_protocol, response.target_protocol),
+            (Some(source), Some(target)) if source != target
+        ));
         if let Some(stream) = response.body_stream.take() {
             response.body_stream = Some(
                 crate::coding::proxy_gateway::privacy::stream::restore_sse_stream(
@@ -1023,7 +1134,690 @@ pub(super) async fn route_request_with_options(
         }
         response.privacy = Some(privacy);
     }
+    apply_response_middleware(context, request, &route, &mut response, &middleware_state).await;
     response
+}
+
+/// Build the gateway route view of a `/plugin/<provider_id>/...` request.
+/// The CLI key only selects the matching source protocol; provider selection
+/// never runs for these routes.
+fn plugin_gateway_route(plugin_route: &PluginRoute) -> GatewayRoute {
+    let cli_key = match plugin_route.kind {
+        PluginRouteKind::Probe | PluginRouteKind::Models { .. } => GatewayCliKey::OpenCode,
+        PluginRouteKind::Inference { cli_key, .. } => cli_key,
+    };
+    GatewayRoute {
+        cli_key,
+        route_name: "plugin",
+        forwarded_path: plugin_route.forwarded_path.clone(),
+        query: plugin_route.query.clone(),
+    }
+}
+
+/// Answer a direct plugin route: local probe, model list, or a forwarded
+/// inference request that reuses the gateway's conversion pipeline.
+async fn route_plugin_request(
+    request: &DebugHttpRequest,
+    context: &GatewayRuntimeContext,
+    plugin_route: &PluginRoute,
+) -> DebugHttpResponse {
+    let route = plugin_gateway_route(plugin_route);
+    if plugin_route.kind == PluginRouteKind::Probe {
+        // Health probes are answered locally and never touch a provider, so a
+        // file-configured CLI can verify its base URL without side effects.
+        if matches!(request.method.as_str(), "GET" | "HEAD") {
+            return empty_response(
+                200,
+                "OK",
+                route.route_name,
+                "local plugin route probe endpoint",
+            );
+        }
+        return json_response(
+            405,
+            "Method Not Allowed",
+            json!({"error": "method_not_allowed"}),
+            route.route_name,
+            None,
+            "plugin probe endpoints only accept GET and HEAD",
+        );
+    }
+
+    if matches!(plugin_route.kind, PluginRouteKind::Inference { .. })
+        && request.method != "POST"
+    {
+        // A count_tokens / compact / messages path is an inference action, not
+        // a health probe; only POST may reach a provider.
+        return json_response(
+            405,
+            "Method Not Allowed",
+            json!({"error": "method_not_allowed"}),
+            route.route_name,
+            None,
+            "plugin inference endpoints only accept POST",
+        );
+    }
+
+    let Some(manager) = context.plugin_manager.as_ref() else {
+        return plugin_failure_response(
+            &route,
+            503,
+            "plugin_runtime_missing",
+            "The plugin runtime is not available in this build session.",
+        );
+    };
+
+    match plugin_route.kind {
+        PluginRouteKind::Probe => unreachable!("probe handled above"),
+        PluginRouteKind::Models { gemini } => {
+            if !matches!(request.method.as_str(), "GET" | "HEAD") {
+                return json_response(
+                    405,
+                    "Method Not Allowed",
+                    json!({"error": "method_not_allowed"}),
+                    route.route_name,
+                    None,
+                    "the plugin model list only accepts GET and HEAD",
+                );
+            }
+            match gateway_bridge::resolve_plugin_provider_endpoint(
+                manager,
+                None,
+                &plugin_route.provider_id,
+                "",
+                AiProtocol::OpenAiChat,
+            )
+            .await
+            {
+                Ok(endpoint) if gemini => plugin_gemini_models_response(&endpoint),
+                Ok(endpoint) => plugin_models_response(&endpoint),
+                Err(message) => {
+                    plugin_failure_response(&route, 502, "plugin_provider_unavailable", &message)
+                }
+            }
+        }
+        PluginRouteKind::Inference { .. } => {
+            let Some(db) = context.db.as_ref() else {
+                return plugin_failure_response(
+                    &route,
+                    503,
+                    "gateway_provider_state_missing",
+                    "Proxy gateway was started without database access",
+                );
+            };
+            forward_plugin_inference(request, db, context, &route, plugin_route).await
+        }
+    }
+}
+
+pub(super) fn plugin_models_response(
+    endpoint: &gateway_bridge::PluginProviderEndpoint,
+) -> DebugHttpResponse {
+    let data = endpoint
+        .models
+        .iter()
+        .map(|model| {
+            let name = if model.name.trim().is_empty() {
+                model.id.as_str()
+            } else {
+                model.name.as_str()
+            };
+            json!({
+                "id": model.id,
+                "object": "model",
+                "created": 0,
+                "owned_by": endpoint.provider_id,
+                "name": name,
+            })
+        })
+        .collect::<Vec<_>>();
+    json_response(
+        200,
+        "OK",
+        json!({"object": "list", "data": data}),
+        "plugin",
+        None,
+        "plugin provider model list",
+    )
+}
+
+/// Gemini's native catalog shape (`GET /v1beta/models`).
+pub(super) fn plugin_gemini_models_response(
+    endpoint: &gateway_bridge::PluginProviderEndpoint,
+) -> DebugHttpResponse {
+    let models = endpoint
+        .models
+        .iter()
+        .map(|model| {
+            let display_name = if model.name.trim().is_empty() {
+                model.id.as_str()
+            } else {
+                model.name.as_str()
+            };
+            json!({
+                "name": format!("models/{}", model.id),
+                "displayName": display_name,
+            })
+        })
+        .collect::<Vec<_>>();
+    json_response(
+        200,
+        "OK",
+        json!({"models": models}),
+        "plugin",
+        None,
+        "plugin provider Gemini model list",
+    )
+}
+
+fn plugin_failure_response(
+    route: &GatewayRoute,
+    status: u16,
+    code: &str,
+    message: &str,
+) -> DebugHttpResponse {
+    let mut response = json_response(
+        status,
+        status_text_for(status),
+        json!({"error": code, "message": message}),
+        route.route_name,
+        None,
+        message,
+    );
+    response.cli_key = Some(route.cli_key);
+    response.error_category = Some(code.to_string());
+    response
+}
+
+fn status_text_for(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "Error",
+    }
+}
+
+/// Forward one `/plugin/<provider_id>` inference request. The provider is
+/// synthesized from the plugin listing; conversion, SSE rewriting, usage
+/// parsing and response shaping all come from `send_upstream_request`.
+async fn forward_plugin_inference(
+    request: &DebugHttpRequest,
+    db: &SqliteDbState,
+    context: &GatewayRuntimeContext,
+    route: &GatewayRoute,
+    plugin_route: &PluginRoute,
+) -> DebugHttpResponse {
+    let middleware_state = MiddlewareState::new();
+    let mut middleware_request: Option<DebugHttpRequest> = None;
+    if let Some(middleware) = context.middleware() {
+        if middleware.has_request_hooks() {
+            let info = middleware_request_info(request, route, source_protocol_from_route(route));
+            match middleware
+                .run_on_request(&request.body, &info, &middleware_state)
+                .await
+            {
+                RequestOutcome::Continue(body) => {
+                    if body != request.body {
+                        let mut rewritten = request.clone();
+                        rewritten.body = body;
+                        middleware_request = Some(rewritten);
+                    }
+                }
+                RequestOutcome::Reject { status, message } => {
+                    return middleware_reject_response(route, status, &message);
+                }
+            }
+        }
+    }
+    let request = middleware_request.as_ref().unwrap_or(request);
+
+    // Direct plugin routes are real inference traffic: the same privacy
+    // policy, blocking and restore path as the CLI takeover routes applies.
+    let privacy = match if matches!(request.method.as_str(), "GET" | "HEAD")
+        && request.body.is_empty()
+    {
+        Ok(None)
+    } else {
+        context
+            .privacy
+            .begin(route.cli_key.as_str(), &request.headers, &request.body, None)
+    } {
+        Ok(privacy) => privacy,
+        Err(error) => {
+            let mut response = json_response(
+                400,
+                "Bad Request",
+                privacy_error_value(route, 400, "privacy_request_blocked", &error),
+                route.route_name,
+                None,
+                &error,
+            );
+            response.cli_key = Some(route.cli_key);
+            response.error_category = Some("privacy_request_blocked".to_string());
+            return response;
+        }
+    };
+
+    let Some(manager) = context.plugin_manager.as_ref() else {
+        return plugin_failure_response(
+            route,
+            503,
+            "plugin_runtime_missing",
+            "The plugin runtime is not available in this build session.",
+        );
+    };
+    let requested_model =
+        extract_requested_model(request, route).unwrap_or_else(|| "unknown".to_string());
+    let endpoint = match gateway_bridge::resolve_plugin_provider_endpoint(
+        manager,
+        None,
+        &plugin_route.provider_id,
+        &requested_model,
+        AiProtocol::OpenAiChat,
+    )
+    .await
+    {
+        Ok(endpoint) => endpoint,
+        Err(message) => {
+            return plugin_failure_response(route, 502, "plugin_provider_unavailable", &message)
+        }
+    };
+
+    // Anthropic `count_tokens` must never be silently converted into a billable
+    // non-Anthropic generation call; only Anthropic-protocol plugin endpoints
+    // support it natively.
+    let raw_request_path = request.path.split('?').next().unwrap_or_default();
+    if raw_request_path.ends_with("/count_tokens")
+        && endpoint.target_protocol != AiProtocol::AnthropicMessages
+    {
+        return plugin_failure_response(
+            route,
+            501,
+            "unsupported_endpoint",
+            &format!(
+                "Plugin provider '{}' uses {} protocol and does not support /v1/messages/count_tokens.",
+                endpoint.provider_id,
+                endpoint.target_protocol.as_str()
+            ),
+        );
+    }
+
+    let mut provider = UpstreamProvider {
+        supports_websockets: None,
+        cli_key: route.cli_key,
+        id: endpoint.provider_id.clone(),
+        name: if endpoint.provider_name.trim().is_empty() {
+            endpoint.provider_id.clone()
+        } else {
+            endpoint.provider_name.clone()
+        },
+        base_url: endpoint.base_url.clone(),
+        api_key: "plugin-managed".to_string(),
+        target_protocol: endpoint.target_protocol,
+        auth_strategy: ProviderAuthStrategy::Bearer,
+        is_full_url: false,
+        sort_index: None,
+        meta: ProviderGatewayMeta::default(),
+        model_mapping: UpstreamModelMapping::default(),
+        plugin_provider: Some(PluginProviderRef {
+            plugin_spec: endpoint.plugin_spec.clone(),
+            provider_id: endpoint.provider_id.clone(),
+            account_key: None,
+            account_strategy: PluginAccountStrategy::AutoRotate,
+        }),
+    };
+
+    let settings = context.settings_snapshot();
+    let app_config = settings.effective_app_config(route.cli_key);
+    let upstream_response_snapshot_limit = settings
+        .store_response_body
+        .then(|| settings.log_max_body_size_kb.saturating_mul(1024) as usize);
+    let result = send_upstream_request(
+        context,
+        request,
+        db,
+        route,
+        &mut provider,
+        &requested_model,
+        &requested_model,
+        settings.thinking_rectifier_enabled,
+        settings.responses_encrypted_content_rectifier_enabled,
+        settings.thinking_budget_rectifier_enabled,
+        settings.cache_injection_enabled,
+        settings.codex_compaction_native_passthrough_enabled,
+        None,
+        app_config.non_streaming_timeout_secs,
+        app_config.streaming_idle_timeout_secs,
+        upstream_response_snapshot_limit,
+        privacy.as_ref(),
+        &middleware_state,
+    )
+    .await;
+
+    let mut response = match result {
+        Ok(mut response) => {
+            response.cli_key = Some(route.cli_key);
+            response.provider_id = Some(provider.id.clone());
+            response.provider_name = Some(provider.name.clone());
+            response.provider_type = provider.meta.provider_type.clone();
+            response.cost_multiplier = Some(provider.meta.cost_multiplier.clone());
+            response.pricing_model_source = Some(provider.meta.pricing_model_source.clone());
+            response.requested_model = Some(requested_model.clone());
+            response.upstream_model_id = Some(requested_model.clone());
+            response.attempt_count = 1;
+            response.provider_attempt_count = 1;
+            response
+        }
+        Err(error) => {
+            if matches!(
+                error.kind,
+                GatewayFailureKind::RequestSchema | GatewayFailureKind::GatewayParse
+            ) {
+                local_request_schema_failure_response(
+                    route,
+                    &provider,
+                    &requested_model,
+                    &requested_model,
+                    error,
+                    1,
+                    1,
+                    false,
+                )
+            } else {
+                let category = model_health::classify_failure(error.kind).category;
+                let mut response = json_response(
+                    502,
+                    "Bad Gateway",
+                    json!({
+                        "error": "upstream_forward_failed",
+                        "message": error.message,
+                    }),
+                    route.route_name,
+                    None,
+                    "plugin upstream forwarding failed before a response was available",
+                );
+                response.cli_key = Some(route.cli_key);
+                response.provider_id = Some(provider.id.clone());
+                response.provider_name = Some(provider.name.clone());
+                response.requested_model = Some(requested_model.clone());
+                response.upstream_model_id = Some(requested_model.clone());
+                response.upstream_request_body = error.upstream_request_body;
+                response.target_protocol = Some(provider.target_protocol);
+                response.upstream_response_body = error.upstream_response_body;
+                response.upstream_response_body_bytes = error.upstream_response_body_bytes;
+                response.error_category = Some(category.to_string());
+                response.attempt_count = 1;
+                response.provider_attempt_count = 1;
+                response
+            }
+        }
+    };
+    if let Some(privacy) = privacy {
+        privacy.set_usage_provider(response.provider_type.clone());
+        privacy.set_usage_gateway_generated(matches!(
+            (response.source_protocol, response.target_protocol),
+            (Some(source), Some(target)) if source != target
+        ));
+        if let Some(stream) = response.body_stream.take() {
+            response.body_stream = Some(
+                crate::coding::proxy_gateway::privacy::stream::restore_sse_stream(
+                    stream,
+                    privacy.clone(),
+                ),
+            );
+        } else {
+            if let Ok(value) = serde_json::from_slice(&response.body) {
+                privacy.remember_response(&value);
+            }
+            match privacy.restore(&response.body) {
+                Ok(body) => {
+                    let original = std::mem::replace(&mut response.body, body);
+                    if original != response.body && response.upstream_response_body.is_none() {
+                        response.upstream_response_body_bytes = original.len() as u64;
+                        response.upstream_response_body = Some(original);
+                    }
+                    response.response_body_bytes = response.body.len() as u64;
+                    response.headers.retain(|(name, _)| {
+                        !name.eq_ignore_ascii_case("content-length")
+                            && !name.eq_ignore_ascii_case("etag")
+                    });
+                }
+                Err(error) => {
+                    privacy.fail();
+                    if response.upstream_url.is_some() && response.upstream_status_code.is_none() {
+                        response.upstream_status_code = Some(response.status_code);
+                    }
+                    response.status_code = 502;
+                    response.status_text = "Bad Gateway".into();
+                    response.body = privacy_error_value(
+                        route,
+                        502,
+                        "privacy_restore_failed",
+                        &error,
+                    )
+                    .to_string()
+                    .into_bytes();
+                    response.response_body_bytes = response.body.len() as u64;
+                    response.headers =
+                        vec![("Content-Type".into(), "application/json".into())];
+                    response.error_category = Some("privacy_restore_failed".into());
+                    response.note = error;
+                }
+            }
+        }
+        response.privacy = Some(privacy);
+    }
+    apply_response_middleware(context, request, route, &mut response, &middleware_state).await;
+    response
+}
+
+/// Build the middleware request context shared by every hook.
+fn middleware_request_info(
+    request: &DebugHttpRequest,
+    route: &GatewayRoute,
+    source_protocol: Option<AiProtocol>,
+) -> RequestInfo {
+    RequestInfo {
+        protocol: source_protocol
+            .map(middleware_protocol_name)
+            .unwrap_or_else(|| route.route_name.to_string()),
+        model: extract_requested_model(request, route).unwrap_or_default(),
+        stream: request_declares_streaming(request) || route_declares_streaming(route),
+        path: route.forwarded_path.clone(),
+        // Magpie's `ctx.agent` is the CLI family the request came from.
+        agent: route.cli_key.as_str().to_string(),
+        caller: None,
+    }
+}
+
+/// Magpie's middleware protocol vocabulary (`gwmw.Info.Protocol`), which is
+/// not the gateway's internal `AiProtocol::as_str()` spelling.
+fn middleware_protocol_name(protocol: AiProtocol) -> String {
+    match protocol {
+        AiProtocol::AnthropicMessages => "anthropic",
+        AiProtocol::OpenAiChat => "chat",
+        AiProtocol::OpenAiResponses => "responses",
+        AiProtocol::GeminiNative => "gemini",
+    }
+    .to_string()
+}
+
+fn middleware_reject_response(
+    route: &GatewayRoute,
+    status: u16,
+    message: &str,
+) -> DebugHttpResponse {
+    let mut response = json_response(
+        status,
+        status_text_for(status),
+        privacy_error_value(route, status, "middleware_rejected", message),
+        route.route_name,
+        None,
+        "gateway middleware rejected the request",
+    );
+    response.cli_key = Some(route.cli_key);
+    response.error_category = Some("middleware_rejected".to_string());
+    response
+}
+
+/// Apply `onResponse` (non-streaming) or wrap the body with `onEvent`
+/// (streaming). Fail-open: a middleware that cannot run leaves the response
+/// untouched (`run_on_*` already returns its input on failure).
+pub(super) async fn apply_response_middleware(
+    context: &GatewayRuntimeContext,
+    request: &DebugHttpRequest,
+    route: &GatewayRoute,
+    response: &mut DebugHttpResponse,
+    state: &MiddlewareState,
+) {
+    let Some(middleware) = context.middleware() else {
+        return;
+    };
+    if response.body_stream.is_some() {
+        // Only SSE has frames to hand to `onEvent`; an NDJSON/plain stream
+        // must be forwarded chunk by chunk, never buffered until its end.
+        if middleware.has_event_hooks() && response_is_sse_header_pairs(&response.headers) {
+            let info = middleware_request_info(request, route, source_protocol_from_route(route));
+            if let Some(stream) = response.body_stream.take() {
+                if let Some(session) = middleware.open_event_session(&info, state).await {
+                    response.body_stream = Some(sse_middleware_stream(stream, session));
+                } else {
+                    response.body_stream = Some(stream);
+                }
+            }
+        }
+        return;
+    }
+    if !middleware.has_response_hooks() || response.body.is_empty() {
+        return;
+    }
+    let info = middleware_request_info(request, route, source_protocol_from_route(route));
+    let body = middleware
+        .run_on_response(&response.body, &info, response.status_code, state)
+        .await;
+    if body != response.body {
+        response.response_body_bytes = body.len() as u64;
+        response.body = body;
+        response
+            .headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case(CONTENT_LENGTH.as_str()));
+    }
+}
+
+struct SseMiddlewareState {
+    inner: DebugBodyStream,
+    buffer: Vec<u8>,
+    /// One compiled `onEvent` runtime per middleware, kept for the stream.
+    session: EventSession,
+    finished: bool,
+    output: std::collections::VecDeque<Vec<u8>>,
+}
+
+impl SseMiddlewareState {
+    /// Split one complete SSE frame (terminated by a blank line) off the
+    /// buffer. An unterminated tail waits for the next chunk.
+    fn take_frame(&mut self) -> Option<Vec<u8>> {
+        let delimiter = self
+            .buffer
+            .windows(2)
+            .position(|window| window == b"\n\n")
+            .map(|index| (index, 2))
+            .or_else(|| {
+                self.buffer
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| (index, 4))
+            })?;
+        let end = delimiter.0 + delimiter.1;
+        Some(self.buffer.drain(..end).collect())
+    }
+}
+
+pub(super) fn sse_middleware_stream(inner: DebugBodyStream, session: EventSession) -> DebugBodyStream {
+    let state = SseMiddlewareState {
+        inner,
+        buffer: Vec::new(),
+        session,
+        finished: false,
+        output: std::collections::VecDeque::new(),
+    };
+    Box::pin(futures_util::stream::unfold(
+        state,
+        |mut state| async move {
+            loop {
+                if let Some(chunk) = state.output.pop_front() {
+                    return Some((Ok(chunk), state));
+                }
+                if let Some(frame) = state.take_frame() {
+                    if let Some(rewritten) = rewrite_sse_frame(&state.session, &frame).await {
+                        state.output.push_back(rewritten);
+                    }
+                    continue;
+                }
+                if state.finished {
+                    if state.buffer.is_empty() {
+                        return None;
+                    }
+                    let tail = std::mem::take(&mut state.buffer);
+                    return Some((Ok(tail), state));
+                }
+                match state.inner.next().await {
+                    Some(Ok(chunk)) => state.buffer.extend_from_slice(&chunk),
+                    Some(Err(error)) => return Some((Err(error), state)),
+                    None => state.finished = true,
+                }
+            }
+        },
+    ))
+}
+
+/// Run `onEvent` for one frame. `None` means the middleware dropped it.
+async fn rewrite_sse_frame(session: &EventSession, frame: &[u8]) -> Option<Vec<u8>> {
+    let Ok(text) = std::str::from_utf8(frame) else {
+        return Some(frame.to_vec());
+    };
+    let mut event_name = String::new();
+    let mut data = String::new();
+    for line in text.lines() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.starts_with(':') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("event:") {
+            event_name = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+        }
+    }
+    if data.is_empty() {
+        return Some(frame.to_vec());
+    }
+    let name = if event_name.is_empty() {
+        "message"
+    } else {
+        event_name.as_str()
+    };
+    match session.run_frame(name, data.as_bytes()).await {
+        EventOutcome::Keep => Some(frame.to_vec()),
+        EventOutcome::Drop => None,
+        EventOutcome::Replace(replacement) => {
+            let text = String::from_utf8_lossy(&replacement);
+            Some(format!("event: {name}\ndata: {text}\n\n").into_bytes())
+        }
+    }
 }
 
 fn is_cli_route_probe(request: &DebugHttpRequest, route: &GatewayRoute) -> bool {
@@ -1060,11 +1854,16 @@ async fn forward_to_upstream(
     route: &GatewayRoute,
     options: &GatewayRequestOptions,
     privacy: Option<&PrivacyRequest>,
+    middleware_state: &MiddlewareState,
 ) -> DebugHttpResponse {
     let requested_model =
         extract_requested_model(request, route).unwrap_or_else(|| "unknown".to_string());
     let aux_task = (route.cli_key == GatewayCliKey::Codex)
-        .then(|| crate::coding::proxy_gateway::runtime::compat::codex_aux_task::classify_codex_aux_task(request))
+        .then(|| {
+            crate::coding::proxy_gateway::runtime::compat::codex_aux_task::classify_codex_aux_task(
+                request,
+            )
+        })
         .flatten();
     let mut provider_candidates = match context.load_candidate_providers(db, route.cli_key).await {
         Ok(provider_candidates) if !provider_candidates.providers.is_empty() => provider_candidates,
@@ -1425,6 +2224,7 @@ async fn forward_to_upstream(
                 app_config.streaming_idle_timeout_secs,
                 upstream_response_snapshot_limit,
                 privacy,
+                middleware_state,
             )
             .await
             {
@@ -1814,13 +2614,41 @@ async fn send_upstream_request(
     streaming_idle_timeout_secs: u64,
     upstream_response_snapshot_limit: Option<usize>,
     privacy: Option<&PrivacyRequest>,
+    middleware_state: &MiddlewareState,
 ) -> Result<DebugHttpResponse, GatewayForwardError> {
     let aux_task = (route.cli_key == GatewayCliKey::Codex)
         .then(|| classify_codex_aux_task(request))
         .flatten();
-    let aux_shaping = aux_task
-        .as_ref()
-        .is_some_and(CodexAuxTask::is_shaped);
+    let aux_shaping = aux_task.as_ref().is_some_and(CodexAuxTask::is_shaped);
+    // Plugin providers delegate the transport, not the routing: resolve the
+    // endpoint and its protocol first so conversion, URL building and headers
+    // all see the effective provider.
+    let mut plugin_endpoint: Option<gateway_bridge::PluginProviderEndpoint> = None;
+    let mut plugin_account: Option<String> = None;
+    if let Some(reference) = provider.plugin_provider.clone() {
+        let Some(manager) = context.plugin_manager.as_ref() else {
+            return Err(GatewayForwardError::new(
+                format!(
+                    "Plugin provider '{}' requires the plugin runtime, which is not available",
+                    provider.name
+                ),
+                GatewayFailureKind::Connection,
+            ));
+        };
+        let endpoint = gateway_bridge::resolve_plugin_provider_endpoint(
+            manager,
+            Some(&reference.plugin_spec),
+            &reference.provider_id,
+            requested_model,
+            provider.target_protocol,
+        )
+        .await
+        .map_err(|message| GatewayForwardError::new(message, GatewayFailureKind::Connection))?;
+        provider.target_protocol = endpoint.target_protocol;
+        provider.base_url = endpoint.base_url.clone();
+        plugin_account = Some(gateway_bridge::select_plugin_account(manager, &reference));
+        plugin_endpoint = Some(endpoint);
+    }
     let compact_compat = CodexResponsesCompactCompat::new(route, provider);
     let remote_compaction = RemoteCompactionCompat::resolve(
         route,
@@ -1884,6 +2712,21 @@ async fn send_upstream_request(
             build_responses_encrypted_content_rectified_body(&upstream_body, strip_item_ids)?
         {
             upstream_body = rectified;
+        }
+    }
+    let pre_on_provider_body = upstream_body.clone();
+    if let Some(middleware) = context.middleware() {
+        if middleware.has_provider_hooks() {
+            let info = middleware_request_info(request, route, source_protocol);
+            let target = ProviderTarget {
+                id: provider.id.clone(),
+                name: provider.name.clone(),
+                account: plugin_account.clone().unwrap_or_default(),
+                model: upstream_model_id.to_string(),
+            };
+            upstream_body = middleware
+                .run_on_provider(&upstream_body, &info, &target, middleware_state)
+                .await;
         }
     }
     if let Some(privacy) = privacy {
@@ -1950,21 +2793,61 @@ async fn send_upstream_request(
 
     let header_preserving_proxy = header_preserving_proxy(db).await;
 
-    let response = send_request_once(
-        &client,
-        method.clone(),
-        &upstream_url,
-        headers.clone(),
-        upstream_body.clone(),
-        non_streaming_timeout_secs.max(1),
-        streaming_idle_timeout_secs.max(1),
-        header_preserving_proxy.clone(),
-    )
-    .await
-    .map_err(|mut error| {
-        error.upstream_request_body = Some(upstream_body_snapshot.clone());
-        error
-    })?;
+    let response = if let (Some(endpoint), Some(manager), Some(reference)) = (
+        plugin_endpoint.as_ref(),
+        context.plugin_manager.as_ref(),
+        provider.plugin_provider.as_ref(),
+    ) {
+        // The plugin host owns the connection: pass the proxy the gateway
+        // resolved for this database, if any.
+        let plugin_proxy = match header_preserving_proxy.clone() {
+            Some(Some(url)) => Some(url),
+            _ => None,
+        };
+        let reply = gateway_bridge::send_via_plugin_host(
+            manager,
+            reference,
+            &endpoint.npm,
+            upstream_model_id,
+            upstream_url.as_str(),
+            method.as_str(),
+            &headers.map,
+            &upstream_body,
+            plugin_proxy.as_deref(),
+            plugin_account.as_deref().unwrap_or(&reference.provider_id),
+        )
+        .await
+        .map_err(|message| {
+            let mut error = GatewayForwardError::new(
+                format!("Plugin upstream request failed: {message}"),
+                GatewayFailureKind::Connection,
+            );
+            error.upstream_request_body = Some(upstream_body_snapshot.clone());
+            error
+        })?;
+        UpstreamResponse::PluginStream {
+            status: reqwest::StatusCode::from_u16(reply.status)
+                .unwrap_or(reqwest::StatusCode::BAD_GATEWAY),
+            headers: reply.headers,
+            body: reply.body,
+        }
+    } else {
+        send_request_once(
+            &client,
+            method.clone(),
+            &upstream_url,
+            headers.clone(),
+            upstream_body.clone(),
+            non_streaming_timeout_secs.max(1),
+            streaming_idle_timeout_secs.max(1),
+            header_preserving_proxy.clone(),
+        )
+        .await
+        .map_err(|mut error| {
+            error.upstream_request_body = Some(upstream_body_snapshot.clone());
+            error
+        })?
+    };
 
     let status = response.status();
 
@@ -2100,7 +2983,7 @@ async fn send_upstream_request(
             route_declares_streaming(route),
             compact_compat,
             RemoteCompactionCompat::Fallback,
-            &upstream_body_snapshot,
+            &pre_on_provider_body,
         )?;
         // Unreachable for a v2 turn — the trigger is always rewritten — but a
         // retry that would resend the same request is not a retry.
@@ -2116,24 +2999,44 @@ async fn send_upstream_request(
                 upstream_response_body_bytes,
             });
         };
+        let mut retried_body = retried.body;
+        if let Some(middleware) = context.middleware() {
+            if middleware.has_provider_hooks() {
+                let info = middleware_request_info(request, route, source_protocol);
+                let target = ProviderTarget {
+                    id: provider.id.clone(),
+                    name: provider.name.clone(),
+                    account: plugin_account.clone().unwrap_or_default(),
+                    model: upstream_model_id.to_string(),
+                };
+                retried_body = middleware
+                    .run_on_provider(&retried_body, &info, &target, middleware_state)
+                    .await;
+            }
+        }
         let retried_body = match privacy {
             Some(privacy) => privacy
-                .prepare(&retried.body, &provider.id)
+                .prepare(&retried_body, &provider.id)
                 .map_err(|message| {
                     privacy.fail();
                     GatewayForwardError::new(message, GatewayFailureKind::RequestSchema)
                 })?,
-            None => retried.body,
+            None => retried_body,
         };
-        let response = send_request_once(
+        let response = send_retry_attempt(
+            context,
+            provider,
+            plugin_endpoint.as_ref(),
+            plugin_account.as_deref(),
             &client,
-            method.clone(),
+            &method,
+            upstream_model_id,
             &upstream_url,
-            headers.clone(),
-            retried_body.clone(),
-            non_streaming_timeout_secs.max(1),
-            streaming_idle_timeout_secs.max(1),
-            header_preserving_proxy.clone(),
+            &headers,
+            &retried_body,
+            non_streaming_timeout_secs,
+            streaming_idle_timeout_secs,
+            &header_preserving_proxy,
         )
         .await
         .map_err(|mut error| {
@@ -2248,33 +3151,53 @@ async fn send_upstream_request(
                 route_declares_streaming(route),
                 compact_compat,
                 remote_compaction,
-                &upstream_body_snapshot,
+                &pre_on_provider_body,
             )? {
+                let mut rectified_body = rectified.body;
+                if let Some(middleware) = context.middleware() {
+                    if middleware.has_provider_hooks() {
+                        let info = middleware_request_info(request, route, source_protocol);
+                        let target = ProviderTarget {
+                            id: provider.id.clone(),
+                            name: provider.name.clone(),
+                            account: plugin_account.clone().unwrap_or_default(),
+                            model: upstream_model_id.to_string(),
+                        };
+                        rectified_body = middleware
+                            .run_on_provider(&rectified_body, &info, &target, middleware_state)
+                            .await;
+                    }
+                }
                 let rectified_body = match privacy {
                     Some(privacy) => {
                         privacy
-                            .prepare(&rectified.body, &provider.id)
+                            .prepare(&rectified_body, &provider.id)
                             .map_err(|message| {
                                 privacy.fail();
                                 GatewayForwardError::new(message, GatewayFailureKind::RequestSchema)
                             })?
                     }
-                    None => rectified.body,
+                    None => rectified_body,
                 };
                 let rectified_context = rectified.conversion_context;
                 let rectified_lossy_warnings = rectified.lossy_warnings;
                 let rectified_pipeline = rectified.pipeline;
                 let rectified_pipeline_context = rectified.pipeline_context;
                 let rectified_observations = rectified.observations;
-                let response = send_request_once(
+                let response = send_retry_attempt(
+                    context,
+                    provider,
+                    plugin_endpoint.as_ref(),
+                    plugin_account.as_deref(),
                     &client,
-                    method.clone(),
+                    &method,
+                    upstream_model_id,
                     &upstream_url,
-                    headers.clone(),
-                    rectified_body.clone(),
-                    non_streaming_timeout_secs.max(1),
-                    streaming_idle_timeout_secs.max(1),
-                    header_preserving_proxy.clone(),
+                    &headers,
+                    &rectified_body,
+                    non_streaming_timeout_secs,
+                    streaming_idle_timeout_secs,
+                    &header_preserving_proxy,
                 )
                 .await
                 .map_err(|mut error| {
@@ -2323,15 +3246,20 @@ async fn send_upstream_request(
                     &upstream_body_snapshot,
                     encrypted_content_error.strip_item_ids,
                 )? {
-                    let response = send_request_once(
+                    let response = send_retry_attempt(
+                        context,
+                        provider,
+                        plugin_endpoint.as_ref(),
+                        plugin_account.as_deref(),
                         &client,
-                        method.clone(),
+                        &method,
+                        upstream_model_id,
                         &upstream_url,
-                        headers.clone(),
-                        rectified_body.clone(),
-                        non_streaming_timeout_secs.max(1),
-                        streaming_idle_timeout_secs.max(1),
-                        header_preserving_proxy.clone(),
+                        &headers,
+                        &rectified_body,
+                        non_streaming_timeout_secs,
+                        streaming_idle_timeout_secs,
+                        &header_preserving_proxy,
                     )
                     .await
                     .map_err(|mut error| {
@@ -2364,26 +3292,29 @@ async fn send_upstream_request(
         }
 
         if should_attempt_thinking_budget_rectifier {
-            let rectified_body = if thinking_budget::should_rectify_thinking_budget(
-                status_code,
-                &body,
-            ) {
-                thinking_budget::rectify_thinking_budget(&upstream_body_snapshot)
-            } else if thinking_budget::should_rectify_thinking_disabled(status_code, &body) {
-                thinking_budget::rectify_thinking_disabled(&upstream_body_snapshot)
-            } else {
-                None
-            };
+            let rectified_body =
+                if thinking_budget::should_rectify_thinking_budget(status_code, &body) {
+                    thinking_budget::rectify_thinking_budget(&upstream_body_snapshot)
+                } else if thinking_budget::should_rectify_thinking_disabled(status_code, &body) {
+                    thinking_budget::rectify_thinking_disabled(&upstream_body_snapshot)
+                } else {
+                    None
+                };
             if let Some(rectified_body) = rectified_body {
-                let response = send_request_once(
+                let response = send_retry_attempt(
+                    context,
+                    provider,
+                    plugin_endpoint.as_ref(),
+                    plugin_account.as_deref(),
                     &client,
-                    method.clone(),
+                    &method,
+                    upstream_model_id,
                     &upstream_url,
-                    headers.clone(),
-                    rectified_body.clone(),
-                    non_streaming_timeout_secs.max(1),
-                    streaming_idle_timeout_secs.max(1),
-                    header_preserving_proxy.clone(),
+                    &headers,
+                    &rectified_body,
+                    non_streaming_timeout_secs,
+                    streaming_idle_timeout_secs,
+                    &header_preserving_proxy,
                 )
                 .await
                 .map_err(|mut error| {
@@ -2420,15 +3351,20 @@ async fn send_upstream_request(
             if let Some(rectified_body) =
                 build_unsupported_media_rectified_body(&upstream_body_snapshot)?
             {
-                let response = send_request_once(
+                let response = send_retry_attempt(
+                    context,
+                    provider,
+                    plugin_endpoint.as_ref(),
+                    plugin_account.as_deref(),
                     &client,
-                    method.clone(),
+                    &method,
+                    upstream_model_id,
                     &upstream_url,
-                    headers.clone(),
-                    rectified_body.clone(),
-                    non_streaming_timeout_secs.max(1),
-                    streaming_idle_timeout_secs.max(1),
-                    header_preserving_proxy.clone(),
+                    &headers,
+                    &rectified_body,
+                    non_streaming_timeout_secs,
+                    streaming_idle_timeout_secs,
+                    &header_preserving_proxy,
                 )
                 .await
                 .map_err(|mut error| {
@@ -2653,6 +3589,7 @@ pub(super) async fn run_websocket_aux_http(
     if let Some(privacy) = privacy {
         privacy.set_usage_provider(provider.meta.provider_type.clone());
     }
+    let middleware_state = MiddlewareState::new();
 
     let result = send_upstream_request(
         context,
@@ -2672,6 +3609,7 @@ pub(super) async fn run_websocket_aux_http(
         app_config.streaming_idle_timeout_secs,
         upstream_response_snapshot_limit,
         privacy,
+        &middleware_state,
     )
     .await;
 
@@ -2748,8 +3686,7 @@ pub(super) async fn run_websocket_aux_http(
     }
     if !(200..400).contains(&response.status_code) {
         let status_code = response.status_code;
-        let kind = classify_status_failure(status_code)
-            .unwrap_or(GatewayFailureKind::Upstream5xx);
+        let kind = classify_status_failure(status_code).unwrap_or(GatewayFailureKind::Upstream5xx);
         let message = upstream_error_message(&response.body)
             .unwrap_or_else(|| format!("Auxiliary upstream returned HTTP {status_code}"));
         return websocket_aux_failure_from_response(
@@ -2809,6 +3746,73 @@ pub(super) async fn run_websocket_aux_http(
         error_message: None,
         failure_kind: None,
     }
+}
+
+/// One retry attempt. Plugin providers must go back through the host: the
+/// gateway has no credentials for their vendor, so a direct `send_request_once`
+/// would send an unauthenticated request to the vendor.
+#[allow(clippy::too_many_arguments)]
+async fn send_retry_attempt(
+    context: &GatewayRuntimeContext,
+    provider: &UpstreamProvider,
+    plugin_endpoint: Option<&gateway_bridge::PluginProviderEndpoint>,
+    plugin_account: Option<&str>,
+    client: &reqwest::Client,
+    method: &reqwest::Method,
+    upstream_model_id: &str,
+    upstream_url: &reqwest::Url,
+    headers: &UpstreamHeaders,
+    upstream_body: &[u8],
+    non_streaming_timeout_secs: u64,
+    streaming_idle_timeout_secs: u64,
+    header_preserving_proxy: &Option<Option<String>>,
+) -> Result<UpstreamResponse, GatewayForwardError> {
+    if let (Some(endpoint), Some(manager), Some(reference)) = (
+        plugin_endpoint,
+        context.plugin_manager.as_ref(),
+        provider.plugin_provider.as_ref(),
+    ) {
+        let plugin_proxy = match header_preserving_proxy.clone() {
+            Some(Some(url)) => Some(url),
+            _ => None,
+        };
+        let reply = gateway_bridge::send_via_plugin_host(
+            manager,
+            reference,
+            &endpoint.npm,
+            upstream_model_id,
+            upstream_url.as_str(),
+            method.as_str(),
+            &headers.map,
+            upstream_body,
+            plugin_proxy.as_deref(),
+            plugin_account.unwrap_or(&reference.provider_id),
+        )
+        .await
+        .map_err(|message| {
+            GatewayForwardError::new(
+                format!("Plugin upstream request failed: {message}"),
+                GatewayFailureKind::Connection,
+            )
+        })?;
+        return Ok(UpstreamResponse::PluginStream {
+            status: reqwest::StatusCode::from_u16(reply.status)
+                .unwrap_or(reqwest::StatusCode::BAD_GATEWAY),
+            headers: reply.headers,
+            body: reply.body,
+        });
+    }
+    send_request_once(
+        client,
+        method.clone(),
+        upstream_url,
+        headers.clone(),
+        upstream_body.to_vec(),
+        non_streaming_timeout_secs.max(1),
+        streaming_idle_timeout_secs.max(1),
+        header_preserving_proxy.clone(),
+    )
+    .await
 }
 
 async fn send_request_once(
@@ -2972,7 +3976,10 @@ pub(super) fn describe_error_chain(error: &(dyn std::error::Error + 'static)) ->
 /// Describe a `reqwest::Error` with its full source chain while stripping the
 /// URL so query-string API keys never leak into logs.
 pub(super) fn describe_reqwest_error(error: &reqwest::Error) -> String {
-    let redacted_url = error.url().map(|url| url.as_str()).filter(|s| !s.is_empty());
+    let redacted_url = error
+        .url()
+        .map(|url| url.as_str())
+        .filter(|s| !s.is_empty());
     let mut parts = Vec::new();
     // Strip URL from the outermost reqwest error and inner source chain so
     // query-string API keys never leak into logs.
@@ -2987,8 +3994,7 @@ pub(super) fn describe_reqwest_error(error: &reqwest::Error) -> String {
     if !outer_trimmed.is_empty() {
         parts.push(outer_trimmed.to_string());
     }
-    let mut current: Option<&(dyn std::error::Error + 'static)> =
-        std::error::Error::source(error);
+    let mut current: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(error);
     while let Some(err) = current {
         let text = redact(err.to_string());
         let trimmed = text.trim();
@@ -3144,13 +4150,8 @@ async fn build_gateway_response(
         }
         let mut aux_shaped = false;
         if let Some(task) = aux_shaped_task {
-            let outcome = shape_aux_response(
-                task,
-                &request.body,
-                &body,
-                &upstream_response_body,
-            )
-            .map_err(|error| GatewayForwardError {
+            let outcome = shape_aux_response(task, &request.body, &body, &upstream_response_body)
+                .map_err(|error| GatewayForwardError {
                 message: error.message().to_string(),
                 kind: GatewayFailureKind::EmptyResponse,
                 upstream_request_body: Some(upstream_body_snapshot.clone()),
@@ -3511,13 +4512,8 @@ async fn build_gateway_response(
     let mut aux_shaped = false;
     if let Some(task) = aux_shaped_task {
         if served {
-            let outcome = shape_aux_response(
-                task,
-                &request.body,
-                &body,
-                &upstream_response_body,
-            )
-            .map_err(|error| GatewayForwardError {
+            let outcome = shape_aux_response(task, &request.body, &body, &upstream_response_body)
+                .map_err(|error| GatewayForwardError {
                 message: error.message().to_string(),
                 kind: GatewayFailureKind::EmptyResponse,
                 upstream_request_body: Some(upstream_body_snapshot.clone()),
@@ -4964,7 +5960,10 @@ impl OpenAiChatSseAggregate {
         if self.system_fingerprint.is_none() {
             self.system_fingerprint = value.get("system_fingerprint").cloned();
         }
-        if let Some(citations) = value.get("citations").filter(|citations| !citations.is_null()) {
+        if let Some(citations) = value
+            .get("citations")
+            .filter(|citations| !citations.is_null())
+        {
             self.citations = Some(citations.clone());
         }
     }
@@ -6373,14 +7372,13 @@ fn render_aux_sse_if_streaming(
     if !(200..400).contains(&status_code) || !request_declares_streaming(request) {
         return Ok((body, None, false));
     }
-    let stream =
-        build_aux_sse(&body, upstream_body).map_err(|error| GatewayForwardError {
-            message: error.message().to_string(),
-            kind: GatewayFailureKind::EmptyResponse,
-            upstream_request_body: None,
-            upstream_response_body: Some(upstream_body.to_vec()),
-            upstream_response_body_bytes: upstream_body.len() as u64,
-        })?;
+    let stream = build_aux_sse(&body, upstream_body).map_err(|error| GatewayForwardError {
+        message: error.message().to_string(),
+        kind: GatewayFailureKind::EmptyResponse,
+        upstream_request_body: None,
+        upstream_response_body: Some(upstream_body.to_vec()),
+        upstream_response_body_bytes: upstream_body.len() as u64,
+    })?;
     set_response_content_type(response_headers, "text/event-stream");
     let bytes = stream.into_bytes();
     let stream = futures_util::stream::once(async move { Ok(bytes) });
@@ -6607,7 +7605,8 @@ fn detect_responses_opaque_state_error_in_sse(
 
     let mut remaining = text.to_string();
     let mut saw_block = false;
-    while let Some(block) = crate::coding::proxy_gateway::transformer::take_sse_block(&mut remaining)
+    while let Some(block) =
+        crate::coding::proxy_gateway::transformer::take_sse_block(&mut remaining)
     {
         saw_block = true;
         let data_lines: Vec<&str> = block
@@ -7028,7 +8027,8 @@ fn strip_non_image_media_parts(value: &mut Value) -> bool {
             ) {
                 continue;
             }
-            let replacement_type = if item.get("role").and_then(Value::as_str) == Some("assistant") {
+            let replacement_type = if item.get("role").and_then(Value::as_str) == Some("assistant")
+            {
                 "output_text"
             } else {
                 "input_text"
@@ -7617,7 +8617,11 @@ pub(super) fn resolve_codex_aux_model(
     }
 
     Ok(Some(AuxModelResolution {
-        model: resolve_aux_model_rewrite(provider, normalized_requested, allow_provider_model_mapping),
+        model: resolve_aux_model_rewrite(
+            provider,
+            normalized_requested,
+            allow_provider_model_mapping,
+        ),
         source: "auto_kept",
     }))
 }
@@ -11540,7 +12544,10 @@ fn strip_one_m_context_marker(model: &str) -> &str {
 fn source_protocol_from_route(route: &GatewayRoute) -> Option<AiProtocol> {
     match route.cli_key {
         GatewayCliKey::Claude | GatewayCliKey::ClaudeDesktop => {
-            if route.forwarded_path == "/v1/messages" || route.forwarded_path == "/messages" {
+            if matches!(
+                route.forwarded_path.as_str(),
+                "/v1/messages" | "/messages" | "/v1/messages/count_tokens" | "/messages/count_tokens"
+            ) {
                 Some(AiProtocol::AnthropicMessages)
             } else {
                 None
@@ -11560,11 +12567,15 @@ fn source_protocol_from_route(route: &GatewayRoute) -> Option<AiProtocol> {
                 None
             }
         }
-        // Keep Grok source derivation aligned with formal route whitelist:
-        // only /v1 (probe) and /v1/responses are accepted; Chat/compact stay unsupported.
+        // Grok's formal route whitelist is /v1 (probe) and /v1/responses; the
+        // plugin direct route also serves /v1/responses/compact through the
+        // same Responses pipeline.
         GatewayCliKey::Grok => {
             let path = route.forwarded_path.as_str();
-            if path == "/v1/responses" || path == "/responses" {
+            if matches!(
+                path,
+                "/v1/responses" | "/responses" | "/v1/responses/compact" | "/responses/compact"
+            ) {
                 Some(AiProtocol::OpenAiResponses)
             } else {
                 None
@@ -12312,7 +13323,11 @@ pub(super) fn build_upstream_headers(
             HeaderValue::from_static("application/x-ndjson"),
         )?;
     }
-    inject_provider_auth(provider, &mut headers, &mut preserved)?;
+    if provider.plugin_provider.is_none() {
+        // Plugin providers carry no credential of their own: the host injects
+        // the selected account's key after receiving the request.
+        inject_provider_auth(provider, &mut headers, &mut preserved)?;
+    }
     inject_anthropic_platform_headers(provider, upstream_body, &mut headers, &mut preserved)?;
     inject_codex_official_headers(request, provider, &mut headers, &mut preserved)?;
     inject_copilot_headers(
@@ -13823,6 +14838,8 @@ mod tests {
             sort_index: Some(0),
             meta: ProviderGatewayMeta::default(),
             model_mapping: mapping,
+
+            plugin_provider: None,
         }
     }
 
@@ -13869,6 +14886,8 @@ mod tests {
             sort_index: Some(0),
             meta: ProviderGatewayMeta::default(),
             model_mapping: UpstreamModelMapping::default(),
+
+            plugin_provider: None,
         }
     }
 
@@ -14193,6 +15212,8 @@ mod tests {
             sort_index: Some(0),
             meta: ProviderGatewayMeta::default(),
             model_mapping: UpstreamModelMapping::default(),
+
+            plugin_provider: None,
         };
         let source_protocol = source_protocol_from_route(&route).unwrap();
         let conversion = conversion_route(source_protocol, &provider);
@@ -14204,7 +15225,7 @@ mod tests {
     }
 
     #[test]
-    fn grok_source_protocol_matches_formal_route_whitelist() {
+    fn grok_source_protocol_covers_the_formal_route_and_plugin_compact() {
         let responses = gateway_route(GatewayCliKey::Grok, "/v1/responses");
         assert_eq!(
             source_protocol_from_route(&responses),
@@ -14215,12 +15236,18 @@ mod tests {
         let probe = gateway_route(GatewayCliKey::Grok, "/v1");
         assert_eq!(source_protocol_from_route(&probe), None);
 
-        // Even if an internal caller synthesizes Chat/compact routes, Grok must not
-        // silently expand the product protocol surface beyond formal whitelist.
+        // Chat is outside Grok's public surface and stays unsupported even for
+        // an internally synthesized route.
         let synthetic_chat = gateway_route(GatewayCliKey::Grok, "/v1/chat/completions");
         assert_eq!(source_protocol_from_route(&synthetic_chat), None);
+
+        // The plugin direct route synthesizes `/v1/responses/compact` with the
+        // Grok pipeline; the public Grok route matcher still rejects it.
         let synthetic_compact = gateway_route(GatewayCliKey::Grok, "/v1/responses/compact");
-        assert_eq!(source_protocol_from_route(&synthetic_compact), None);
+        assert_eq!(
+            source_protocol_from_route(&synthetic_compact),
+            Some(AiProtocol::OpenAiResponses)
+        );
     }
 
     #[test]
@@ -23117,28 +24144,26 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         use crate::coding::proxy_gateway::runtime::compat::codex_aux_task::CodexAuxiliaryModelRoute;
 
         let mut provider = aux_provider();
-        provider
-            .model_mapping
-            .auxiliary_models
-            .insert(
-                "title".to_string(),
-                CodexAuxiliaryModelRoute::Model {
-                    model: "cheap-model".to_string(),
-                },
-            );
+        provider.model_mapping.auxiliary_models.insert(
+            "title".to_string(),
+            CodexAuxiliaryModelRoute::Model {
+                model: "cheap-model".to_string(),
+            },
+        );
         let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, true)
             .unwrap()
             .expect("resolved route");
         assert_eq!(resolved.model, "cheap-model");
         assert_eq!(resolved.source, "explicit");
 
-        provider.model_mapping.auxiliary_models.insert(
-            "summary".to_string(),
-            CodexAuxiliaryModelRoute::Main,
-        );
-        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Summary, true)
-            .unwrap()
-            .expect("resolved route");
+        provider
+            .model_mapping
+            .auxiliary_models
+            .insert("summary".to_string(), CodexAuxiliaryModelRoute::Main);
+        let resolved =
+            resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Summary, true)
+                .unwrap()
+                .expect("resolved route");
         assert_eq!(resolved.model, "main-model");
         assert_eq!(resolved.source, "main");
     }
@@ -23149,10 +24174,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
 
         let mut provider = aux_provider();
         provider.model_mapping.default_model = None;
-        provider.model_mapping.auxiliary_models.insert(
-            "title".to_string(),
-            CodexAuxiliaryModelRoute::Main,
-        );
+        provider
+            .model_mapping
+            .auxiliary_models
+            .insert("title".to_string(), CodexAuxiliaryModelRoute::Main);
 
         let error = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Title, true)
             .unwrap_err();
@@ -23170,9 +24195,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         assert_eq!(kept.model, "declared-model");
         assert_eq!(kept.source, "auto_kept");
 
-        let fallback = resolve_codex_aux_model("unknown-model", &provider, &CodexAuxTask::Title, true)
-            .unwrap()
-            .expect("resolved route");
+        let fallback =
+            resolve_codex_aux_model("unknown-model", &provider, &CodexAuxTask::Title, true)
+                .unwrap()
+                .expect("resolved route");
         assert_eq!(fallback.model, "main-model");
         assert_eq!(fallback.source, "auto_fallback");
 
@@ -23206,9 +24232,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
 
         // The old behaviour, kept here to document what must NOT happen: the
         // raw slug is undeclared on every site, so it fell back to main-model.
-        let legacy = resolve_codex_aux_model("siteA.gpt-6-luna", &provider, &CodexAuxTask::Title, true)
-            .unwrap()
-            .expect("resolved route");
+        let legacy =
+            resolve_codex_aux_model("siteA.gpt-6-luna", &provider, &CodexAuxTask::Title, true)
+                .unwrap()
+                .expect("resolved route");
         assert_eq!(legacy.source, "auto_fallback");
     }
 
@@ -23218,9 +24245,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         provider.meta.declared_models = vec!["main-model".to_string()];
         provider.model_mapping.native_memory_models = vec!["gpt-6-luna".to_string()];
 
-        let resolved = resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Memory, true)
-            .unwrap()
-            .expect("resolved route");
+        let resolved =
+            resolve_codex_aux_model("gpt-6-luna", &provider, &CodexAuxTask::Memory, true)
+                .unwrap()
+                .expect("resolved route");
         assert_eq!(resolved.model, "gpt-6-luna");
         assert_eq!(resolved.source, "auto_kept");
     }
@@ -23247,9 +24275,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
 
         // Automatic mode keeps the requested model, but the provider's wire
         // rewrite still applies exactly as it does on an ordinary turn.
-        let resolved = resolve_codex_aux_model("cheap-model", &provider, &CodexAuxTask::Summary, true)
-            .unwrap()
-            .expect("resolved route");
+        let resolved =
+            resolve_codex_aux_model("cheap-model", &provider, &CodexAuxTask::Summary, true)
+                .unwrap()
+                .expect("resolved route");
         assert_eq!(resolved.model, "upstream-cheap");
         assert_eq!(resolved.source, "auto_kept");
     }
@@ -23343,8 +24372,8 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
     #[test]
     fn ensure_not_self_loopback_blocks_listener_and_allows_other_ports() {
         let listener: std::net::SocketAddr = "127.0.0.1:37123".parse().unwrap();
-        let self_v4 = reqwest::Url::parse("http://127.0.0.1:37123/openai/v1/responses?key=secret")
-            .unwrap();
+        let self_v4 =
+            reqwest::Url::parse("http://127.0.0.1:37123/openai/v1/responses?key=secret").unwrap();
         let err = ensure_not_self_loopback(&self_v4, Some(listener)).unwrap_err();
         assert!(!err.contains("secret"), "error must not leak query key");
 
@@ -23505,8 +24534,8 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
 
     #[test]
     fn glm_chinese_text_only_error_and_non_image_media_stripping() {
-        let err =
-            r#"{"error":{"message":"messages.content.type 参数非法，取值范围 ['text']"}}"#.as_bytes();
+        let err = r#"{"error":{"message":"messages.content.type 参数非法，取值范围 ['text']"}}"#
+            .as_bytes();
         assert!(should_rectify_unsupported_media(400, err));
 
         let body = br#"{"model":"glm-5.2","messages":[{"role":"user","content":[{"type":"text","text":"summarize"},{"type":"document","source":{"type":"base64","data":"AA=="}},{"type":"input_audio","input_audio":{"data":"BB=="}}]}]}"#;
@@ -23528,7 +24557,8 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
 
     #[test]
     fn opaque_state_rectifier_handles_azure_minimax_sse_and_preserves_call_id() {
-        let azure = br#"{"error":{"message":"Item rs_123 belongs to a different Azure OpenAI resource"}}"#;
+        let azure =
+            br#"{"error":{"message":"Item rs_123 belongs to a different Azure OpenAI resource"}}"#;
         let err = detect_responses_encrypted_content_error(400, azure).expect("azure error");
         assert!(err.strip_item_ids);
 
@@ -23536,8 +24566,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         let err2 = detect_responses_encrypted_content_error(400, minimax_prefix).expect("prefix");
         assert!(err2.strip_item_ids);
 
-        let func_output_err = br#"{"error":{"message":"Encrypted function output content could not be decrypted"}}"#;
-        let err3 = detect_responses_encrypted_content_error(400, func_output_err).expect("func out");
+        let func_output_err =
+            br#"{"error":{"message":"Encrypted function output content could not be decrypted"}}"#;
+        let err3 =
+            detect_responses_encrypted_content_error(400, func_output_err).expect("func out");
         assert!(!err3.strip_item_ids);
 
         let sse_200 = b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"message\":\"Item belongs to a different Azure OpenAI resource\"}}}\n\n";
@@ -23577,6 +24609,29 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             0,
             5
         ));
+    }
+
+    #[test]
+    fn middleware_request_info_uses_magpie_protocol_names_and_agent() {
+        for (path, protocol) in [
+            ("/anthropic/v1/messages", "anthropic"),
+            ("/openai/v1/responses", "responses"),
+            ("/kimi/v1/chat/completions", "chat"),
+            ("/gemini/v1beta/models/gemini-2.5:generateContent", "gemini"),
+        ] {
+            let request = DebugHttpRequest {
+                id: 1,
+                method: "POST".to_string(),
+                path: path.to_string(),
+                headers: Vec::new(),
+                body: br#"{"model":"m"}"#.to_vec(),
+            };
+            let route = match_gateway_route(path).unwrap_or_else(|| panic!("{path}"));
+            let info =
+                middleware_request_info(&request, &route, source_protocol_from_route(&route));
+            assert_eq!(info.protocol, protocol, "{path}");
+            assert_eq!(info.agent, route.cli_key.as_str(), "{path}");
+        }
     }
 }
 

@@ -17,7 +17,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec,
+};
 use crate::db::SqliteDbState;
 
 use super::constants::*;
@@ -70,7 +72,11 @@ pub(crate) fn write_text_atomic(path: &Path, content: &str) -> Result<(), String
 
 fn zcode_root_dir_from_db(state: &SqliteDbState) -> Result<Option<String>, String> {
     let record = state.with_conn(|conn| {
-        crate::db::helpers::db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common")
+        crate::db::helpers::db_get(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common),
+            "common",
+        )
     })?;
     Ok(record
         .map(super::adapter::from_db_value_common)
@@ -100,8 +106,12 @@ pub fn zcode_prompt_path(state: &SqliteDbState) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn get_zcode_config_file_path(state: tauri::State<'_, SqliteDbState>) -> Result<String, String> {
-    Ok(zcode_provider_config_path(&state)?.to_string_lossy().to_string())
+pub async fn get_zcode_config_file_path(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<String, String> {
+    Ok(zcode_provider_config_path(&state)?
+        .to_string_lossy()
+        .to_string())
 }
 
 /// All API Hub listings, straight through from the shared scanner.
@@ -140,13 +150,17 @@ pub async fn get_zcode_root_path_info(
         "default"
     };
     Ok(ConfigPathInfo {
-        path: resolve_zcode_root_dir(&state)?.to_string_lossy().to_string(),
+        path: resolve_zcode_root_dir(&state)?
+            .to_string_lossy()
+            .to_string(),
         source: source.to_string(),
     })
 }
 
 #[tauri::command]
-pub async fn reveal_zcode_config_folder(state: tauri::State<'_, SqliteDbState>) -> Result<(), String> {
+pub async fn reveal_zcode_config_folder(
+    state: tauri::State<'_, SqliteDbState>,
+) -> Result<(), String> {
     let root = resolve_zcode_root_dir(&state)?;
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     tauri_plugin_opener::reveal_item_in_dir(&root).map_err(|error| error.to_string())
@@ -154,9 +168,7 @@ pub async fn reveal_zcode_config_folder(state: tauri::State<'_, SqliteDbState>) 
 
 /// Reads the live provider registry so the page can show what ZCode sees.
 #[tauri::command]
-pub async fn read_zcode_settings(
-    state: tauri::State<'_, SqliteDbState>,
-) -> Result<Value, String> {
+pub async fn read_zcode_settings(state: tauri::State<'_, SqliteDbState>) -> Result<Value, String> {
     let path = zcode_provider_config_path(&state)?;
     Ok(projection::read_provider_config_base(&path))
 }
@@ -178,7 +190,11 @@ pub async fn get_zcode_common_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Value, String> {
     let record = state.with_conn(|conn| {
-        crate::db::helpers::db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common")
+        crate::db::helpers::db_get(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common),
+            "common",
+        )
     })?;
     match record {
         Some(value) => {
@@ -199,19 +215,25 @@ pub async fn get_zcode_common_config(
 }
 
 /// Reads the common-config record, or an empty one when nothing is stored yet.
-fn read_common_record(state: &SqliteDbState) -> Result<super::types::ZcodeCommonConfigRecord, String> {
+fn read_common_record(
+    state: &SqliteDbState,
+) -> Result<super::types::ZcodeCommonConfigRecord, String> {
     let record = state.with_conn(|conn| {
-        crate::db::helpers::db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common")
+        crate::db::helpers::db_get(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common),
+            "common",
+        )
     })?;
-    Ok(record
-        .map(super::adapter::from_db_value_common)
-        .unwrap_or(super::types::ZcodeCommonConfigRecord {
+    Ok(record.map(super::adapter::from_db_value_common).unwrap_or(
+        super::types::ZcodeCommonConfigRecord {
             id: "common".to_string(),
             config: "{}".to_string(),
             root_dir: None,
             official_account_index: None,
             updated_at: String::new(),
-        }))
+        },
+    ))
 }
 
 #[tauri::command]
@@ -224,7 +246,11 @@ pub async fn save_zcode_common_config(
     let root_dir = if clear {
         None
     } else {
-        input.root_dir.as_deref().map(str::trim).filter(|v| !v.is_empty())
+        input
+            .root_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
     };
     // Read-modify-write: the record also carries the official-account card's
     // position, and a blind put of just `config` + `root_dir` would erase it.
@@ -235,11 +261,18 @@ pub async fn save_zcode_common_config(
         existing.official_account_index,
     );
     state.with_conn(|conn| {
-        crate::db::helpers::db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common", &payload)
+        crate::db::helpers::db_put(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common),
+            "common",
+            &payload,
+        )
     })?;
-    crate::coding::runtime_location::refresh_runtime_location_cache_for_module_async(&state, "zcode")
-        .await
-        .ok();
+    crate::coding::runtime_location::refresh_runtime_location_cache_for_module_async(
+        &state, "zcode",
+    )
+    .await
+    .ok();
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -261,7 +294,12 @@ pub async fn save_zcode_official_account_index(
         Some(index.max(0)),
     );
     state.with_conn(|conn| {
-        crate::db::helpers::db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common), "common", &payload)
+        crate::db::helpers::db_put(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Common),
+            "common",
+            &payload,
+        )
     })
 }
 
@@ -312,10 +350,9 @@ pub async fn get_zcode_preview(
     // The legacy map is only part of the picture while the runtime still reads
     // it; on a migrated install it is a leftover, and showing it would suggest
     // it still matters.
-    let legacy_config = (!projection::provider_config_exists(
-        &root_dir.join(ZCODE_PROVIDER_CONFIG_RELATIVE_PATH),
-    ))
-    .then(|| preview_file(root_dir.join(ZCODE_LEGACY_CONFIG_RELATIVE_PATH)));
+    let legacy_config =
+        (!projection::provider_config_exists(&root_dir.join(ZCODE_PROVIDER_CONFIG_RELATIVE_PATH)))
+            .then(|| preview_file(root_dir.join(ZCODE_LEGACY_CONFIG_RELATIVE_PATH)));
 
     Ok(ZcodeConfigPreview {
         provider_config: preview_file(root_dir.join(ZCODE_PROVIDER_CONFIG_RELATIVE_PATH)),
@@ -358,8 +395,7 @@ pub async fn save_zcode_cli_config(
     // settings file when it fails schema validation, so a bad save would
     // silently drop the user's MCP servers on next launch.
     if !config.trim().is_empty() {
-        serde_json::from_str::<Value>(&config)
-            .map_err(|error| format!("Invalid JSON: {error}"))?;
+        serde_json::from_str::<Value>(&config).map_err(|error| format!("Invalid JSON: {error}"))?;
     }
 
     let path = zcode_cli_config_path(&state)?;
@@ -375,14 +411,17 @@ pub async fn save_zcode_cli_config(
     Ok(())
 }
 
-pub fn list_zcode_providers_for_db(db: &SqliteDbState) -> Result<Vec<super::types::ZcodeProvider>, String> {
+pub fn list_zcode_providers_for_db(
+    db: &SqliteDbState,
+) -> Result<Vec<super::types::ZcodeProvider>, String> {
     let order = provider_order()?;
-    db.with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Zcode), Some(&order))).map(|values| {
-        values
-            .into_iter()
-            .map(super::adapter::from_db_value_provider)
-            .collect()
-    })
+    db.with_conn(|conn| db_list(conn, DbTable::CliProvider(Cli::Zcode), Some(&order)))
+        .map(|values| {
+            values
+                .into_iter()
+                .map(super::adapter::from_db_value_provider)
+                .collect()
+        })
 }
 
 /// Mirrors the registry's `defaultModelSelection` into the DB `is_applied` flag.
@@ -403,7 +442,12 @@ fn sync_applied_flag_with_selection(db: &SqliteDbState, provider_id: &str) -> Re
         .map(|provider| provider.id);
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliProvider(Cli::Zcode), target_id.as_deref(), &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliProvider(Cli::Zcode),
+            target_id.as_deref(),
+            &now,
+        )
     })
 }
 
@@ -416,9 +460,13 @@ pub async fn list_zcode_providers(
 
 fn next_sort_index(db: &SqliteDbState) -> Result<i64, String> {
     db.with_conn(|conn| {
-        Ok(db_max_i64(conn, DbTable::CliProvider(Cli::Zcode), &JsonFieldPath::new("sort_index")?)?
-            .map(|value| value + 1)
-            .unwrap_or(0))
+        Ok(db_max_i64(
+            conn,
+            DbTable::CliProvider(Cli::Zcode),
+            &JsonFieldPath::new("sort_index")?,
+        )?
+        .map(|value| value + 1)
+        .unwrap_or(0))
     })
 }
 
@@ -464,9 +512,7 @@ pub fn derive_zcode_row_id_and_settings(
                 .map(str::trim)
                 .filter(|id| !id.is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| {
-                    format!("custom:{}", zcode_provider_id_slug(&provider.name))
-                });
+                .unwrap_or_else(|| format!("custom:{}", zcode_provider_id_slug(&provider.name)));
             if projection::is_managed_provider_id(&existing_id)
                 && !projection::is_reserved_provider_id(&existing_id)
             {
@@ -474,8 +520,9 @@ pub fn derive_zcode_row_id_and_settings(
                     .as_object_mut()
                     .expect("checked object above")
                     .insert("providerId".to_string(), Value::String(existing_id.clone()));
-                settings_config = serde_json::to_string(&settings)
-                    .map_err(|error| format!("Failed to serialize ZCode provider settings: {error}"))?;
+                settings_config = serde_json::to_string(&settings).map_err(|error| {
+                    format!("Failed to serialize ZCode provider settings: {error}")
+                })?;
                 existing_id
             } else {
                 return Ok((crate::coding::db_id::db_new_id(), settings_config));
@@ -519,7 +566,10 @@ pub async fn create_zcode_provider(
     let _guard = CONFIG_WRITE_LOCK.lock().await;
     let db = state.inner();
     let (id, settings_config) = if provider.id.is_some() {
-        (provider.id.clone().expect("checked above"), provider.settings_config.clone())
+        (
+            provider.id.clone().expect("checked above"),
+            provider.settings_config.clone(),
+        )
     } else {
         derive_zcode_row_id_and_settings(db, &provider)?
     };
@@ -582,7 +632,14 @@ pub async fn update_zcode_provider(
     payload["created_at"] = json!(previous.created_at);
     payload["updated_at"] = json!(Local::now().to_rfc3339());
     payload["is_applied"] = json!(provider.is_applied);
-    db.with_conn(|conn| db_put(conn, DbTable::CliProvider(Cli::Zcode), &provider.id, &payload))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliProvider(Cli::Zcode),
+            &provider.id,
+            &payload,
+        )
+    })?;
 
     let saved = db
         .with_conn(|conn| db_get(conn, DbTable::CliProvider(Cli::Zcode), &provider.id))?
@@ -676,7 +733,19 @@ pub async fn project_zcode_provider_internal_without_events(
     settings: &mut super::types::ZcodeSettingsConfig,
 ) -> Result<(), String> {
     let path = zcode_provider_config_path(db)?;
-    if !projection::provider_config_exists(&path) {
+    project_zcode_provider_at(&path, settings).await
+}
+
+/// Project one provider into an explicit registry path.
+///
+/// Shared with the gateway plugin integration and with tests that point the
+/// registry at a temp directory; the path, namespace and strict-rule guards are
+/// identical to the DB-backed command.
+pub(crate) async fn project_zcode_provider_at(
+    path: &Path,
+    settings: &mut super::types::ZcodeSettingsConfig,
+) -> Result<(), String> {
+    if !projection::provider_config_exists(path) {
         return Err(
             "ZCode has not migrated to the new provider registry yet. Start the ZCode desktop app once, then retry."
                 .to_string(),
@@ -698,11 +767,11 @@ pub async fn project_zcode_provider_internal_without_events(
     projection::apply_personal_model_ids(settings);
 
     let _guard = CONFIG_WRITE_LOCK.lock().await;
-    let mut base = projection::read_provider_config_base(&path);
+    let mut base = projection::read_provider_config_base(path);
     projection::remove_managed_provider(&mut base, &settings.provider_id);
     projection::upsert_provider_rule(&mut base, projection::build_provider_rule(settings));
     projection::push_model_rules(&mut base, &settings.provider_id, &settings.models);
-    projection::atomic_write_json(&path, &base)
+    projection::atomic_write_json(path, &base)
 }
 
 /// Projects a stored provider into the registry.
@@ -787,8 +856,7 @@ pub async fn select_zcode_provider_internal_without_events(
     let _guard = CONFIG_WRITE_LOCK.lock().await;
     let path = zcode_provider_config_path(db)?;
     let mut base = projection::read_provider_config_base(&path);
-    let registry_id = if projection::list_provider_ids(&base).contains(&provider_id.to_string())
-    {
+    let registry_id = if projection::list_provider_ids(&base).contains(&provider_id.to_string()) {
         provider_id.to_string()
     } else {
         // The argument may be a DB row id instead of a registry id: rows created
@@ -838,8 +906,14 @@ async fn get_zcode_prompt_record(
     db: &SqliteDbState,
     id: &str,
 ) -> Result<Option<ZcodePromptConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), id))
-        .map(|value| value.map(super::adapter::from_db_value_prompt))
+    db.with_conn(|conn| {
+        db_get(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+            id,
+        )
+    })
+    .map(|value| value.map(super::adapter::from_db_value_prompt))
 }
 
 /// Reads the prompt currently sitting in `AGENTS.md` as an unmanaged preset.
@@ -852,10 +926,8 @@ async fn get_zcode_prompt_record(
 async fn get_zcode_local_prompt_config(
     state: &SqliteDbState,
 ) -> Result<Option<ZcodePromptConfig>, String> {
-    let Some(content) = crate::coding::prompt_file::read_prompt_content_file(
-        &zcode_prompt_path(state)?,
-        "ZCode",
-    )?
+    let Some(content) =
+        crate::coding::prompt_file::read_prompt_content_file(&zcode_prompt_path(state)?, "ZCode")?
     else {
         return Ok(None);
     };
@@ -878,7 +950,13 @@ pub async fn list_zcode_prompt_configs(
 ) -> Result<Vec<ZcodePromptConfig>, String> {
     let order = prompt_order()?;
     let mut prompts = state
-        .with_conn(|conn| db_list(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), Some(&order)))
+        .with_conn(|conn| {
+            db_list(
+                conn,
+                DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+                Some(&order),
+            )
+        })
         .map(|values| {
             values
                 .into_iter()
@@ -900,12 +978,19 @@ pub async fn create_zcode_prompt_config(
     input: ZcodePromptConfigInput,
 ) -> Result<ZcodePromptConfig, String> {
     let db = state.inner();
-    let id = input.id.clone().unwrap_or_else(crate::coding::db_id::db_new_id);
+    let id = input
+        .id
+        .clone()
+        .unwrap_or_else(crate::coding::db_id::db_new_id);
     let now = Local::now().to_rfc3339();
     let sort_index = db.with_conn(|conn| {
-        Ok(db_max_i64(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), &JsonFieldPath::new("sort_index")?)?
-            .map(|value| value + 1)
-            .unwrap_or(0))
+        Ok(db_max_i64(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+            &JsonFieldPath::new("sort_index")?,
+        )?
+        .map(|value| value + 1)
+        .unwrap_or(0))
     })?;
     let payload = json!({
         "name": input.name,
@@ -915,7 +1000,14 @@ pub async fn create_zcode_prompt_config(
         "created_at": now,
         "updated_at": now,
     });
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), &id, &payload))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+            &id,
+            &payload,
+        )
+    })?;
     let _ = app.emit("config-changed", "window");
     get_zcode_prompt_record(db, &id)
         .await?
@@ -968,7 +1060,14 @@ pub async fn delete_zcode_prompt_config(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), &id).map(|_| ()))?;
+    state.with_conn(|conn| {
+        db_delete(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+            &id,
+        )
+        .map(|_| ())
+    })?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -998,7 +1097,12 @@ pub async fn apply_zcode_prompt_config_internal_without_events(
     write_text_atomic(&zcode_prompt_path(db)?, &prompt.content)?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), Some(config_id), &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+            Some(config_id),
+            &now,
+        )
     })?;
     Ok(())
 }
@@ -1016,7 +1120,12 @@ pub async fn disable_zcode_prompt_config(
         .ok_or_else(|| format!("ZCode prompt '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt), None, &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Zcode, CliConfigKind::Prompt),
+            None,
+            &now,
+        )
     })?;
     write_text_atomic(&zcode_prompt_path(db)?, "")?;
     let _ = app.emit("config-changed", "window");

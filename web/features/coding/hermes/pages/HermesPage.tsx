@@ -1641,6 +1641,8 @@ const HermesPage: React.FC = () => {
               onBatchTest={handleBatchTestProviders}
               batchTesting={batchTestingProviders}
               onAddProvider={() => setProviderModal({})}
+              pluginCliKey="hermes"
+              onPluginProviderChanged={() => loadConfig(true)}
               footer={(
                 <Space wrap>
                   <Button

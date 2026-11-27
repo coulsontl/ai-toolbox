@@ -40,6 +40,7 @@ import {
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
 import CodexStyleCard from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import {
   renderProviderPrimaryAction,
 } from '@/features/coding/shared/providerCardVariants/providerCardActions';
@@ -202,6 +203,11 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   const baseUrl = React.useMemo(() => {
     return extractGrokSettingsBaseUrl(settingsConfig);
   }, [settingsConfig]);
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl,
+    providerId: provider.id,
+  });
 
   const modelName = React.useMemo(() => {
     return extractGrokSettingsModel(settingsConfig);
@@ -291,7 +297,10 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
   const needsGatewayProxy =
     !isOfficialProvider &&
     !isLocalProvider &&
-    grokProviderNeedsGatewayProxy(providerApiFormat);
+    grokProviderNeedsGatewayProxy(providerApiFormat, {
+      meta: provider.meta,
+      baseUrl,
+    });
   const restoreDirectUnavailableTitle = t(
     'gateway.proxy.restoreDirectUnavailableHintProtocol',
     { cli: t('settings.gateway.cli.grok') },
@@ -846,6 +855,7 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -861,6 +871,7 @@ const GrokProviderCard: React.FC<GrokProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: () => onCopy(provider),
       onShare: onShare ? () => onShare(provider) : undefined,
+      ...pluginCardMeta.pluginActions,
       onDelete: isLocalProvider ? undefined : () => onDelete(provider),
       enabledStateLabel: provider.isDisabled
         ? t('grok.configDisabled')

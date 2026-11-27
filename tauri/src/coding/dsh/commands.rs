@@ -9,9 +9,9 @@ use super::builtin_models::{builtin_model_ids, builtin_models_for, has_builtin_m
 use super::constants::{
     builtin_provider_name, is_builtin_provider, DSH_CREDENTIALS_FILE, DSH_CREDENTIALS_RECORDS_KEY,
     DSH_CREDENTIALS_REFS_KEY, DSH_CREDENTIALS_VERSION, DSH_CREDENTIALS_VERSION_KEY,
-    DSH_CREDENTIAL_RECORD_SCOPE, DSH_DEFAULT_MODEL_PACKAGE, DSH_DEFAULT_MODEL_SECTION,
-    DSH_ENV_KEY, DSH_IMPORTED_SETTINGS_FILE, DSH_LLM_PI_AI_PACKAGE, DSH_LLM_PI_AI_SECTION,
-    DSH_PROMPT_FILE, DSH_PROVIDERS_KEY, DSH_SETTINGS_FILE,
+    DSH_CREDENTIAL_RECORD_SCOPE, DSH_DEFAULT_MODEL_PACKAGE, DSH_DEFAULT_MODEL_SECTION, DSH_ENV_KEY,
+    DSH_IMPORTED_SETTINGS_FILE, DSH_LLM_PI_AI_PACKAGE, DSH_LLM_PI_AI_SECTION, DSH_PROMPT_FILE,
+    DSH_PROVIDERS_KEY, DSH_SETTINGS_FILE,
 };
 use super::profile_patch;
 use super::types::*;
@@ -23,7 +23,9 @@ use crate::coding::runtime_location;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec,
+};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -83,12 +85,18 @@ pub(crate) fn resolve_dsh_path_without_db() -> (PathBuf, String) {
 /// The shared runtime-location cache calls this resolver so WSL Direct status
 /// follows the same directory precedence as dsh's file operations.
 pub async fn get_dsh_custom_config_dir_async(db: &SqliteDbState) -> Option<PathBuf> {
-    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))
-        .ok()
-        .flatten()
-        .and_then(|value| adapter::settings_from_db_value(value).config_dir)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+    db.with_conn(|conn| {
+        db_get(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings),
+            "common",
+        )
+    })
+    .ok()
+    .flatten()
+    .and_then(|value| adapter::settings_from_db_value(value).config_dir)
+    .filter(|path| !path.trim().is_empty())
+    .map(PathBuf::from)
 }
 
 pub async fn get_dsh_config_dir_from_db_async(
@@ -102,13 +110,25 @@ pub async fn get_dsh_config_dir_from_db_async(
 
 fn get_dsh_settings_config_record(db: &SqliteDbState) -> Result<Option<DshSettingsConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))?
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings),
+                "common",
+            )
+        })?
         .map(adapter::settings_from_db_value))
 }
 
 fn get_dsh_config_dir_from_db_sync(db: &SqliteDbState) -> Result<(PathBuf, String), String> {
     let custom = db
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings),
+                "common",
+            )
+        })
         .ok()
         .flatten()
         .and_then(|value| adapter::settings_from_db_value(value).config_dir)
@@ -160,13 +180,8 @@ pub fn get_dsh_config_path_from_root(root_dir: &Path) -> PathBuf {
 /// the real configuration sat in `settings.yaml` untouched (issue: empty dsh
 /// page on a 0.1.5 install).
 enum DshConfigLayer {
-    ProfilePatch {
-        profile: String,
-        path: PathBuf,
-    },
-    SettingsYaml {
-        path: PathBuf,
-    },
+    ProfilePatch { profile: String, path: PathBuf },
+    SettingsYaml { path: PathBuf },
 }
 
 impl DshConfigLayer {
@@ -882,7 +897,13 @@ pub async fn get_dsh_settings_config(
 ) -> Result<Option<DshSettingsConfig>, String> {
     Ok(state
         .db()
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common"))?
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings),
+                "common",
+            )
+        })?
         .map(adapter::settings_from_db_value))
 }
 
@@ -912,7 +933,14 @@ pub async fn save_dsh_settings_config<R: Runtime>(
         None => existing.and_then(|value| value.profile),
     };
     let data = adapter::settings_to_db_value(config_dir.as_deref(), profile.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings), "common", &data))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Settings),
+            "common",
+            &data,
+        )
+    })?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "dsh").await?;
     let _ = app.emit("wsl-config-changed", ());
     emit_config_changed(&app, "window");
@@ -1076,10 +1104,24 @@ pub async fn save_dsh_models_provider<R: tauri::Runtime>(
     }
 
     let db = state.db();
-    let layer = resolve_config_layer_from_db(&db).await?;
+    upsert_dsh_models_provider_at(&db, provider_key, input.provider, input.credential).await?;
+    emit_config_changed(&app, "window");
+    read_dsh_runtime_config(state).await
+}
+
+/// Upsert one `llm-pi-ai.providers.<route>` entry, resolving the live config
+/// layer from the DB exactly like the save command. Shared with the gateway
+/// plugin integration; other patch rows, sections and credentials survive.
+pub(crate) async fn upsert_dsh_models_provider_at(
+    db: &SqliteDbState,
+    provider_key: &str,
+    provider: Value,
+    credential: Option<DshCredentialInput>,
+) -> Result<(), String> {
+    let layer = resolve_config_layer_from_db(db).await?;
     let mut config = read_config_sections(&layer)?;
 
-    let mut payload = input.provider;
+    let mut payload = provider;
     payload.as_object_mut().map(|obj| {
         // Drop UI-only markers so they never reach YAML.
         obj.remove("provider_key");
@@ -1087,14 +1129,27 @@ pub async fn save_dsh_models_provider<R: tauri::Runtime>(
     let providers = providers_dict_mut(&mut config)?;
     providers.insert(provider_key.to_string(), payload);
 
-    if let Some(credential) = &input.credential {
-        let credentials_path = get_dsh_credentials_path_async(&db).await?;
+    if let Some(credential) = &credential {
+        let credentials_path = get_dsh_credentials_path_async(db).await?;
         write_provider_with_credential(&layer, &config, &credentials_path, credential)?;
     } else {
         write_config_sections(&layer, &config)?;
     }
-    emit_config_changed(&app, "window");
-    read_dsh_runtime_config(state).await
+    Ok(())
+}
+
+/// Read one provider entry from the live config layer for model refreshes.
+pub(crate) async fn read_dsh_models_provider_at(
+    db: &SqliteDbState,
+    provider_key: &str,
+) -> Result<Option<Value>, String> {
+    let layer = resolve_config_layer_from_db(db).await?;
+    let config = read_config_sections(&layer)?;
+    Ok(config
+        .get(DSH_LLM_PI_AI_SECTION)
+        .and_then(|section| section.get(DSH_PROVIDERS_KEY))
+        .and_then(|providers| providers.get(provider_key))
+        .cloned())
 }
 
 /// Persist the drag order of `llm-pi-ai.providers`.
@@ -1220,7 +1275,12 @@ fn apply_model_settings(config: &mut Value, input: &DshModelSettingsInput) -> Re
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty())
     });
-    if model_section.as_object().map(Map::is_empty).unwrap_or(false) || !required_present {
+    if model_section
+        .as_object()
+        .map(Map::is_empty)
+        .unwrap_or(false)
+        || !required_present
+    {
         config_object.remove(DSH_DEFAULT_MODEL_SECTION);
     } else {
         config_object.insert(DSH_DEFAULT_MODEL_SECTION.to_string(), model_section);
@@ -1402,7 +1462,14 @@ fn put_dsh_prompt_to_sqlite(
     content: &DshPromptConfigContent,
 ) -> Result<(), String> {
     let value = adapter::prompt_to_db_value(content);
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), id, &value))
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
+            id,
+            &value,
+        )
+    })
 }
 
 fn get_dsh_prompt_from_sqlite(
@@ -1410,7 +1477,13 @@ fn get_dsh_prompt_from_sqlite(
     id: &str,
 ) -> Result<Option<DshPromptConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), id))?
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
+                id,
+            )
+        })?
         .map(adapter::prompt_from_db_value))
 }
 
@@ -1447,12 +1520,14 @@ pub async fn list_dsh_prompt_configs(
 ) -> Result<Vec<DshPromptConfig>, String> {
     let db = state.db();
     let mut prompts = db.with_conn(|conn| {
-        Ok(
-            db_list(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), Some(&prompt_order()?))?
-                .into_iter()
-                .map(adapter::prompt_from_db_value)
-                .collect::<Vec<_>>(),
-        )
+        Ok(db_list(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
+            Some(&prompt_order()?),
+        )?
+        .into_iter()
+        .map(adapter::prompt_from_db_value)
+        .collect::<Vec<_>>())
     })?;
     if !prompts.iter().any(|prompt| prompt.is_applied) {
         if let Some(local_prompt) = get_local_prompt_config(&db).await? {
@@ -1542,7 +1617,14 @@ pub async fn delete_dsh_prompt_config(
     // Only delete the DB prompt record. The live AGENTS.md on disk is kept so
     // deleting a saved prompt never wipes the local runtime prompt.
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), &id).map(|_| ()))?;
+    db.with_conn(|conn| {
+        db_delete(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
+            &id,
+        )
+        .map(|_| ())
+    })?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1587,7 +1669,12 @@ async fn apply_dsh_prompt_config_internal_with_events<R: Runtime>(
         .ok_or_else(|| format!("Prompt config '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), Some(config_id), &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
+            Some(config_id),
+            &now,
+        )
     })?;
     write_prompt_content_to_file(&db, Some(prompt.content.as_str())).await?;
     if emit_events {
@@ -1617,7 +1704,14 @@ pub async fn disable_dsh_prompt_config(
     get_dsh_prompt_from_sqlite(&db, &config_id)?
         .ok_or_else(|| format!("Prompt config '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
-    db.with_conn_mut(|conn| db_update_applied_status(conn, DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt), None, &now))?;
+    db.with_conn_mut(|conn| {
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Dsh, CliConfigKind::Prompt),
+            None,
+            &now,
+        )
+    })?;
     write_prompt_content_to_file(&db, Some("")).await?;
     emit_config_changed(&app, "window");
     Ok(())
@@ -1726,11 +1820,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         seed_profile(dir.path(), super::profile_patch::DSH_WEB_PROFILE);
         seed_profile(dir.path(), super::profile_patch::DSH_DESKTOP_PROFILE);
-        fs::write(dir.path().join(DSH_SETTINGS_FILE), "agent-default-model: {}\n").unwrap();
+        fs::write(
+            dir.path().join(DSH_SETTINGS_FILE),
+            "agent-default-model: {}\n",
+        )
+        .unwrap();
         fs::write(dir.path().join(DSH_IMPORTED_SETTINGS_FILE), "").unwrap();
 
         let layer = resolve_config_layer(dir.path(), None);
-        assert_eq!(layer.profile(), Some(super::profile_patch::DSH_DESKTOP_PROFILE));
+        assert_eq!(
+            layer.profile(),
+            Some(super::profile_patch::DSH_DESKTOP_PROFILE)
+        );
         assert!(layer.path().ends_with("cordis.patch.yml"));
     }
 
@@ -1766,7 +1867,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         seed_profile(dir.path(), super::profile_patch::DSH_WEB_PROFILE);
         fs::write(dir.path().join(DSH_SETTINGS_FILE), "llm-pi-ai: {}\n").unwrap();
-        fs::write(dir.path().join(DSH_IMPORTED_SETTINGS_FILE), "llm-pi-ai: {}\n").unwrap();
+        fs::write(
+            dir.path().join(DSH_IMPORTED_SETTINGS_FILE),
+            "llm-pi-ai: {}\n",
+        )
+        .unwrap();
 
         let layer = resolve_config_layer(dir.path(), None);
         assert_eq!(layer.profile(), Some(super::profile_patch::DSH_WEB_PROFILE));
@@ -1807,8 +1912,14 @@ mod tests {
         }));
 
         let text = fs::read_to_string(layer.path()).unwrap();
-        assert!(text.contains("@deepseek-ai/dsh-llm-pi-ai"), "package name: {text}");
-        assert!(text.contains("!!js ctx.port ?? 3080"), "expression kept: {text}");
+        assert!(
+            text.contains("@deepseek-ai/dsh-llm-pi-ai"),
+            "package name: {text}"
+        );
+        assert!(
+            text.contains("!!js ctx.port ?? 3080"),
+            "expression kept: {text}"
+        );
 
         // Reading it back yields the provider again.
         let reread = read_config_sections(&layer).unwrap();
@@ -1826,15 +1937,18 @@ mod tests {
         seed_profile(dir.path(), super::profile_patch::DSH_DESKTOP_PROFILE);
         let layer = resolve_config_layer(dir.path(), None);
 
-        write_config_sections(&layer, &json!({ "llm-pi-ai": {}, "agent-default-model": {} }))
-            .unwrap();
+        write_config_sections(
+            &layer,
+            &json!({ "llm-pi-ai": {}, "agent-default-model": {} }),
+        )
+        .unwrap();
         let entries = super::profile_patch::read_patch_entries(layer.path()).unwrap();
         assert!(entries
             .iter()
             .all(|entry| entry.get("id").and_then(Value::as_str) != Some(DSH_LLM_PI_AI_SECTION)));
-        assert!(entries.iter().any(|entry| {
-            entry.get("id").and_then(Value::as_str) == Some("webserver")
-        }));
+        assert!(entries
+            .iter()
+            .any(|entry| { entry.get("id").and_then(Value::as_str) == Some("webserver") }));
     }
 
     /// A profile patch replaces the whole config, so a default model without
@@ -1928,7 +2042,10 @@ mod tests {
         });
 
         let views = build_provider_views(&config, &CredentialsDocument::from_document(Map::new()));
-        let keys: Vec<&str> = views.iter().map(|view| view.provider_key.as_str()).collect();
+        let keys: Vec<&str> = views
+            .iter()
+            .map(|view| view.provider_key.as_str())
+            .collect();
         assert_eq!(keys, vec!["zulu", "alpha", "omega"]);
     }
 
@@ -2167,7 +2284,8 @@ mod tests {
         let legacy_layer = DshConfigLayer::SettingsYaml {
             path: config_path.clone(),
         };
-        let result = write_provider_with_credential(&legacy_layer, &Value::Null, &credentials_path, &input);
+        let result =
+            write_provider_with_credential(&legacy_layer, &Value::Null, &credentials_path, &input);
         assert!(result.is_err());
         assert_eq!(fs::read(&config_path).unwrap(), original_config);
         assert_eq!(fs::read(&credentials_path).unwrap(), original_credentials);

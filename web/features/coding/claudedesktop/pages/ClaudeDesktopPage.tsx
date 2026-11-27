@@ -1069,6 +1069,8 @@ const ClaudeDesktopPage: React.FC = () => {
           locateProviderId={appliedProviderId}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
           onAddProvider={handleAddProvider}
+          pluginCliKey="claudedesktop"
+          onPluginProviderChanged={() => loadConfig(true)}
           headerExtra={
             <GatewayFailoverButton
               cliKey="claude_desktop"

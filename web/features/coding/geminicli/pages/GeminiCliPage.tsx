@@ -190,7 +190,9 @@ const GeminiCliPage: React.FC = () => {
       getGatewayProviderApiFormatFromMeta(primaryProvider.meta, 'gemini'),
       primaryProvider.meta?.apiFormat,
     );
-    return providerNeedsGatewayProxy(providerApiFormat, 'gemini_native');
+    return providerNeedsGatewayProxy(providerApiFormat, 'gemini_native', {
+      meta: primaryProvider.meta,
+    });
   }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const primaryGatewayProviderNeedsProxyReason = primaryGatewayProviderNeedsProxy ? 'protocol' : null;
   const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
@@ -881,6 +883,8 @@ const GeminiCliPage: React.FC = () => {
           locateProviderId={locateProviderId}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
           onAddProvider={handleAddProvider}
+          pluginCliKey="geminicli"
+          onPluginProviderChanged={() => loadConfig(true)}
           headerExtra={
             <GatewayFailoverButton
               cliKey="gemini"

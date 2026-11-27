@@ -391,6 +391,7 @@ impl Default for AppSettings {
                 "workbuddy".to_string(),
                 "codebuddy".to_string(),
                 "gateway".to_string(),
+                "plugins".to_string(),
                 "image".to_string(),
                 "ssh".to_string(),
                 "wsl".to_string(),

@@ -51,10 +51,138 @@ export const firstGatewayApiFormat = (
   return null;
 };
 
+/**
+ * The plugin-provider reference the backend writes into a CLI provider's
+ * `meta`. Mirrors `PluginProviderRef` in `tauri/src/plugins/gateway_bridge.rs`;
+ * this is the stable identity a card uses to sync models and open accounts.
+ */
+export interface PluginProviderMetaRef {
+  pluginSpec: string;
+  providerId: string;
+  accountKey?: string | null;
+  accountStrategy: 'auto_rotate' | 'single';
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+};
+
+const firstNonEmptyString = (
+  record: Record<string, unknown>,
+  ...keys: string[]
+): string | null => {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+};
+
+/**
+ * Read the plugin reference out of a provider's free-form `meta`.
+ *
+ * The backend serializes `PluginProviderRef` as camelCase, but rows written by
+ * older builds (or by a plugin itself) may carry the snake_case spelling; both
+ * are accepted. A half-filled reference is treated as absent — a provider id
+ * without a plugin spec cannot be resolved back to its plugin.
+ */
+export const getPluginProviderRef = (
+  meta?: Record<string, unknown> | null,
+): PluginProviderMetaRef | null => {
+  if (!meta) {
+    return null;
+  }
+  const rawRef = asRecord(meta.pluginProvider) ?? asRecord(meta.plugin_provider);
+  if (!rawRef) {
+    return null;
+  }
+  const pluginSpec = firstNonEmptyString(rawRef, 'pluginSpec', 'plugin_spec');
+  const providerId = firstNonEmptyString(rawRef, 'providerId', 'provider_id');
+  if (!pluginSpec || !providerId) {
+    return null;
+  }
+  const accountKey = firstNonEmptyString(rawRef, 'accountKey', 'account_key');
+  const strategy = firstNonEmptyString(rawRef, 'accountStrategy', 'account_strategy');
+  return {
+    pluginSpec,
+    providerId,
+    accountKey,
+    accountStrategy: strategy === 'single' ? 'single' : 'auto_rotate',
+  };
+};
+
+export const isPluginBackedProvider = (
+  meta?: Record<string, unknown> | null,
+): boolean => getPluginProviderRef(meta) !== null;
+
+/**
+ * The plugin provider id a direct gateway endpoint names:
+ * `http://127.0.0.1:<port>/plugin/<provider_id>/...`.
+ *
+ * File-config CLIs (OpenCode, Pi, dsh, …) have no provider row of their own to
+ * stamp with `meta`, so a provider added there is recognized by the endpoint
+ * the gateway wrote. Returns `null` for every other URL.
+ */
+export const extractPluginProviderIdFromUrl = (
+  baseUrl?: string | null,
+): string | null => {
+  const trimmed = baseUrl?.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments[0] !== 'plugin' || !segments[1]) {
+      return null;
+    }
+    return decodeURIComponent(segments[1]);
+  } catch {
+    return null;
+  }
+};
+
+/** What a provider row can tell us about a plugin origin: its meta or its endpoint. */
+export interface PluginProviderSource {
+  meta?: unknown;
+  baseUrl?: string | null;
+}
+
+/**
+ * Whether a provider is served by a plugin, by either of the two markers the
+ * backend writes. This is the one predicate every gateway-proxy gate reads.
+ */
+export const isPluginRoutedProvider = (
+  source?: PluginProviderSource | null,
+): boolean => {
+  if (!source) {
+    return false;
+  }
+  return isPluginBackedProvider(asRecord(source.meta))
+    || Boolean(extractPluginProviderIdFromUrl(source.baseUrl));
+};
+
+/**
+ * Does this provider need the local gateway?
+ *
+ * A plugin-backed provider **always** does: its upstream transport only exists
+ * inside the gateway's plugin bridge, so restoring a "direct" config would
+ * write an endpoint the CLI cannot reach. The protocol comparison still applies
+ * to ordinary providers.
+ */
 export const providerNeedsGatewayProxy = (
   targetFormat: string | null | undefined,
   nativeFormat: string,
+  pluginSource?: PluginProviderSource | null,
 ) => {
+  if (isPluginRoutedProvider(pluginSource)) {
+    return true;
+  }
   const normalizedTargetFormat = normalizeGatewayApiFormat(targetFormat);
   const normalizedNativeFormat = normalizeGatewayApiFormat(nativeFormat);
   return Boolean(
@@ -71,7 +199,9 @@ export const providerNeedsGatewayProxy = (
  */
 export const grokProviderNeedsGatewayProxy = (
   targetFormat: string | null | undefined,
-) => normalizeGatewayApiFormat(targetFormat) === 'gemini_native';
+  pluginSource?: PluginProviderSource | null,
+) => isPluginRoutedProvider(pluginSource)
+  || normalizeGatewayApiFormat(targetFormat) === 'gemini_native';
 
 export const isGatewayConfigFlagEnabled = (value: unknown) => {
   if (typeof value === 'boolean') {
@@ -257,8 +387,13 @@ export const gatewayProxyReason = (
   targetFormat: string | null | undefined,
   nativeFormat: string,
   modelIds?: string[],
+  pluginSource?: PluginProviderSource | null,
 ): GatewayProxyReason => {
-  const protocolMismatch = providerNeedsGatewayProxy(targetFormat, nativeFormat);
+  const protocolMismatch = providerNeedsGatewayProxy(
+    targetFormat,
+    nativeFormat,
+    pluginSource,
+  );
   const modelMismatch = modelIds ? hasNonClaudeModelIds(modelIds) : false;
   if (!protocolMismatch && !modelMismatch) {
     return null;

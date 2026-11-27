@@ -64,6 +64,7 @@ import { SkillMetadataModal } from '../components/modals/SkillMetadataModal';
 import { SkillGroupsModal } from '../components/modals/SkillGroupsModal';
 import { SkillInventoryModal } from '../components/modals/SkillInventoryModal';
 import * as api from '../services/skillsApi';
+import { isBuiltinSkill } from '../utils/builtinSkill';
 import {
   buildSkillGroups,
   findSkillGroupOptionByName,
@@ -566,13 +567,18 @@ const SkillsPage: React.FC = () => {
   // Keep selection scoped to the visible skills in either view. Stale ids
   // (removed skills, or skills hidden by filter/search) are pruned so the
   // batch toolbar never operates on invisible cards.
+  const selectableFilteredSkills = React.useMemo(
+    () => filteredSkills.filter((skill) => !isBuiltinSkill(skill)),
+    [filteredSkills],
+  );
+
   React.useEffect(() => {
     setSelectedIds((prev) => {
-      const allSkillIds = new Set(filteredSkills.map((s) => s.id));
-      const next = new Set([...prev].filter((id) => allSkillIds.has(id)));
+      const selectableSkillIds = new Set(selectableFilteredSkills.map((s) => s.id));
+      const next = new Set([...prev].filter((id) => selectableSkillIds.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [filteredSkills]);
+  }, [selectableFilteredSkills]);
 
   const handleToggleSelectionMode = React.useCallback(() => {
     if (selectionMode) {
@@ -611,6 +617,9 @@ const SkillsPage: React.FC = () => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       for (const skill of group.skills) {
+        if (isBuiltinSkill(skill)) {
+          continue;
+        }
         if (checked) {
           next.add(skill.id);
         } else {
@@ -631,12 +640,12 @@ const SkillsPage: React.FC = () => {
         return prev.size === 0 ? prev : new Set();
       }
       const next = new Set(prev);
-      for (const skill of filteredSkills) {
+      for (const skill of selectableFilteredSkills) {
         next.add(skill.id);
       }
       return next;
     });
-  }, [filteredSkills]);
+  }, [selectableFilteredSkills]);
 
   const selectedArray = React.useMemo(() => [...selectedIds], [selectedIds]);
   const hasSelection = selectedArray.length > 0;
@@ -890,6 +899,7 @@ const SkillsPage: React.FC = () => {
       {
         groupLocal: t('skills.groupLocal'),
         groupImport: t('skills.groupImport'),
+        groupBuiltin: t('skills.builtin.sourceLabel'),
         groupUngrouped: t('skills.groupUngrouped'),
         groupCentral: t('skills.groupCentral'),
       },
@@ -1351,11 +1361,11 @@ const SkillsPage: React.FC = () => {
           {selectionMode && (
             <>
               <ManagementCheckbox
-                checked={hasSelection && selectedArray.length === filteredSkills.length}
-                indeterminate={hasSelection && selectedArray.length !== filteredSkills.length}
+                checked={hasSelection && selectedArray.length === selectableFilteredSkills.length}
+                indeterminate={hasSelection && selectedArray.length !== selectableFilteredSkills.length}
                 ariaLabel={t('skills.batch.selectAll')}
                 onChange={handleSelectAllFiltered}
-                disabled={filteredSkills.length === 0 || loading || actionLoading}
+                disabled={selectableFilteredSkills.length === 0 || loading || actionLoading}
               />
               <ManagementIconButton
                 icon={<RefreshCw size={14} aria-hidden="true" />}

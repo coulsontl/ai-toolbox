@@ -17,9 +17,19 @@ use serde_json::{json, Value};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 pub(crate) async fn test_gateway_provider_model_connectivity(
     settings: ProxyGatewaySettings,
     db: SqliteDbState,
+    request: GatewayConnectivityTestRequest,
+) -> Result<GatewayConnectivityTestResponse, String> {
+    test_gateway_provider_model_connectivity_with_plugins(settings, db, None, request).await
+}
+
+pub(crate) async fn test_gateway_provider_model_connectivity_with_plugins(
+    settings: ProxyGatewaySettings,
+    db: SqliteDbState,
+    plugin_manager: Option<crate::plugins::PluginManagerState>,
     request: GatewayConnectivityTestRequest,
 ) -> Result<GatewayConnectivityTestResponse, String> {
     if super::super::provider_protocol::native_cli_protocol(request.cli_key).is_none() {
@@ -63,7 +73,10 @@ pub(crate) async fn test_gateway_provider_model_connectivity(
     app_config.max_retry_count = Some(0);
     app_config.retry_interval_secs = Some(0);
 
-    let context = GatewayRuntimeContext::new(test_settings.clone(), Some(db), None);
+    let mut context = GatewayRuntimeContext::new(test_settings.clone(), Some(db), None);
+    if let Some(manager) = plugin_manager {
+        context = context.with_plugin_manager(manager);
+    }
     let options = GatewayRequestOptions {
         provider_override_id: Some(request.provider_id.clone()),
         disable_health_mutation: true,

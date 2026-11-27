@@ -10,6 +10,7 @@ import { ManagementCheckbox } from '@/features/coding/shared/management';
 import {
   resolveProviderAccentChrome,
 } from '@/features/coding/shared/providerCardVariants/cardChrome';
+import ProviderPluginBadge from '@/features/coding/shared/providerCardVariants/ProviderPluginBadge';
 import {
   renderProviderLaunchAction,
   renderProviderPrimaryAction,
@@ -231,6 +232,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
     isDisabled,
     onToggleDisabled,
     connectivityStatus,
+    pluginBadge,
     selectable = false,
     selected = false,
     onSelectChange,
@@ -400,6 +402,7 @@ const ProviderCompactCard: React.FC<ProviderCompactCardProps> = ({
             className={styles.name}
             style={{ fontSize: 14, fontWeight: 600 }}
           />
+          {pluginBadge && <ProviderPluginBadge badge={pluginBadge} />}
           {nameTags && <span className={styles.nameTags} data-provider-card-tags>{nameTags}</span>}
           {menuItems.length > 0 && (
             // Hover-revealed. Opacity only: the button keeps its box at all

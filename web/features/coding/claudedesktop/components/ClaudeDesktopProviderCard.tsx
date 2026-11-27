@@ -34,6 +34,7 @@ import {
   InlineConnectivityButton,
 } from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
 import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import {
   OfficialAccountHeadingIcon,
   OfficialAccountHint,
@@ -207,6 +208,11 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
     settingsConfig.env?.ANTHROPIC_API_KEY?.trim() ||
     '';
   const configuredBaseUrl = settingsConfig.env?.ANTHROPIC_BASE_URL?.trim() || '';
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl: configuredBaseUrl,
+    providerId: provider.id,
+  });
   const isOfficialProvider = provider.category === 'official';
   /**
    * A channel that applies as "restore the 1P login": the form's official mode
@@ -240,7 +246,10 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
   );
   const needsGatewayProxy =
     !isOfficialProvider &&
-    (providerNeedsGatewayProxy(providerApiFormat, 'anthropic') ||
+    (providerNeedsGatewayProxy(providerApiFormat, 'anthropic', {
+      meta: provider.meta,
+      baseUrl: configuredBaseUrl,
+    }) ||
       hasClaudeDesktopRoutingModels(effectiveRoutes));
   const gatewayCanApplyProxy = canApplyProviderWithGatewayProxy(gatewayStatus);
   const gatewayMode = gatewayStatus?.mode ?? null;
@@ -618,6 +627,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -633,6 +643,7 @@ const ClaudeDesktopProviderCard: React.FC<ClaudeDesktopProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: () => onCopy(provider),
       onShare: onShare ? () => onShare(provider) : undefined,
+      ...pluginCardMeta.pluginActions,
       // The fixed official channel cannot be deleted: the backend rejects it,
       // and every listing seeds it back. Omitting the action keeps the entry
       // point out of all three surfaces (list menu, grid menu, detail sidebar)

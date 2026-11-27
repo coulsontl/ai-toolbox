@@ -54,6 +54,7 @@ import type { ProviderConnectivityStatusItem } from '@/components/common/Provide
 import CodexStyleCard, {
   InlineConnectivityButton,
 } from '@/features/coding/shared/providerCardVariants/CodexStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import {
   OfficialAccountCount,
   OfficialAccountHeadingIcon,
@@ -262,6 +263,11 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
     const configContent = settingsConfig.config || '';
     return extractCodexBaseUrl(configContent);
   }, [settingsConfig.config]);
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl,
+    providerId: provider.id,
+  });
 
   const modelName = React.useMemo(() => {
     const configContent = settingsConfig.config || '';
@@ -1082,6 +1088,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -1095,6 +1102,7 @@ const CodexProviderCard: React.FC<CodexProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: () => onCopy(provider),
       onShare: () => onShare(provider),
+      ...pluginCardMeta.pluginActions,
       // `__local__` is the local-file bridge: it has no delete path.
       onDelete: isLocalProvider ? undefined : () => onDelete(provider),
       enabledStateLabel: provider.isDisabled

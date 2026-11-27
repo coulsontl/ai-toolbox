@@ -4,6 +4,8 @@ import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  SyncOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import { Share2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
@@ -26,25 +28,63 @@ interface BuildProviderCardMenuItemsOptions {
    * here: the grid cell has room for the two primary actions only.
    */
   extraItems?: NonNullable<MenuProps['items']>;
+  /** Prefix the plugin entries with a divider when the menu has earlier items. */
+  leadingDivider?: boolean;
+}
+
+/**
+ * The plugin actions appended to the "more" menu (and the only menu the
+ * OpenCode style opens).
+ *
+ * They sit after a divider at the very end, after 删除: the menu reads as
+ * "what this card can do" first, then "where this provider came from". The
+ * separator is suppressed when there are no plugin actions, so an ordinary
+ * provider's menu keeps its exact old shape.
+ */
+export function buildPluginProviderMenuItems({
+  t,
+  actions,
+  leadingDivider = false,
+}: BuildProviderCardMenuItemsOptions): NonNullable<MenuProps['items']> {
+  const items: NonNullable<MenuProps['items']> = [
+    ...(actions?.onSyncPluginModels
+      ? [{
+          key: 'syncPluginModels',
+          label: t('plugins.providerCard.syncModels'),
+          icon: <SyncOutlined />,
+        }]
+      : []),
+    ...(actions?.onManagePluginAccounts
+      ? [{
+          key: 'managePluginAccounts',
+          label: t('plugins.providerCard.manageAccounts'),
+          icon: <TeamOutlined />,
+        }]
+      : []),
+  ];
+  if (items.length === 0) {
+    return [];
+  }
+  return leadingDivider ? [{ type: 'divider' as const }, ...items] : items;
 }
 
 /**
  * The provider card's "more" menu: **a contract, not decoration**.
  *
  * The order and furniture are fixed — enable (with its state sub-label) → edit
- * → copy → share → extra → ─── → delete, every entry carrying its icon, delete
- * behind a divider. These were in the bespoke cards before the styles were
- * extracted; a migration that dropped the icons or flattened the divider
- * produces a menu that looks like a different product while still working, and
- * nothing fails (see `providerCardVariants/AGENTS.md`, "「更多」菜单是契约").
+ * → copy → share → extra → ─── → delete → ─── → plugin actions, every entry
+ * carrying its icon, delete behind a divider. These were in the bespoke cards
+ * before the styles were extracted; a migration that dropped the icons or
+ * flattened the divider produces a menu that looks like a different product
+ * while still working, and nothing fails (see `providerCardVariants/AGENTS.md`,
+ * "「更多」菜单是契约").
  *
- * Shared by the two Claude/Codex-style list cards and the compact card view.
- * The OpenCode style does not use it: its actions are header icon buttons.
- *
- * Built on antd `Dropdown` rather than the Skills page's `ManagementMenu`
- * because the enable row contains a real `<Switch>`; `ManagementMenu` renders
- * its entries as `<button>`, and nesting an interactive control inside one is
- * invalid markup.
+ * Shared by the two Claude/Codex-style list cards, the compact card view and
+ * the OpenCode style (which opens the plugin-only builder directly). Built on
+ * antd `Dropdown` rather than the Skills page's `ManagementMenu` because the
+ * enable row contains a real `<Switch>`; `ManagementMenu` renders its entries
+ * as `<button>`, and nesting an interactive control inside one is invalid
+ * markup.
  */
 export function buildProviderCardMenuItems({
   t,
@@ -53,7 +93,7 @@ export function buildProviderCardMenuItems({
   onToggleDisabled,
   extraItems,
 }: BuildProviderCardMenuItemsOptions): NonNullable<MenuProps['items']> {
-  return [
+  const baseItems = [
     // The enable/disable switch lives in the menu, not the header: it is a
     // rarely-used, stateful toggle, and a Switch in the header row would sit
     // beside the primary action and compete with it.
@@ -116,6 +156,15 @@ export function buildProviderCardMenuItems({
         ]
       : []),
   ].filter(Boolean) as NonNullable<MenuProps['items']>;
+
+  return [
+    ...baseItems,
+    ...buildPluginProviderMenuItems({
+      t,
+      actions,
+      leadingDivider: baseItems.length > 0,
+    }),
+  ];
 }
 
 /**
@@ -130,4 +179,6 @@ export function dispatchProviderCardMenuClick(
   else if (key === 'copy') actions?.onCopy?.();
   else if (key === 'share') actions?.onShare?.();
   else if (key === 'delete') actions?.onDelete?.();
+  else if (key === 'syncPluginModels') actions?.onSyncPluginModels?.();
+  else if (key === 'managePluginAccounts') actions?.onManagePluginAccounts?.();
 }

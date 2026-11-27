@@ -96,6 +96,7 @@ import RootDirectoryModal from '@/features/coding/shared/RootDirectoryModal';
 import useRootDirectoryConfig from '@/features/coding/shared/useRootDirectoryConfig';
 import {
   areGatewayProviderProfilesInitialized,
+  grokProviderNeedsGatewayProxy,
   grokWireApiFormatFromConfig,
   firstGatewayApiFormat,
   GatewayFailoverButton,
@@ -252,7 +253,10 @@ const GrokPage: React.FC = () => {
       grokWireApiFormatFromConfig(settingsConfig.config),
       openAiApiFormatFromBaseUrl(baseUrl),
     );
-    return providerApiFormat === 'gemini_native';
+    return grokProviderNeedsGatewayProxy(providerApiFormat, {
+      meta: primaryProvider.meta,
+      baseUrl,
+    });
   }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const primaryGatewayProviderNeedsProxyReason = primaryGatewayProviderNeedsProxy ? 'protocol' : null;
   const [refreshingOfficialAccountId, setRefreshingOfficialAccountId] = React.useState<string | null>(null);
@@ -1232,7 +1236,12 @@ const GrokPage: React.FC = () => {
       openAiApiFormatFromBaseUrl(baseUrl),
     );
     setConnectivityInfo(buildGrokProviderConnectivityInfo(provider));
-    setConnectivityUsesGateway(providerApiFormat === 'gemini_native');
+    setConnectivityUsesGateway(
+      grokProviderNeedsGatewayProxy(providerApiFormat, {
+        meta: provider.meta,
+        baseUrl,
+      }),
+    );
     setConnectivityModalOpen(true);
   };
 
@@ -1882,6 +1891,8 @@ const GrokPage: React.FC = () => {
           batchTesting={batchTestingProviders}
           onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
           onAddProvider={handleAddProvider}
+          pluginCliKey="grok"
+          onPluginProviderChanged={() => loadConfig(true)}
           headerExtra={
             <GatewayFailoverButton
               cliKey="grok"

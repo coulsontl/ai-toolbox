@@ -1,6 +1,7 @@
 //! Per-CLI applied-account refresh passes used by the shared scheduler.
 
 use tauri::AppHandle;
+use tauri::Manager;
 
 use crate::db::SqliteDbState;
 
@@ -37,4 +38,15 @@ pub(super) async fn antigravity_refresh_applied_pass(
     app: &AppHandle,
 ) -> Result<(), String> {
     crate::coding::antigravity::refresh_applied_antigravity_accounts_if_needed(db, app).await
+}
+
+pub(super) async fn plugins_background_pass(
+    _db: &SqliteDbState,
+    app: &AppHandle,
+) -> Result<(), String> {
+    let Some(manager) = app.try_state::<crate::plugins::PluginManagerState>() else {
+        return Err("PluginManagerState is not registered yet".to_string());
+    };
+    crate::plugins::background_tasks::run_plugin_background_pass(manager.inner()).await;
+    Ok(())
 }

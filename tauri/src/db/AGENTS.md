@@ -11,7 +11,7 @@
 - 主库是 `{app_data}/ai-toolbox.db`（`db::SQLITE_DATABASE_FILE`），全局只有一个 `SqliteDbState`，在 `lib.rs` 启动时 `open` 后 `app.manage`。
 - **schema 版本的事实源是 SQLite 自己的 `PRAGMA user_version`，没有 `_migrations` 台账表**（`_migrations` 是 OMO 配置文件里的概念，别找错地方）。当前目标版本是常量 `migrations::TARGET_SCHEMA_VERSION`，历史版本号是冻结契约。
 - **没有应用层迁移台账表**：v34 已删除历史的 `app_migration`（SurrealDB 时代的一次性数据迁移记录，早已无读写点）。schema 版本只认 `PRAGMA user_version`。
-- v35 把剩余的功能域表收敛为四张 `(kind, id)` 作用域表：`skill_entity` / `mcp_entity` / `sync_entity` / `image_entity`。当前 `ALL_TABLES` 共 14 张 JSONB 表。
+- v35 把剩余的功能域表收敛为四张 `(kind, id)` 作用域表：`skill_entity` / `mcp_entity` / `sync_entity` / `image_entity`。v38 新增 `plugin_entity`（kind 作用域，承载网关插件安装记录 / 市场源 / 供应商选项 / 账号元数据 / 设置），当前 `ALL_TABLES` 共 15 张 JSONB 表。
 - v36 预留计价基准与上下文分档，不接功能：`proxy_request_logs.pricing_model` / `pricing_tier`（均可空），`usage_daily_rollups.request_model` / `pricing_model` / `pricing_tier`（`NOT NULL DEFAULT ''`，追加进主键），`model_pricing.context_tiers`（`TEXT NOT NULL DEFAULT '[]'`，JSON 数组，存高于基础价的阈值档位）。所有现有写入都省略它们，因此值保持 `NULL` / `''` / `'[]'`，rollup 与查价逻辑不变。v36 同时把 `gateway_session_usage_state` 改名为 `usage_session_state`，与 `usage_daily_rollups` 的前缀保持一致。
 - 表名的唯一来源是 `schema::DbTable`；表名与 JSON 字段路径都要经过 identifier 校验（字母/数字/下划线，首字符必须是字母或下划线），外部输入不得直接 `format!` 进 SQL。
 - **`DbTable` 是「带作用域的表的引用」，不是表本身**：`CliProvider(Cli::Codex)` 与 `CliProvider(Cli::Kimi)` 都是 `cli_provider`；`SkillEntity(Skill)` 与 `SkillEntity(Group)` 都是 `skill_entity`。作用域由变体自己携带（`DbTable::scope()`），所有 helper 自动加 `cli_key` / `kind` 谓词，**不需要也不允许调用方另传**。
@@ -75,7 +75,7 @@ sequenceDiagram
 - 新增**表**：`DbTable` + `ALL_TABLES` + 一个新的 `migrate_vN`（建表 + `create_json_index`）；只加普通业务字段不需要迁移。
 - 新增一个 **CLI**：只在 `schema::Cli` 里加一行，**不建表、不写迁移**。这是 v33/v34 合并的目的——`cli_provider` / `cli_official_account` / `cli_config` 三张表以 `cli_key` 承载所有 CLI。
 - 新增一种 **CLI 专属数据**：在 `schema::CliConfigKind` 加一行，落在 `cli_config`，**不建 CLI 独立表**。v34 起收藏列表、workspace roots 也走这条路径；任何直接写物理表名的原生 SQL 都要同步改成带 `cli_key` / `kind` 谓词的 `cli_config` 查询。
-- 新增一种 **Skill / MCP / 远程同步 / 图片实体**：分别只在 `SkillEntityKind` / `McpEntityKind` / `SyncEntityKind` / `ImageEntityKind` 加一行，落在对应的 `*_entity` 表，**不建独立表、不写迁移**。
+- 新增一种 **Skill / MCP / 远程同步 / 图片 / 网关插件实体**：分别只在 `SkillEntityKind` / `McpEntityKind` / `SyncEntityKind` / `ImageEntityKind` / `PluginEntityKind` 加一行，落在对应的 `*_entity` 表，**不建独立表、不写迁移**。
 - 新增一种 relay 实体：在 `schema::RelayKind` 加一行，落在 `relay_entity`。
 - **已发布的迁移函数必须逐字冻结**：`migrate_v1..v36` 里的表名是字符串字面量，不是 `DbTable`（那些变体已经不存在了）。改写成新表名会让老库在升级时凭空造出空表、丢掉真实数据。
 

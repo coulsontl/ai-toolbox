@@ -1727,6 +1727,8 @@ mod tests {
             sort_index: None,
             meta: ProviderGatewayMeta::default(),
             model_mapping: Default::default(),
+
+            plugin_provider: None,
         }
     }
 

@@ -61,6 +61,18 @@ pub fn resolve_default_central_repo_path(
     Ok(app_data_dir.join(CENTRAL_DIR_NAME))
 }
 
+/// Resolve the central repo path from DB settings only, with the same
+/// default fallback as `resolve_central_repo_path`. Used by startup work and
+/// tests that do not have an `AppHandle`.
+pub fn resolve_central_repo_path_without_app(
+    state: &crate::SqliteDbState,
+) -> Result<PathBuf, String> {
+    if let Ok(Some(path)) = load_authoritative_central_repo_path_sync(state) {
+        return Ok(path);
+    }
+    Ok(crate::app_paths::resolved_data_dir().join(CENTRAL_DIR_NAME))
+}
+
 /// Save the central repo path to the same authoritative store that the resolver reads.
 pub async fn save_central_repo_path(state: &crate::SqliteDbState, path: &Path) -> Result<()> {
     let storage_path = to_portable_central_repo_path(path);

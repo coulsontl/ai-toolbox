@@ -1264,7 +1264,9 @@ const CodexProviderFormModal: React.FC<CodexProviderFormModalProps> = ({
             </Text>
             {/* Non-official providers only: official mode hides the protocol
                 selector entirely, so its stale value must not raise a warning. */}
-            {!isOfficialMode && codexApiFormatNeedsGatewayProxy(selectedApiFormat) ? (
+            {!isOfficialMode && codexApiFormatNeedsGatewayProxy(selectedApiFormat, {
+              meta: provider?.meta,
+            }) ? (
               <div>
                 <Text type="warning" style={{ fontSize: 12 }}>
                   {t('codex.provider.apiFormatNeedsGatewayHint', {

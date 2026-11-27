@@ -4,6 +4,7 @@ import { CopyOutlined, DeleteOutlined, EditOutlined, ShareAltOutlined } from '@a
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type {
   ProviderCardModels,
@@ -118,6 +119,10 @@ const PiProviderCard: React.FC<PiProviderCardProps> = ({
   const { t } = useTranslation();
   const providerConfig = provider.modelsProvider ?? {};
   const baseUrl = getStringField(providerConfig, 'baseUrl');
+  const pluginCardMeta = usePluginProviderCardMeta({
+    baseUrl,
+    providerId: provider.providerKey,
+  });
   const api = getStringField(providerConfig, 'api');
   const sdkName = piApiToSdkName(api) || api || provider.categories.join(', ') || 'pi';
 
@@ -186,6 +191,7 @@ const PiProviderCard: React.FC<PiProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.providerKey,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -195,6 +201,7 @@ const PiProviderCard: React.FC<PiProviderCardProps> = ({
       onEdit,
       onCopy,
       onShare,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       // The page owns the confirmation: it asks which of {config, credential,
       // both} to remove, which the card's plain confirm cannot express.

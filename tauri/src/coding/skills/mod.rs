@@ -4,6 +4,7 @@
 pub mod adapter;
 pub mod auto_discover;
 pub mod auto_update;
+pub mod builtin;
 pub mod cache_cleanup;
 pub mod central_repo;
 pub mod commands;

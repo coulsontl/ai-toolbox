@@ -3,6 +3,7 @@ import { Button, Space, Tag } from 'antd';
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type {
   ProviderCardModels,
@@ -107,6 +108,10 @@ const ModelsJsonProviderCard: React.FC<ModelsJsonProviderCardProps> = ({
   fetchDisabledTooltip,
 }) => {
   const { t } = useTranslation();
+  const pluginCardMeta = usePluginProviderCardMeta({
+    baseUrl: provider.baseUrl,
+    providerId: provider.id,
+  });
 
   const modelRows = React.useMemo<ModelDisplayData[]>(
     () =>
@@ -154,6 +159,7 @@ const ModelsJsonProviderCard: React.FC<ModelsJsonProviderCardProps> = ({
       // product never reads a channel order back, so a grip would drag nothing.
       draggable: false,
       sortableId: provider.id,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -161,6 +167,7 @@ const ModelsJsonProviderCard: React.FC<ModelsJsonProviderCardProps> = ({
     },
     actions: {
       onEdit,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       deleteConfirm: false,
     },

@@ -54,6 +54,8 @@ pub(crate) struct UpstreamProvider {
     pub(crate) sort_index: Option<i32>,
     pub(crate) meta: ProviderGatewayMeta,
     pub(crate) model_mapping: UpstreamModelMapping,
+    /// Set when this provider's transport is delegated to the plugin host.
+    pub(crate) plugin_provider: Option<crate::plugins::gateway_bridge::PluginProviderRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,12 +597,73 @@ fn sort_candidate_providers(providers: &mut [UpstreamProvider]) {
     });
 }
 
+/// Build the gateway view of a provider record whose transport lives in a
+/// plugin. The record carries no credential and no usable base URL: both are
+/// resolved per request from the plugin host (`plugins::gateway_bridge`), and
+/// the placeholder base URL only keeps URL construction total.
+fn plugin_provider_from_record(
+    cli_key: GatewayCliKey,
+    record: &Value,
+    meta: ProviderGatewayMeta,
+    plugin_provider: crate::plugins::gateway_bridge::PluginProviderRef,
+) -> Result<Option<UpstreamProvider>, String> {
+    if json_bool_compat(record, "is_disabled", "isDisabled").unwrap_or(false) {
+        return Ok(None);
+    }
+    let id = json_string_compat(record, "id", "id")
+        .or_else(|| {
+            record
+                .pointer("/data/id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| "Plugin provider record has no id".to_string())?;
+    let name = json_string_compat(record, "name", "name").unwrap_or_else(|| id.clone());
+    let target_protocol = meta
+        .api_format
+        .as_deref()
+        .and_then(AiProtocol::from_api_format)
+        .unwrap_or(AiProtocol::OpenAiChat);
+    Ok(Some(UpstreamProvider {
+        supports_websockets: None,
+        cli_key,
+        id,
+        name,
+        base_url: "https://plugin.local".to_string(),
+        api_key: "plugin-managed".to_string(),
+        target_protocol,
+        auth_strategy: ProviderAuthStrategy::Bearer,
+        is_full_url: false,
+        sort_index: record
+            .get("sort_index")
+            .or_else(|| record.get("sortIndex"))
+            .and_then(Value::as_i64)
+            .map(|value| value as i32),
+        meta,
+        model_mapping: UpstreamModelMapping::default(),
+        plugin_provider: Some(plugin_provider),
+    }))
+}
+
+/// Test-only entry point so plugin integration tests can assert that a record
+/// built by `plugins::cli_integration` loads as a plugin-backed upstream.
+#[cfg(test)]
+pub(crate) fn provider_from_record_for_test(
+    cli_key: GatewayCliKey,
+    record: Value,
+) -> Result<Option<UpstreamProvider>, String> {
+    provider_from_record(cli_key, record, None)
+}
+
 fn provider_from_record(
     cli_key: GatewayCliKey,
     record: Value,
     settings: Option<&ProxyGatewaySettings>,
 ) -> Result<Option<UpstreamProvider>, String> {
     let meta = provider_meta_from_record(cli_key, &record, settings);
+    if let Some(plugin_provider) = meta.plugin_provider.clone() {
+        return plugin_provider_from_record(cli_key, &record, meta, plugin_provider);
+    }
     match cli_key {
         GatewayCliKey::Claude => {
             let provider = claude_code::adapter::from_db_value_provider(record);
@@ -646,6 +709,8 @@ fn provider_from_record(
                 sort_index: provider.sort_index,
                 meta,
                 model_mapping,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::Codex => {
@@ -707,6 +772,8 @@ fn provider_from_record(
                     ..UpstreamModelMapping::default()
                 },
                 meta,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::Grok => {
@@ -774,6 +841,8 @@ fn provider_from_record(
                     ..UpstreamModelMapping::default()
                 },
                 meta,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::Kimi => {
@@ -867,6 +936,8 @@ fn provider_from_record(
                     ..UpstreamModelMapping::default()
                 },
                 meta,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::Workbuddy | GatewayCliKey::Codebuddy => {
@@ -918,6 +989,8 @@ fn provider_from_record(
                     ..UpstreamModelMapping::default()
                 },
                 meta,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::Gemini => {
@@ -966,6 +1039,8 @@ fn provider_from_record(
                     ..UpstreamModelMapping::default()
                 },
                 meta,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::Antigravity => {
@@ -1014,6 +1089,8 @@ fn provider_from_record(
                     ..UpstreamModelMapping::default()
                 },
                 meta,
+
+                plugin_provider: None,
             }))
         }
         // Claude Desktop reuses the Claude Code settings shape: its 3P profile
@@ -1065,6 +1142,8 @@ fn provider_from_record(
                 sort_index: provider.sort_index,
                 meta,
                 model_mapping,
+
+                plugin_provider: None,
             }))
         }
         GatewayCliKey::OpenCode => unreachable!("OpenCode is rejected before query"),
@@ -1166,6 +1245,10 @@ fn provider_meta_from_record(
             "ultrafastCostMultiplier",
         )
         .filter(|value| !value.trim().is_empty()),
+        plugin_provider: meta_value
+            .get("plugin_provider")
+            .or_else(|| meta_value.get("pluginProvider"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     };
     apply_gateway_profile_reference(cli_key, &mut meta);
     if meta.provider_type.is_none() {
@@ -2187,6 +2270,8 @@ mod tests {
             sort_index,
             meta: ProviderGatewayMeta::default(),
             model_mapping: UpstreamModelMapping::default(),
+
+            plugin_provider: None,
         }
     }
 
@@ -3608,10 +3693,7 @@ base_url = "https://api.anthropic.com"
                 model: "gpt-5-mini".to_string()
             })
         );
-        assert_eq!(
-            routes.get("summary"),
-            Some(&CodexAuxiliaryModelRoute::Main)
-        );
+        assert_eq!(routes.get("summary"), Some(&CodexAuxiliaryModelRoute::Main));
         assert!(!routes.contains_key("description"));
         assert!(!routes.contains_key("prediction"));
         assert!(!routes.contains_key("memory"));

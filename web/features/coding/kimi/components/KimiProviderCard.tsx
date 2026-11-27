@@ -46,6 +46,7 @@ import {
   providerNeedsGatewayProxy,
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import {
   CodexStyleCard,
   InlineConnectivityButton,
@@ -216,6 +217,11 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
     () => extractKimiBaseUrl(provider.settingsConfig),
     [provider.settingsConfig],
   );
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl,
+    providerId: provider.id,
+  });
   const modelName = React.useMemo(
     () => extractKimiDefaultModel(provider.settingsConfig),
     [provider.settingsConfig],
@@ -258,7 +264,10 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
   const needsGatewayProxy =
     !isOfficialProvider &&
     !isLocalProvider &&
-    providerNeedsGatewayProxy(providerApiFormat, 'openai_chat');
+    providerNeedsGatewayProxy(providerApiFormat, 'openai_chat', {
+      meta: provider.meta,
+      baseUrl,
+    });
 
   const restoreDirectUnavailableTitle = t(
     'gateway.proxy.restoreDirectUnavailableHintProtocol',
@@ -811,6 +820,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -824,6 +834,7 @@ const KimiProviderCard: React.FC<KimiProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: onCopy ? () => onCopy(provider) : undefined,
       onShare: onShare ? () => onShare(provider) : undefined,
+      ...pluginCardMeta.pluginActions,
       // `__local__` is not a managed preset: it has no delete path.
       onDelete: isLocalProvider ? undefined : () => onDelete(provider),
       enabledStateLabel: provider.isDisabled

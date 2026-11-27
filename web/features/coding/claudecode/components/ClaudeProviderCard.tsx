@@ -29,6 +29,7 @@ import {
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
 import type { ProviderConnectivityStatusItem } from '@/components/common/ProviderCard/types';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
 import {
   renderProviderLaunchAction,
@@ -164,6 +165,11 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
     settingsConfig.env?.ANTHROPIC_API_KEY?.trim() ||
     '';
   const configuredBaseUrl = settingsConfig.env?.ANTHROPIC_BASE_URL?.trim() || '';
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl: configuredBaseUrl,
+    providerId: provider.id,
+  });
   const isOfficialProvider = provider.category === 'official';
   const isLocalProvider = provider.id === LOCAL_CONFIG_ID;
   // `__local__` is a local-file bridge, not a managed applied preset.
@@ -221,7 +227,10 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
   const needsGatewayProxy =
     !isOfficialProvider &&
     !isLocalProvider &&
-    providerNeedsGatewayProxy(providerApiFormat, 'anthropic');
+    providerNeedsGatewayProxy(providerApiFormat, 'anthropic', {
+      meta: provider.meta,
+      baseUrl: configuredBaseUrl,
+    });
   const restoreDirectUnavailableTitle = t(
     'gateway.proxy.restoreDirectUnavailableHintProtocol',
     { cli: t('settings.gateway.cli.claude') },
@@ -768,6 +777,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -781,6 +791,7 @@ const ClaudeProviderCard: React.FC<ClaudeProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: () => onCopy(provider),
       onShare: () => onShare(provider),
+      ...pluginCardMeta.pluginActions,
       // `__local__` is not a managed preset: it has no delete path.
       onDelete: isLocalProvider ? undefined : () => onDelete(provider),
       enabledStateLabel: provider.isDisabled

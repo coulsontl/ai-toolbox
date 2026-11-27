@@ -4306,6 +4306,8 @@ mod tests {
                 auxiliary_models: std::collections::BTreeMap::new(),
                 native_memory_models: Vec::new(),
             },
+
+            plugin_provider: None,
         }
     }
 

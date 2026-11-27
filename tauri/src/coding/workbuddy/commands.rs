@@ -29,15 +29,21 @@ fn lock_models_write() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn custom_config_dir_from_db(db: &SqliteDbState) -> Option<PathBuf> {
-    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings), WORKBUDDY_SETTINGS_CONFIG_ID))
-        .ok()
-        .flatten()
-        .and_then(|value| adapter::settings_from_db_value(value).config_dir)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+    db.with_conn(|conn| {
+        db_get(
+            conn,
+            DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings),
+            WORKBUDDY_SETTINGS_CONFIG_ID,
+        )
+    })
+    .ok()
+    .flatten()
+    .and_then(|value| adapter::settings_from_db_value(value).config_dir)
+    .filter(|path| !path.trim().is_empty())
+    .map(PathBuf::from)
 }
 
-async fn config_root_from_db(db: &SqliteDbState) -> (PathBuf, String) {
+pub(crate) async fn config_root_from_db(db: &SqliteDbState) -> (PathBuf, String) {
     match custom_config_dir_from_db(db) {
         Some(path) => (path, "custom".to_string()),
         None => paths::resolve_path_without_db(),
@@ -59,7 +65,10 @@ pub async fn get_workbuddy_default_config_dir() -> Result<String, String> {
 
 #[tauri::command]
 pub fn get_workbuddy_config_dir_without_db() -> String {
-    paths::resolve_path_without_db().0.to_string_lossy().into_owned()
+    paths::resolve_path_without_db()
+        .0
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[tauri::command]
@@ -78,7 +87,13 @@ pub async fn get_workbuddy_settings_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<WorkbuddySettingsConfig>, String> {
     let record = state
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings), WORKBUDDY_SETTINGS_CONFIG_ID))
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Workbuddy, CliConfigKind::Settings),
+                WORKBUDDY_SETTINGS_CONFIG_ID,
+            )
+        })
         .map_err(|error| format!("Failed to read WorkBuddy settings: {error}"))?;
     Ok(record.map(adapter::settings_from_db_value))
 }
@@ -125,7 +140,8 @@ pub async fn save_workbuddy_settings_config(
         .map_err(|error| format!("Failed to save WorkBuddy settings: {error}"))?;
 
     crate::coding::runtime_location::refresh_runtime_location_cache_for_module_async(
-        &state, "workbuddy",
+        &state,
+        "workbuddy",
     )
     .await
     .ok();
@@ -382,17 +398,22 @@ mod tests {
         document.upsert_model_renaming(entry, Some("first"));
         document.save(dir.path()).expect("save");
 
-        let rows: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&models_path).expect("read"),
-        )
-        .expect("parse");
+        let rows: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&models_path).expect("read"))
+                .expect("parse");
         let models = rows
             .get("models")
             .and_then(serde_json::Value::as_array)
             .expect("models");
         assert_eq!(models.len(), 2, "a rename must not add a row");
-        assert_eq!(models[0]["id"], "first-renamed", "the edited row keeps its position");
-        assert_eq!(models[0]["credits"], "included", "product-owned key survives");
+        assert_eq!(
+            models[0]["id"], "first-renamed",
+            "the edited row keeps its position"
+        );
+        assert_eq!(
+            models[0]["credits"], "included",
+            "product-owned key survives"
+        );
         assert_eq!(models[0]["tags"][0], "fast");
         assert_eq!(models[1]["id"], "second");
     }

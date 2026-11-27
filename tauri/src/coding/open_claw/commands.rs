@@ -90,6 +90,96 @@ fn backup_retain_count_from_state(state: &SqliteDbState) -> usize {
     }
 }
 
+/// Resolve the config path from a plain DB handle, so non-command callers
+/// (gateway plugin integration) share the command's priority chain.
+pub(crate) fn get_openclaw_config_path_from_db(db: &SqliteDbState) -> Result<String, String> {
+    let custom_path = db
+        .with_conn(|conn| {
+            Ok(db_get(
+                conn,
+                DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common),
+                "common",
+            )?
+            .map(adapter::from_db_value))
+        })?
+        .and_then(|config: OpenClawCommonConfig| config.config_path)
+        .filter(|path| !path.trim().is_empty());
+    match custom_path {
+        Some(path) => Ok(path),
+        None => get_default_config_path(),
+    }
+}
+
+/// Upsert one `models.providers.<key>` entry through the JSON5 round-trip
+/// document, preserving comments, other providers and all other sections.
+pub(crate) fn upsert_openclaw_provider_at(
+    config_path: &Path,
+    backup_dir: &Path,
+    retain_count: usize,
+    provider_key: &str,
+    provider: serde_json::Value,
+) -> Result<(), String> {
+    use super::roundtrip;
+
+    let mut document = roundtrip::OpenClawConfigDocument::load(config_path)?;
+    let mut root: serde_json::Value = match &document.original_source {
+        Some(source) => json5::from_str(source)
+            .map_err(|error| format!("Failed to parse current config as JSON5: {error}"))?,
+        None => serde_json::json!({}),
+    };
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let root_object = root.as_object_mut().expect("root forced to object");
+    let models = root_object
+        .entry("models".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !models.is_object() {
+        *models = serde_json::json!({});
+    }
+    let providers = models
+        .as_object_mut()
+        .expect("models forced to object")
+        .entry("providers".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !providers.is_object() {
+        *providers = serde_json::json!({});
+    }
+    providers
+        .as_object_mut()
+        .expect("providers forced to object")
+        .insert(provider_key.to_string(), provider);
+
+    let models_section = models.clone();
+    document.set_root_section("models", &models_section)?;
+    document.save(backup_dir, retain_count)?;
+    Ok(())
+}
+
+/// Read one `models.providers.<key>` entry without going through the typed
+/// config, so unknown provider/model fields survive a model-list refresh.
+pub(crate) fn read_openclaw_provider_at(
+    config_path: &Path,
+    provider_key: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let source = fs::read_to_string(config_path).map_err(|error| {
+        format!(
+            "Failed to read OpenClaw config '{}': {error}",
+            config_path.display()
+        )
+    })?;
+    let root: serde_json::Value = json5::from_str(&source)
+        .map_err(|error| format!("Failed to parse OpenClaw config as JSON5: {error}"))?;
+    Ok(root
+        .get("models")
+        .and_then(|models| models.get("providers"))
+        .and_then(|providers| providers.get(provider_key))
+        .cloned())
+}
+
 /// Read and parse the config file, returning the OpenClawConfig
 async fn read_and_parse_config(
     state: tauri::State<'_, SqliteDbState>,
@@ -278,7 +368,12 @@ pub async fn get_openclaw_common_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenClawCommonConfig>, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common), "common")?.map(adapter::from_db_value))
+        Ok(db_get(
+            conn,
+            DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common),
+            "common",
+        )?
+        .map(adapter::from_db_value))
     })
 }
 
@@ -293,7 +388,14 @@ pub async fn save_openclaw_common_config(
     let previous_skills_path = runtime_location::get_tool_skills_path_async(&db, "openclaw").await;
 
     let json_data = adapter::to_db_value(&config);
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common), "common", &json_data))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::OpenClaw, CliConfigKind::Common),
+            "common",
+            &json_data,
+        )
+    })?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "openclaw").await?;
 
     resync_all_skills_if_tool_path_changed(app, state.inner(), "openclaw", previous_skills_path)

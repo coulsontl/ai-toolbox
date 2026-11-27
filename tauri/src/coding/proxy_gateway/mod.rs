@@ -22,4 +22,6 @@ pub mod usage_range;
 pub mod usage_stats;
 
 pub use commands::*;
+#[cfg(test)]
+pub(crate) use runtime::provider_from_record_for_test;
 pub use runtime::ProxyGatewayState;

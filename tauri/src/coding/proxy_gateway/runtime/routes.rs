@@ -1,3 +1,4 @@
+use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::GatewayCliKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,6 +127,91 @@ fn match_openai_chat_route(
     })
 }
 
+/// A `/plugin/<provider_id>/...` request. These routes bypass CLI takeover
+/// and provider selection entirely: the path names the plugin provider, and
+/// the gateway only converts protocols and forwards through the plugin host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PluginRoute {
+    pub(super) provider_id: String,
+    pub(super) forwarded_path: String,
+    pub(super) query: Option<String>,
+    pub(super) kind: PluginRouteKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PluginRouteKind {
+    /// Local GET/HEAD health probe (`/plugin/<id>`, `/v1`, `/v1beta`).
+    Probe,
+    /// A model catalog: OpenAI's `GET /v1/models` or Gemini's
+    /// `GET /v1beta/models` shape.
+    Models { gemini: bool },
+    /// An inference path. `source_protocol` is what the client speaks and
+    /// `cli_key` is the gateway CLI family whose conversion pipeline matches
+    /// that source protocol.
+    Inference {
+        source_protocol: AiProtocol,
+        cli_key: GatewayCliKey,
+    },
+}
+
+pub(super) fn match_plugin_route(request_target: &str) -> Option<PluginRoute> {
+    let (path, query) = split_request_target(request_target);
+    let rest = path.strip_prefix("/plugin/")?;
+    let (provider_id, tail) = match rest.split_once('/') {
+        Some((provider_id, tail)) => (provider_id, format!("/{tail}")),
+        None => (rest, String::new()),
+    };
+    if provider_id.trim().is_empty() {
+        return None;
+    }
+    let (kind, forwarded_path) = match tail.as_str() {
+        "" | "/" | "/v1" | "/v1/" | "/v1beta" | "/v1beta/" => {
+            (PluginRouteKind::Probe, tail.clone())
+        }
+        "/v1/models" => (PluginRouteKind::Models { gemini: false }, tail.clone()),
+        "/v1beta/models" => (PluginRouteKind::Models { gemini: true }, tail.clone()),
+        "/v1/chat/completions" => (
+            PluginRouteKind::Inference {
+                source_protocol: AiProtocol::OpenAiChat,
+                cli_key: GatewayCliKey::Kimi,
+            },
+            tail.clone(),
+        ),
+        "/v1/responses" | "/v1/responses/compact" => (
+            PluginRouteKind::Inference {
+                source_protocol: AiProtocol::OpenAiResponses,
+                cli_key: GatewayCliKey::Grok,
+            },
+            tail.clone(),
+        ),
+        "/v1/messages" | "/v1/messages/count_tokens" => (
+            PluginRouteKind::Inference {
+                source_protocol: AiProtocol::AnthropicMessages,
+                cli_key: GatewayCliKey::Claude,
+            },
+            tail.clone(),
+        ),
+        tail if is_gemini_versioned_path(tail)
+            && (tail.contains(":generateContent") || tail.contains(":streamGenerateContent")) =>
+        {
+            (
+                PluginRouteKind::Inference {
+                    source_protocol: AiProtocol::GeminiNative,
+                    cli_key: GatewayCliKey::Gemini,
+                },
+                tail.to_string(),
+            )
+        }
+        _ => return None,
+    };
+    Some(PluginRoute {
+        provider_id: provider_id.to_string(),
+        forwarded_path,
+        query,
+        kind,
+    })
+}
+
 #[cfg(test)]
 mod openai_chat_route_tests {
     use super::*;
@@ -143,9 +229,8 @@ mod openai_chat_route_tests {
             assert_eq!(probe.route_name, name);
             assert_eq!(probe.forwarded_path, "/v1");
 
-            let chat =
-                match_gateway_route(&format!("{prefix}/v1/chat/completions?trace=1"))
-                    .expect("chat route");
+            let chat = match_gateway_route(&format!("{prefix}/v1/chat/completions?trace=1"))
+                .expect("chat route");
             assert_eq!(chat.cli_key, cli_key);
             assert_eq!(chat.forwarded_path, "/v1/chat/completions");
             assert_eq!(chat.query.as_deref(), Some("trace=1"));
@@ -184,6 +269,42 @@ mod tests {
 
         assert!(match_gateway_route("/grok/v1/chat/completions").is_none());
         assert!(match_gateway_route("/grok/v1/responses/compact").is_none());
+    }
+
+    #[test]
+    fn plugin_routes_cover_the_common_client_endpoints() {
+        let models = match_plugin_route("/plugin/demo/v1/models").expect("openai models");
+        assert_eq!(models.kind, PluginRouteKind::Models { gemini: false });
+        let gemini_models = match_plugin_route("/plugin/demo/v1beta/models?key=x")
+            .expect("gemini models");
+        assert_eq!(gemini_models.kind, PluginRouteKind::Models { gemini: true });
+        assert_eq!(gemini_models.query.as_deref(), Some("key=x"));
+
+        for (path, protocol, cli_key) in [
+            (
+                "/plugin/demo/v1/responses/compact",
+                AiProtocol::OpenAiResponses,
+                GatewayCliKey::Grok,
+            ),
+            (
+                "/plugin/demo/v1/messages/count_tokens",
+                AiProtocol::AnthropicMessages,
+                GatewayCliKey::Claude,
+            ),
+        ] {
+            match match_plugin_route(path).expect(path).kind {
+                PluginRouteKind::Inference {
+                    source_protocol,
+                    cli_key: route_cli,
+                } => {
+                    assert_eq!(source_protocol, protocol, "{path}");
+                    assert_eq!(route_cli, cli_key, "{path}");
+                }
+                other => panic!("{path} matched {other:?}"),
+            }
+        }
+
+        assert!(match_plugin_route("/plugin/demo/v1/messages/unknown").is_none());
     }
 
     #[test]

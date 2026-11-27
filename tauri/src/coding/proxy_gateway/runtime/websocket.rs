@@ -107,6 +107,11 @@ fn is_codex_responses_route(route: &GatewayRoute) -> bool {
 }
 
 fn fallback_reason(provider: &UpstreamProvider) -> Option<&'static str> {
+    if provider.plugin_provider.is_some() {
+        // A plugin provider's transport is the Bun host's `fetch`; its base
+        // URL is a placeholder (`https://plugin.local`), not a dialable host.
+        return Some("Plugin providers use HTTP/SSE.");
+    }
     if provider.target_protocol != AiProtocol::OpenAiResponses {
         return Some("The selected provider requires protocol conversion; use HTTP/SSE.");
     }

@@ -601,6 +601,7 @@ const CodebuddyPage: React.FC = () => {
                 setConnectivityOpen(true);
               }}
               onFetchModels={(channel) => setFetchModelsChannelId(channel.id)}
+              onPluginProviderChanged={reload}
             />
           </div>
 

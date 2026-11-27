@@ -5,12 +5,15 @@ import {
   AppstoreOutlined,
   CheckSquareOutlined,
   DatabaseOutlined,
+  ImportOutlined,
   LayoutOutlined,
   PlusOutlined,
   ThunderboltOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import ImportPluginProviderModal from '@/features/coding/plugins/components/ImportPluginProviderModal';
+import { PluginProviderCardContext } from './plugins/pluginCardMeta';
 import ProviderBatchToolbar from './providerList/ProviderBatchToolbar';
 import ProviderSearchEmpty from './providerList/ProviderSearchEmpty';
 import ProviderSearchInput from './providerList/ProviderSearchInput';
@@ -239,6 +242,24 @@ export interface ProviderListSectionProps {
   children: React.ReactNode;
   /** Import buttons rendered below the list (CC Switch / All API Hub / favorites). */
   footer?: React.ReactNode;
+
+  /**
+   * The backend CLI key this list belongs to (`claude`, `codex`, …).
+   *
+   * Supplying it does two things at once: it lets every plugin-backed card
+   * offer "同步插件模型" (the card needs to know which CLI to write into), and
+   * it adds the toolbar's "从插件导入" entry. Omit both props for a list that
+   * has no plugin path.
+   */
+  pluginCliKey?: string;
+  /**
+   * Re-read this CLI's providers after a plugin sync or import.
+   *
+   * The plugin commands write into the CLI's own config, so the page's provider
+   * state is stale until this runs. `ProviderListSection` does not own that
+   * state and cannot refresh it itself.
+   */
+  onPluginProviderChanged?: () => void | Promise<void>;
 }
 
 /**
@@ -280,12 +301,22 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   alwaysVisible,
   children,
   footer,
+  pluginCliKey,
+  onPluginProviderChanged,
 }) => {
   const { t } = useTranslation();
   const { message } = App.useApp();
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   /** Cancels an in-flight locate whose panel was re-collapsed or unmounted. */
   const cancelPendingLocateRef = React.useRef<(() => void) | null>(null);
+  const [pluginImportOpen, setPluginImportOpen] = React.useState(false);
+
+  const pluginContextValue = React.useMemo(
+    () => (pluginCliKey
+      ? { cliKey: pluginCliKey, onChanged: onPluginProviderChanged }
+      : null),
+    [onPluginProviderChanged, pluginCliKey],
+  );
 
   const toolbarButtonStyle: React.CSSProperties = { fontSize: 12 };
 
@@ -388,12 +419,13 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
   );
 
   return (
-    <div
-      ref={rootRef}
-      id={sectionId}
-      data-sidebar-section="true"
-      data-sidebar-title={t('common.provider.title')}
-    >
+    <PluginProviderCardContext.Provider value={pluginContextValue}>
+      <div
+        ref={rootRef}
+        id={sectionId}
+        data-sidebar-section="true"
+        data-sidebar-title={t('common.provider.title')}
+      >
       <Collapse
         style={{ marginBottom: 16 }}
         activeKey={collapsed ? [] : ['providers']}
@@ -554,6 +586,20 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
                     {t('common.provider.commonConfig')}
                   </Button>
                 )}
+                {pluginCliKey && (
+                  <Button
+                    type="link"
+                    size="small"
+                    style={toolbarButtonStyle}
+                    icon={<ImportOutlined />}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPluginImportOpen(true);
+                    }}
+                  >
+                    {t('plugins.import.entry')}
+                  </Button>
+                )}
                 <Button
                   type="link"
                   size="small"
@@ -597,7 +643,16 @@ const ProviderListSection: React.FC<ProviderListSectionProps> = ({
           },
         ]}
       />
-    </div>
+      {pluginCliKey && (
+        <ImportPluginProviderModal
+          open={pluginImportOpen}
+          cliKey={pluginCliKey}
+          onClose={() => setPluginImportOpen(false)}
+          onImported={onPluginProviderChanged}
+        />
+      )}
+      </div>
+    </PluginProviderCardContext.Provider>
   );
 };
 

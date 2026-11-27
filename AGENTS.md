@@ -86,6 +86,7 @@ This document provides essential information for AI coding agents working on thi
 | `web/features/coding/antigravity/` | Antigravity 前端页面、根目录配置、provider、prompt、usage 与 session 交互 |
 | `web/features/coding/kimi/` | Kimi Code CLI 前端页面、根目录配置、provider、官方账号、prompt 与通用配置交互 |
 | `web/features/coding/gateway/` | Gateway 前端页面、统计/明细/设置 Tab、顶部入口与 visibleTabs 可见性 |
+| `web/features/coding/plugins/` | 插件中心前端工作台（已安装/渠道账号/市场注册/运行时日志）、顶栏入口、17 CLI 共享卡片扩展与网关门控 |
 | `web/features/coding/image/` | Image 前端页面、工作台、渠道管理、历史与结果交互 |
 | `web/features/coding/mcp/` | MCP 前端页面、服务器管理、导入流程与工具同步交互 |
 | `web/features/coding/opencode/` | OpenCode 前端页面、配置路径、provider、prompt 与模型刷新交互 |
@@ -99,6 +100,7 @@ This document provides essential information for AI coding agents working on thi
 | `tauri/src/db/` | SQLite JSONB 存储层：schema/迁移、读改写语义、change hook 与备份拷贝边界 |
 | `tauri/src/settings/` | 应用设置存储、adapter 全量替换语义、CLI 路径覆盖与托盘联动 |
 | `tauri/src/settings/backup/` | 备份恢复（本地/WebDAV/GitHub-Gitee 仓库）、可选加密、自动备份与恢复后续链路 |
+| `tauri/src/plugins/` | Magpie 兼容插件宿主：SQLite v38 `plugin_entity`、多市场源注册、按需 Bun Provider 宿主、`rquickjs` 网关中间件与 17 CLI 集成桥接 |
 | `tauri/src/coding/image/` | Image 后端渠道配置、任务、资产落盘、图片 API 调用与备份联动 |
 
 后续新增模块级 `AGENTS.md` 时，继续在此表追加，不在根文档其他位置零散登记。

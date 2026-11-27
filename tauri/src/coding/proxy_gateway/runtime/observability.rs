@@ -1,3 +1,4 @@
+use super::compat::codex_aux_task::classify_codex_aux_task;
 use super::http_io::{DebugHttpRequest, DebugHttpResponse};
 use super::routes::split_request_target;
 use super::GatewayRuntimeContext;
@@ -6,11 +7,10 @@ use crate::coding::proxy_gateway::request_log;
 use crate::coding::proxy_gateway::transformer::AiProtocol;
 use crate::coding::proxy_gateway::types::{
     normalize_service_tier, service_tier_cost_multiplier, GatewayAuxiliaryMetadata, GatewayCliKey,
-    GatewayRequestLogDetail, GatewayRequestLogSummary, GatewayRequestTransport, GatewayStreamOutcome,
-    GatewayUsageRecordedEvent, ProxyGatewaySettings,
+    GatewayRequestLogDetail, GatewayRequestLogSummary, GatewayRequestTransport,
+    GatewayStreamOutcome, GatewayUsageRecordedEvent, ProxyGatewaySettings,
 };
-use super::compat::codex_aux_task::classify_codex_aux_task;
-use crate::coding::proxy_gateway::usage_parser::stable_usage_request_id;
+use crate::coding::proxy_gateway::usage_parser::{stable_usage_request_id, TokenUsage};
 use crate::coding::proxy_gateway::usage_stats::{self, RecordRequestSummaryOutcome};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -161,14 +161,15 @@ pub(super) fn record_gateway_observability_with_transport(
     let cache_creation_tokens = usage.cache_creation_tokens;
     let cache_creation_1h_tokens = usage.cache_creation_1h_tokens;
     let total_tokens = usage.total_tokens();
+    enqueue_middleware_usage(context, request, response, usage, duration_ms);
     let settings = context.settings_snapshot();
     // Route-key WebSocket auxiliary turns now carry their own metadata from the
     // relay. This fallback only classifies early failures and non-routed tasks
     // (auto-review/review/compact), where no auxiliary model was applied.
     let websocket_aux = (transport == GatewayRequestTransport::Websocket
         && response.cli_key == Some(GatewayCliKey::Codex))
-        .then(|| classify_codex_aux_task(request))
-        .flatten();
+    .then(|| classify_codex_aux_task(request))
+    .flatten();
     let aux_task = response
         .aux_task
         .or_else(|| websocket_aux.as_ref().map(|task| task.kind()));
@@ -507,11 +508,95 @@ fn should_skip_observability(method: &str, request_path: &str) -> bool {
     if method == "GET" && request_path == "/health" {
         return true;
     }
+    // Direct plugin route probes are local health checks: like the CLI route
+    // probes below, they must not create request rows or touch statistics.
+    if matches!(method, "GET" | "HEAD")
+        && super::routes::match_plugin_route(request_path)
+            .is_some_and(|route| route.kind == super::routes::PluginRouteKind::Probe)
+    {
+        return true;
+    }
     matches!(method, "GET" | "HEAD")
         && matches!(
             request_path,
             "/anthropic" | "/openai/v1" | "/grok/v1" | "/gemini/v1beta"
         )
+}
+
+/// Hand the settled request to `onUsage` middlewares. Only safe, allowlisted
+/// usage fields reach a plugin: no bodies, headers or signed-in credentials.
+fn enqueue_middleware_usage(
+    context: &GatewayRuntimeContext,
+    request: &DebugHttpRequest,
+    response: &DebugHttpResponse,
+    usage: &TokenUsage,
+    duration_ms: u64,
+) {
+    let Some(manager) = context.plugin_manager.as_ref() else {
+        return;
+    };
+    let middleware = manager.middleware();
+    if !middleware.has_usage_hooks() {
+        return;
+    }
+    let (request_path, _) = split_request_target(&request.path);
+    let success = match response.stream_outcome {
+        GatewayStreamOutcome::NotStreaming => is_success_status(response.status_code),
+        _ => response.stream_outcome.is_success(),
+    };
+    // Magpie's row fields come first, in its own vocabulary, so a Magpie
+    // middleware reading `row.provider` / `row.ttftMs` works unchanged; the
+    // gateway's original camelCase fields stay beside them for older plugins.
+    let agent = response
+        .cli_key
+        .map(|key| key.as_str())
+        .unwrap_or_default();
+    let model = response
+        .upstream_model_id
+        .clone()
+        .or_else(|| response.requested_model.clone())
+        .unwrap_or_default();
+    let row = serde_json::json!({
+        "time": chrono::Utc::now().timestamp_millis(),
+        "operation": response.route_name,
+        "agent": agent,
+        "provider": response.provider_id,
+        "providerAccount": "",
+        "model": model,
+        "requested": response.requested_model,
+        "served": response.upstream_model_id,
+        "input": usage.input_tokens.unwrap_or(0),
+        "output": usage.output_tokens.unwrap_or(0),
+        "cacheRead": usage.cache_read_tokens.unwrap_or(0),
+        "cacheWrite": usage.cache_creation_tokens.unwrap_or(0),
+        "reasoning": 0,
+        "ms": duration_ms,
+        "ttftMs": response.first_token_ms.unwrap_or(0),
+        "status": response.status_code,
+        "errType": response.error_category,
+        "kind": response.aux_task.map(|kind| kind.as_str()),
+        "rejected": false,
+        "tries": response.attempt_count,
+        "cost": serde_json::Value::Null,
+        // Gateway-native aliases.
+        "cliKey": response.cli_key.map(|key| key.as_str()),
+        "route": response.route_name,
+        "path": request_path,
+        "providerId": response.provider_id,
+        "providerName": response.provider_name,
+        "requestedModel": response.requested_model,
+        "upstreamModel": response.upstream_model_id,
+        "stream": response.is_streaming,
+        "success": success,
+        "durationMs": duration_ms,
+        "inputTokens": usage.input_tokens,
+        "outputTokens": usage.output_tokens,
+        "cacheReadTokens": usage.cache_read_tokens,
+        "cacheCreationTokens": usage.cache_creation_tokens,
+        "cacheCreation1hTokens": usage.cache_creation_1h_tokens,
+        "totalTokens": usage.total_tokens(),
+    });
+    middleware.enqueue_on_usage(row);
 }
 
 fn process_local_trace_id(request: &DebugHttpRequest) -> String {
@@ -740,10 +825,26 @@ mod tests {
                 json!({"service_tier": "default"}),
                 None,
             ),
-            (AiProtocol::OpenAiResponses, json!({"service_tier": "auto"}), None),
-            (AiProtocol::OpenAiResponses, json!({"service_tier": "flex"}), None),
-            (AiProtocol::OpenAiResponses, json!({"service_tier": ""}), None),
-            (AiProtocol::OpenAiResponses, json!({"service_tier": 2}), None),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": "auto"}),
+                None,
+            ),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": "flex"}),
+                None,
+            ),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": ""}),
+                None,
+            ),
+            (
+                AiProtocol::OpenAiResponses,
+                json!({"service_tier": 2}),
+                None,
+            ),
             (
                 AiProtocol::OpenAiChat,
                 json!({"service_tier": "priority"}),
@@ -762,11 +863,7 @@ mod tests {
         ] {
             let mut response = response_with_upstream_body(body.clone());
             response.target_protocol = Some(protocol);
-            assert_eq!(
-                final_upstream_service_tier(&response),
-                expected,
-                "{body}"
-            );
+            assert_eq!(final_upstream_service_tier(&response), expected, "{body}");
         }
 
         let mut response = response_with_upstream_body(json!({"service_tier": "priority"}));
@@ -825,14 +922,9 @@ mod tests {
             None,
         );
 
-        let logs = usage_stats::request_logs(
-            &db,
-            &GatewayRequestLogFilters::default(),
-            0,
-            10,
-            true,
-        )
-        .unwrap();
+        let logs =
+            usage_stats::request_logs(&db, &GatewayRequestLogFilters::default(), 0, 10, true)
+                .unwrap();
         let item = logs
             .data
             .iter()
@@ -856,12 +948,10 @@ mod tests {
         );
         assert_eq!(fallback.summary.aux_route_source.as_deref(), Some("none"));
 
-        let detail = request_log::get_request_log_detail(
-            context.paths.as_ref().unwrap(),
-            &item.trace_id,
-        )
-        .unwrap()
-        .expect("JSONL detail");
+        let detail =
+            request_log::get_request_log_detail(context.paths.as_ref().unwrap(), &item.trace_id)
+                .unwrap()
+                .expect("JSONL detail");
         let auxiliary = detail.auxiliary.expect("auxiliary detail");
         assert_eq!(auxiliary.raw_kind.as_deref(), Some("thread_title"));
         assert!(!auxiliary.route_applied);
@@ -914,8 +1004,7 @@ mod tests {
         // Standard processing on both sides records no tier at all.
         let mut standard = response_with_upstream_body(json!({"ok": true}));
         standard.provider_id = Some("provider-standard".to_string());
-        standard.upstream_request_body =
-            Some(br#"{"service_tier":"default"}"#.to_vec());
+        standard.upstream_request_body = Some(br#"{"service_tier":"default"}"#.to_vec());
         record_gateway_observability(
             &request_with_id(3),
             &standard,
@@ -962,10 +1051,9 @@ mod tests {
             .find(|item| item.provider_id == "provider-served")
             .expect("served request in list");
         assert_eq!(served_item.service_tier.as_deref(), Some("ultrafast"));
-        let fallback =
-            usage_stats::request_log_detail_from_summary(&db, &served_item.trace_id)
-                .unwrap()
-                .unwrap();
+        let fallback = usage_stats::request_log_detail_from_summary(&db, &served_item.trace_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(fallback.summary.service_tier.as_deref(), Some("ultrafast"));
         assert_eq!(
             fallback.summary.service_tier_multiplier.as_deref(),

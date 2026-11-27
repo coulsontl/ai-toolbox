@@ -16,7 +16,9 @@ use crate::db::helpers::{
     db_count, db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put,
     db_update_applied_status,
 };
-use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec,
+};
 use crate::db::SqliteDbState;
 
 // ============================================================================
@@ -373,8 +375,15 @@ async fn write_opencode_config_file(
     config: &OpenCodeConfig,
 ) -> Result<(), String> {
     let config_path_str = get_opencode_config_path(state).await?;
-    let config_path = Path::new(&config_path_str);
+    write_opencode_config_at(Path::new(&config_path_str), config)
+}
 
+/// Write a typed OpenCode config to an explicit path, honoring the V2 on-disk
+/// shape. Shared with the gateway plugin integration.
+pub(crate) fn write_opencode_config_at(
+    config_path: &Path,
+    config: &OpenCodeConfig,
+) -> Result<(), String> {
     if let Some(parent) = config_path.parent() {
         if !parent.exists() {
             fs::create_dir_all(parent)
@@ -394,6 +403,65 @@ async fn write_opencode_config_file(
         .map_err(|e| format!("Failed to write config file: {}", e))?;
 
     Ok(())
+}
+
+/// Read a typed OpenCode config from an explicit path, converting the V2 disk
+/// shape back to the editor shape first.
+pub(crate) fn read_opencode_config_at(config_path: &Path) -> Result<OpenCodeConfig, String> {
+    if !config_path.exists() {
+        return Ok(
+            serde_json::from_value(serde_json::json!({})).expect("empty OpenCode config is valid")
+        );
+    }
+    let content = fs::read_to_string(config_path)
+        .map_err(|e| format!("Failed to read config file: {}", e))?;
+    let mut value: serde_json::Value =
+        json5::from_str(&content).map_err(|error| error.to_string())?;
+    if v2_migration::is_active(config_path) {
+        value = v2_migration::v2_to_v1_value(value)?;
+    }
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+/// Upsert one `provider.<key>` entry, preserving every other provider, unknown
+/// top-level field and key order before writing through the V2-aware writer.
+pub(crate) fn upsert_opencode_provider_at(
+    config_path: &Path,
+    provider_key: &str,
+    provider: serde_json::Value,
+) -> Result<(), String> {
+    let mut config = read_opencode_config_at(config_path)?;
+    let provider = serde_json::from_value(provider)
+        .map_err(|error| format!("Invalid OpenCode provider config: {error}"))?;
+    config
+        .provider
+        .get_or_insert_with(IndexMap::new)
+        .insert(provider_key.to_string(), provider);
+    write_opencode_config_at(config_path, &config)
+}
+
+/// Upsert a provider and refresh the favorite-provider mirror, mirroring
+/// `apply_config_internal`'s side effects for non-command callers.
+pub(crate) async fn upsert_opencode_plugin_provider(
+    db: &SqliteDbState,
+    config_path: &Path,
+    provider_key: &str,
+    provider: serde_json::Value,
+) -> Result<(), String> {
+    upsert_opencode_provider_at(config_path, provider_key, provider)?;
+    let config = read_opencode_config_at(config_path)?;
+    sync_providers_from_config(db, &config).await
+}
+
+/// Read one `provider.<key>` entry as JSON for in-place model refreshes.
+pub(crate) fn read_opencode_provider_at(
+    config_path: &Path,
+    provider_key: &str,
+) -> Result<Option<serde_json::Value>, String> {
+    Ok(read_opencode_config_at(config_path)?
+        .provider
+        .and_then(|providers| providers.get(provider_key).cloned())
+        .and_then(|provider| serde_json::to_value(provider).ok()))
 }
 
 #[cfg(test)]
@@ -778,10 +846,14 @@ fn list_opencode_prompts_from_sqlite(
 ) -> Result<Vec<OpenCodePromptConfig>, String> {
     let order = opencode_prompt_order()?;
     sqlite_state.with_conn(|conn| {
-        Ok(db_list(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), Some(&order))?
-            .into_iter()
-            .map(adapter::from_db_value_prompt_config)
-            .collect())
+        Ok(db_list(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
+            Some(&order),
+        )?
+        .into_iter()
+        .map(adapter::from_db_value_prompt_config)
+        .collect())
     })
 }
 
@@ -790,8 +862,12 @@ fn get_opencode_prompt_from_sqlite(
     config_id: &str,
 ) -> Result<Option<OpenCodePromptConfig>, String> {
     sqlite_state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), config_id)?
-            .map(adapter::from_db_value_prompt_config))
+        Ok(db_get(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
+            config_id,
+        )?
+        .map(adapter::from_db_value_prompt_config))
     })
 }
 
@@ -819,12 +895,26 @@ fn put_opencode_prompt_to_sqlite(
 pub async fn get_opencode_config_path(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<String, String> {
+    get_opencode_config_path_from_db(&state)
+}
+
+/// Path resolution shared with non-command callers (gateway plugin
+/// integration): common config > `OPENCODE_CONFIG` > shell profile > default.
+pub(crate) fn get_opencode_config_path_from_db(db: &SqliteDbState) -> Result<String, String> {
     // 1. Check common config (highest priority)
-    if let Some(common_config) = get_opencode_common_config(state.clone()).await? {
-        if let Some(custom_path) = common_config.config_path {
-            if !custom_path.is_empty() {
-                return Ok(custom_path);
-            }
+    let common_config = db.with_conn(|conn| {
+        Ok(db_get(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common),
+            "common",
+        )?
+        .map(adapter::from_db_value))
+    })?;
+    if let Some(custom_path) =
+        common_config.and_then(|config: OpenCodeCommonConfig| config.config_path)
+    {
+        if !custom_path.is_empty() {
+            return Ok(custom_path);
         }
     }
 
@@ -1178,20 +1268,19 @@ pub async fn save_opencode_auth_config(
             }
         }
         for (key, value) in submitted_object {
-            merged_object.entry(key.clone()).or_insert_with(|| value.clone());
+            merged_object
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
         }
         merged
     } else {
         config.clone()
     };
 
-    let text = serde_json::to_string_pretty(&merged)
-        .map_err(|e| format!("Failed to serialize: {e}"))?;
-    crate::coding::mcp::yaml_sync::atomic_write_bytes(
-        auth_path,
-        format!("{text}\n").as_bytes(),
-    )
-    .map_err(|e| format!("Failed to write auth.json: {e}"))?;
+    let text =
+        serde_json::to_string_pretty(&merged).map_err(|e| format!("Failed to serialize: {e}"))?;
+    crate::coding::mcp::yaml_sync::atomic_write_bytes(auth_path, format!("{text}\n").as_bytes())
+        .map_err(|e| format!("Failed to write auth.json: {e}"))?;
 
     let _ = app.emit("config-changed", "opencode");
     #[cfg(target_os = "windows")]
@@ -1381,7 +1470,14 @@ pub async fn delete_opencode_prompt_config(
     app: tauri::AppHandle,
     id: String,
 ) -> Result<(), String> {
-    state.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), &id).map(|_| ()))?;
+    state.with_conn(|conn| {
+        db_delete(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
+            &id,
+        )
+        .map(|_| ())
+    })?;
 
     let _ = app.emit("config-changed", "window");
 
@@ -1433,7 +1529,12 @@ async fn apply_prompt_config_internal_with_events<R: tauri::Runtime>(
     let now = chrono::Local::now().to_rfc3339();
 
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), Some(config_id), &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
+            Some(config_id),
+            &now,
+        )
     })?;
 
     write_prompt_content_to_file(state.clone(), Some(prompt_config.content.as_str())).await?;
@@ -1469,7 +1570,12 @@ pub async fn disable_opencode_prompt_config(
 
     let now = chrono::Local::now().to_rfc3339();
     state.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt), None, &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Prompt),
+            None,
+            &now,
+        )
     })?;
     write_prompt_content_to_file(state.clone(), Some("")).await?;
 
@@ -1544,7 +1650,12 @@ pub async fn get_opencode_common_config(
     state: tauri::State<'_, SqliteDbState>,
 ) -> Result<Option<OpenCodeCommonConfig>, String> {
     state.with_conn(|conn| {
-        Ok(db_get(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), "common")?.map(adapter::from_db_value))
+        Ok(db_get(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common),
+            "common",
+        )?
+        .map(adapter::from_db_value))
     })
 }
 
@@ -1577,7 +1688,14 @@ pub async fn save_opencode_common_config(
 
     let json_data = adapter::to_db_value(&config);
 
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common), "common", &json_data))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::OpenCode, CliConfigKind::Common),
+            "common",
+            &json_data,
+        )
+    })?;
     runtime_location::refresh_runtime_location_cache_for_module_async(&db, "opencode").await?;
 
     resync_all_skills_if_tool_path_changed(app, state.inner(), "opencode", previous_skills_path)

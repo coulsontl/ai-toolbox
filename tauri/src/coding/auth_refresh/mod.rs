@@ -27,6 +27,9 @@ pub enum OfficialAuthTool {
     GeminiCli,
     Antigravity,
     Kimi,
+    /// Plugin accounts: background OAuth renewal plus the optional daily
+    /// check-in each account opted into.
+    Plugins,
 }
 
 #[derive(Debug, Clone)]
@@ -39,12 +42,13 @@ pub struct AuthRefreshConfig {
 }
 
 impl OfficialAuthTool {
-    pub const ALL: [OfficialAuthTool; 5] = [
+    pub const ALL: [OfficialAuthTool; 6] = [
         OfficialAuthTool::Grok,
         OfficialAuthTool::Codex,
         OfficialAuthTool::GeminiCli,
         OfficialAuthTool::Antigravity,
         OfficialAuthTool::Kimi,
+        OfficialAuthTool::Plugins,
     ];
 
     pub fn config(self) -> AuthRefreshConfig {
@@ -81,6 +85,14 @@ impl OfficialAuthTool {
                 run_on_startup: true,
                 interval: Some(Duration::from_secs(10 * 60)),
             },
+            // Plugin OAuth tokens and optional daily check-ins: the pass is
+            // cheap when nothing is due (it only reads plugin-auth.json and
+            // SQLite) and never starts Bun without a candidate.
+            OfficialAuthTool::Plugins => AuthRefreshConfig {
+                tool_id: "plugins",
+                run_on_startup: true,
+                interval: Some(Duration::from_secs(15 * 60)),
+            },
         }
     }
 
@@ -95,6 +107,7 @@ impl OfficialAuthTool {
                 providers::antigravity_refresh_applied_pass(db, app).await
             }
             OfficialAuthTool::Kimi => providers::kimi_refresh_applied_pass(db, app).await,
+            OfficialAuthTool::Plugins => providers::plugins_background_pass(db, app).await,
         }
     }
 }
@@ -187,8 +200,22 @@ mod tests {
             .collect();
         assert_eq!(
             ids,
-            vec!["grok", "codex", "gemini_cli", "antigravity", "kimi"]
+            vec![
+                "grok",
+                "codex",
+                "gemini_cli",
+                "antigravity",
+                "kimi",
+                "plugins"
+            ]
         );
+    }
+
+    #[test]
+    fn plugins_run_on_startup_with_a_fifteen_minute_interval() {
+        let config = OfficialAuthTool::Plugins.config();
+        assert!(config.run_on_startup);
+        assert_eq!(config.interval, Some(Duration::from_secs(15 * 60)));
     }
 
     #[test]

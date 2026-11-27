@@ -2,76 +2,132 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  codexWireApiFormatFromConfig,
+  extractPluginProviderIdFromUrl,
+  getPluginProviderRef,
   grokProviderNeedsGatewayProxy,
-  hasClaudeDesktopRoutingModels,
-  isGatewayConfigFlagEnabled,
+  isPluginBackedProvider,
   providerNeedsGatewayProxy,
 } from '../../../../../features/coding/shared/gateway/providerProtocol.ts';
 
-test('codex wire api follows the selected model provider table', () => {
-  assert.equal(codexWireApiFormatFromConfig(`
-model_provider = "chat"
-wire_api = "responses"
+test('getPluginProviderRef reads the camelCase reference the backend writes', () => {
+  const meta = {
+    pluginProvider: {
+      pluginSpec: '@magpie/plugin-antigravity',
+      providerId: 'antigravity',
+      accountKey: 'antigravity#work',
+      accountStrategy: 'single',
+    },
+  };
 
-[model_providers.responses]
-wire_api = "responses"
-
-[model_providers.chat]
-wire_api = "chat"
-`), 'chat');
+  assert.deepEqual(getPluginProviderRef(meta), {
+    pluginSpec: '@magpie/plugin-antigravity',
+    providerId: 'antigravity',
+    accountKey: 'antigravity#work',
+    accountStrategy: 'single',
+  });
 });
 
-test('codex wire api keeps root-level legacy compatibility', () => {
-  assert.equal(codexWireApiFormatFromConfig('wire_api = "chat"'), 'chat');
+test('getPluginProviderRef accepts snake_case and defaults the strategy', () => {
+  const meta = {
+    plugin_provider: {
+      plugin_spec: 'plugin-zai',
+      provider_id: 'zai',
+    },
+  };
+
+  assert.deepEqual(getPluginProviderRef(meta), {
+    pluginSpec: 'plugin-zai',
+    providerId: 'zai',
+    accountKey: null,
+    accountStrategy: 'auto_rotate',
+  });
 });
 
-test('gateway config flag parser matches backend truthy compatibility values', () => {
-  for (const value of [true, 1, 'true', '1', 'yes', 'on', ' YES ']) {
-    assert.equal(isGatewayConfigFlagEnabled(value), true);
-  }
-
-  for (const value of [false, 0, 'false', '0', 'no', 'off', '', null, undefined]) {
-    assert.equal(isGatewayConfigFlagEnabled(value), false);
-  }
+test('getPluginProviderRef rejects a reference without both identities', () => {
+  assert.equal(getPluginProviderRef(null), null);
+  assert.equal(getPluginProviderRef({}), null);
+  assert.equal(getPluginProviderRef({ pluginProvider: 'plugin-zai' }), null);
+  assert.equal(
+    getPluginProviderRef({ pluginProvider: { providerId: 'zai' } }),
+    null,
+  );
+  assert.equal(
+    getPluginProviderRef({ pluginProvider: { pluginSpec: 'plugin-zai' } }),
+    null,
+  );
 });
 
-test('grok only needs gateway for gemini native, not chat/responses/anthropic', () => {
-  for (const format of ['openai_chat', 'openai_responses', 'anthropic_messages', 'chat', 'responses', 'messages']) {
-    assert.equal(grokProviderNeedsGatewayProxy(format), false);
-  }
+test('isPluginBackedProvider is true only for a complete plugin reference', () => {
+  assert.equal(isPluginBackedProvider({}), false);
+  assert.equal(isPluginBackedProvider({ apiFormat: 'openai_chat' }), false);
+  assert.equal(
+    isPluginBackedProvider({
+      pluginProvider: { pluginSpec: 'plugin-zai', providerId: 'zai' },
+    }),
+    true,
+  );
+});
+
+test('extractPluginProviderIdFromUrl recognizes direct plugin endpoints', () => {
+  assert.equal(
+    extractPluginProviderIdFromUrl('http://127.0.0.1:38271/plugin/zai/v1'),
+    'zai',
+  );
+  assert.equal(
+    extractPluginProviderIdFromUrl('http://localhost:38271/plugin/zai'),
+    'zai',
+  );
+  assert.equal(
+    extractPluginProviderIdFromUrl('http://127.0.0.1:38271/plugin/zai%2Dplus/v1/chat/completions'),
+    'zai-plus',
+  );
+  assert.equal(
+    extractPluginProviderIdFromUrl('https://api.example.com/v1/plugin/zai'),
+    null,
+  );
+  assert.equal(extractPluginProviderIdFromUrl('https://api.example.com/v1'), null);
+  assert.equal(extractPluginProviderIdFromUrl('not a url'), null);
+  assert.equal(extractPluginProviderIdFromUrl(''), null);
+  assert.equal(extractPluginProviderIdFromUrl(null), null);
+});
+
+test('a plugin-backed provider always requires the gateway', () => {
+  const pluginMeta = {
+    pluginProvider: { pluginSpec: 'plugin-zai', providerId: 'zai' },
+  };
+
+  // The protocol matches natively, but the transport still lives in the plugin
+  // bridge, so a direct config would point at an unreachable endpoint.
+  assert.equal(
+    providerNeedsGatewayProxy('openai_chat', 'openai_chat', { meta: pluginMeta }),
+    true,
+  );
+  assert.equal(
+    providerNeedsGatewayProxy('openai_chat', 'openai_chat', {
+      baseUrl: 'http://127.0.0.1:38271/plugin/zai/v1',
+    }),
+    true,
+  );
+  assert.equal(
+    providerNeedsGatewayProxy('openai_chat', 'openai_chat', {
+      meta: { apiFormat: 'openai_chat' },
+      baseUrl: 'https://api.example.com/v1',
+    }),
+    false,
+  );
+  assert.equal(
+    providerNeedsGatewayProxy('openai_chat', 'anthropic_messages', null),
+    true,
+  );
+});
+
+test('grok still gates Gemini Native and now gates plugin routes', () => {
   assert.equal(grokProviderNeedsGatewayProxy('gemini_native'), true);
-  assert.equal(grokProviderNeedsGatewayProxy(null), false);
-  // Contrast: single-native compare would wrongly force proxy for chat.
-  assert.equal(providerNeedsGatewayProxy('openai_chat', 'openai_responses'), true);
-});
-
-test('claude desktop routing models mirror the backend has_routing_models', () => {
-  // Identity routes: Direct mode can write them, no gateway needed.
-  assert.equal(hasClaudeDesktopRoutingModels({
-    'claude-sonnet-5': { model: 'claude-sonnet-5' },
-    'claude-opus-5': { model: 'claude-opus-5' },
-  }), false);
-
-  // A claude-safe upstream that differs from its route id is still a mapping:
-  // Direct mode rejects it and the backend writes a gateway profile, so the
-  // card must offer 「应用并代理」, not a plain 应用 (AnyRouter, 2026-10-21).
-  assert.equal(hasClaudeDesktopRoutingModels({
-    'claude-sonnet-5': { model: 'claude-opus-5' },
-  }), true);
-
-  // Non-claude upstreams are a mapping too (the old hasNonClaudeModelIds case).
-  assert.equal(hasClaudeDesktopRoutingModels({
-    'claude-sonnet-5': { model: 'deepseek-v4-pro' },
-  }), true);
-
-  // Empty / missing routes say nothing about needing the gateway.
-  assert.equal(hasClaudeDesktopRoutingModels({}), false);
-  assert.equal(hasClaudeDesktopRoutingModels(undefined), false);
-  assert.equal(hasClaudeDesktopRoutingModels(null), false);
-
-  // A blank model is skipped rather than treated as a mapping of "".
-  assert.equal(hasClaudeDesktopRoutingModels({ 'claude-sonnet-5': { model: '  ' } }), false);
-  // Surrounding whitespace does not make an identity route look like a mapping.
-  assert.equal(hasClaudeDesktopRoutingModels({ 'claude-sonnet-5': { model: ' claude-sonnet-5 ' } }), false);
+  assert.equal(grokProviderNeedsGatewayProxy('openai_chat'), false);
+  assert.equal(
+    grokProviderNeedsGatewayProxy('openai_chat', {
+      baseUrl: 'http://127.0.0.1:38271/plugin/grok/v1',
+    }),
+    true,
+  );
 });

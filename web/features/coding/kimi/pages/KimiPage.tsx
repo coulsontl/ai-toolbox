@@ -215,7 +215,10 @@ const KimiPage: React.FC = () => {
       typeof primaryProvider.meta?.apiFormat === 'string' ? primaryProvider.meta.apiFormat : undefined,
       openAiApiFormatFromBaseUrl(baseUrl),
     );
-    return providerNeedsGatewayProxy(providerApiFormat, 'openai_chat');
+    return providerNeedsGatewayProxy(providerApiFormat, 'openai_chat', {
+      meta: primaryProvider.meta,
+      baseUrl,
+    });
   }, [gatewayCliStatus?.primary_provider_id, gatewayProviderProfilesVersion, providers]);
   const primaryGatewayProviderNeedsProxyReason = primaryGatewayProviderNeedsProxy ? 'protocol' : null;
 
@@ -1136,6 +1139,8 @@ const KimiPage: React.FC = () => {
         batchTesting={batchTestingProviders}
         onOpenCommonConfig={() => setCommonConfigModalOpen(true)}
         onAddProvider={handleAddProvider}
+        pluginCliKey="kimi"
+        onPluginProviderChanged={() => loadConfig(true)}
         headerExtra={
           <GatewayFailoverButton
             cliKey="kimi"

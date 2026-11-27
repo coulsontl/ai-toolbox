@@ -83,6 +83,16 @@ export interface ProviderCardActions {
   onCopy?: () => void;
   onShare?: () => void;
   onDelete?: () => void;
+  /**
+   * Pull the plugin's current model catalog into this CLI provider.
+   *
+   * Offered only for providers that were added from a plugin channel; the
+   * action lives in the "more" menu after a divider, next to
+   * `onManagePluginAccounts`.
+   */
+  onSyncPluginModels?: () => void;
+  /** Open the plugin account manager for this provider's channel. */
+  onManagePluginAccounts?: () => void;
   /** Disables the delete button and explains why on hover. */
   deleteDisabledReason?: string;
   /** Wraps delete in a Popconfirm; the OpenCode style relies on the caller's own confirm. */
@@ -152,6 +162,19 @@ export interface ProviderCardState {
    */
   onToggleDisabled?: (enabled: boolean) => void;
   connectivityStatus?: ProviderConnectivityStatusItem;
+  /**
+   * A compact "插件" chip beside the provider name.
+   *
+   * The label is provided by the caller (so it can be translated), the provider
+   * id is what the card tooltip names, and the tooltip is optional context from
+   * the plugin bridge. Rendered at a fixed 16px height so adding it cannot
+   * reflow a title row.
+   */
+  pluginBadge?: {
+    label: string;
+    providerId: string;
+    tooltip?: string;
+  };
   /** Batch-selection mode: the drag handle is replaced by a checkbox. */
   selectable?: boolean;
   selected?: boolean;

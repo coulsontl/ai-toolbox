@@ -92,6 +92,13 @@ sequenceDiagram
 - 批量打标（BatchTagDialog）入口在两种视图 selection mode 的批量操作栏（flat 与 grouped 均可）；flat 视图无组级全选，批量工具栏起始处的全局 checkbox 负责"全选当前筛选结果"。单卡增删标签仍走详情面板。批量打标是追加语义（新 tags 并集，不删除已有 tags），跳过 `management_enabled=false` 的项并展示 skippedCount，成功后清空选择集并刷新列表（tags 是纯元数据，不经 sync 链路）。
 - tag filter 是工具栏"添加 Skill"主按钮后的 axonhub 渠道页风格筛选按钮（`TagFilterDropdown` + `.tagFilterTrigger` 系列样式）：虚线 outline 触发器（`PlusCircle` + 标题 + 选中 badge，≤2 个显示各 tag 名、>2 个显示"已选 N 个"），点击弹 antd Popover（搜索框 + checkbox 选项列表 + 每项 skill 计数 + 有选中时的"清除筛选"项）。不要改回工具栏下方的独立筛选药丸行（已移除）。筛选语义不变：与 enabled 筛选叠加（顺序：enabled → tag → 搜索），多个 tag 必须全部命中（AND）；搜索框的命中范围也包含 tags（`filterSkillsBySearch` 的 searchableValues 含 `skill.tags` 展开，与名称/描述/分组/备注一起大小写不敏感匹配）；`UNTAGGED_FILTER`（`__untagged__`）哨兵选项排在列表首位、筛出"无任何 tag"的 skill，且与具体 tag 互斥（选中一边自动清掉另一边）。全部 tag 候选集与"是否存在未打标技能"都以完整 skills 列表为基准；选中项随 skills 变化自动裁剪失效项（`pruneStaleTagFilters`）。选项列表有 `max-height + overflow` 上限，防大标签集撑爆弹层。
 
+## 内置技能（builtin）
+
+- `source_type === 'builtin'` 由 `utils/builtinSkill.ts` 的 `isBuiltinSkill` 统一判断；不要在各组件里重复比较字符串。
+- 卡片与详情面板对内置技能隐藏编辑元信息、更新、禁用、删除入口，并显示 `skills.builtin.*` 文案；工具同步网格（含 Universal）必须保持可点击，用户通过取消勾选工具来停止安装。
+- 选择模式下内置卡片必须不可勾选：卡片渲染 disabled checkbox，`SkillsPage` 的全选/组选只遍历非内置 skill，避免批量删除/批量编辑把内置项带进去。
+- 来源分组用 `skills.builtin.sourceLabel` 单独成组；详情抽屉的文档 Tab 从 `references/plugins.md` 的 basename 显示，不要另建一套文档读取逻辑。
+
 ## 跨模块依赖
 
 - 依赖后端 `skills::commands` 和 `skills` 模块已有的中央仓库、同步引擎语义。

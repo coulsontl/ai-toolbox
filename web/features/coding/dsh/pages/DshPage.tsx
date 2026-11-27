@@ -2013,6 +2013,8 @@ const DshPage: React.FC = () => {
             onBatchTest={handleBatchTestProviders}
             batchTesting={batchTestingProviders}
             onAddProvider={() => openProviderModal()}
+            pluginCliKey="dsh"
+            onPluginProviderChanged={() => loadConfig(true)}
             hint={(
               <div>
                 {t('dsh.pageHint', {

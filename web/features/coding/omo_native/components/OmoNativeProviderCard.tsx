@@ -8,6 +8,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type { ProviderCardVariantProps } from '@/features/coding/shared/providerCardVariants/types';
 import {
@@ -130,6 +131,10 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
   const { t } = useTranslation();
   const config = provider.config;
   const baseUrl = getStringField(config, 'baseUrl');
+  const pluginCardMeta = usePluginProviderCardMeta({
+    baseUrl,
+    providerId: provider.key,
+  });
   const api = getStringField(config, 'api');
   const apiType = getStringField(config, 'api');
   const entries = getOmoNativeModelEntries(config);
@@ -159,6 +164,7 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.key,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -167,6 +173,7 @@ const OmoNativeProviderCard: React.FC<OmoNativeProviderCardProps> = ({
     actions: {
       onEdit,
       onCopy,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       deleteDisabledReason,
       deleteConfirm: false,

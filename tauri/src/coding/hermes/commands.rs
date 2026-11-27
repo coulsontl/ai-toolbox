@@ -18,7 +18,9 @@ use crate::coding::runtime_location;
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_patch_fields, db_put, db_update_applied_status,
 };
-use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec,
+};
 use crate::db::SqliteDbState;
 use tauri::{Emitter, Runtime};
 
@@ -102,12 +104,18 @@ pub(crate) fn resolve_hermes_path_without_db() -> (PathBuf, String) {
 /// The shared runtime-location cache calls this resolver so WSL Direct status
 /// follows the same directory precedence as Hermes's file operations.
 pub async fn get_hermes_custom_config_dir_async(db: &SqliteDbState) -> Option<PathBuf> {
-    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings), "common"))
-        .ok()
-        .flatten()
-        .and_then(|value| adapter::settings_from_db_value(value).config_dir)
-        .filter(|path| !path.trim().is_empty())
-        .map(PathBuf::from)
+    db.with_conn(|conn| {
+        db_get(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings),
+            "common",
+        )
+    })
+    .ok()
+    .flatten()
+    .and_then(|value| adapter::settings_from_db_value(value).config_dir)
+    .filter(|path| !path.trim().is_empty())
+    .map(PathBuf::from)
 }
 
 pub async fn get_hermes_config_dir_from_db_async(
@@ -121,7 +129,13 @@ pub async fn get_hermes_config_dir_from_db_async(
 
 fn get_hermes_config_dir_from_db_sync(db: &SqliteDbState) -> Result<(PathBuf, String), String> {
     let custom = db
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings), "common"))
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings),
+                "common",
+            )
+        })
         .ok()
         .flatten()
         .and_then(|value| adapter::settings_from_db_value(value).config_dir)
@@ -969,7 +983,13 @@ pub async fn get_hermes_settings_config(
 ) -> Result<Option<HermesSettingsConfig>, String> {
     Ok(state
         .db()
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings), "common"))?
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings),
+                "common",
+            )
+        })?
         .map(adapter::settings_from_db_value))
 }
 
@@ -993,7 +1013,14 @@ pub async fn save_hermes_settings_config<R: Runtime>(
             .or_else(|| existing.and_then(|value| value.config_dir))
     };
     let data = adapter::settings_to_db_value(config_dir.as_deref());
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings), "common", &data))?;
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Settings),
+            "common",
+            &data,
+        )
+    })?;
     runtime_location::refresh_runtime_location_cache_for_module_async(db, "hermes").await?;
     let _ = app.emit("wsl-config-changed", ());
     emit_config_changed(&app, "window");
@@ -1054,10 +1081,28 @@ pub async fn save_hermes_models_provider<R: tauri::Runtime>(
 
     let db = state.db();
     let config_path = get_hermes_config_path_async(&db).await?;
+    upsert_hermes_models_provider_at(&app, &config_path, provider_key, input.provider)?;
+    emit_config_changed(&app, "window");
+    read_hermes_runtime_config(state).await
+}
+
+/// Path-based `custom_providers` upsert shared by the Tauri command and the
+/// gateway plugin integration.
+///
+/// Holds the process write lock, rejects providers that live in the read-only
+/// `providers:` dict, normalizes the model map exactly like the UI save, merges
+/// on-disk fields the caller did not send, and replaces only the
+/// `custom_providers` section so comments and other sections survive.
+pub(crate) fn upsert_hermes_models_provider_at<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    config_path: &Path,
+    provider_key: &str,
+    provider: Value,
+) -> Result<(), String> {
     let _guard = hermes_write_lock()
         .lock()
         .map_err(|_| "Hermes config write lock poisoned".to_string())?;
-    let mut config = read_yaml_object_or_empty(&config_path)?;
+    let mut config = read_yaml_object_or_empty(config_path)?;
     let object = object_mut(&mut config)?;
 
     if is_dict_only_provider(object, provider_key) {
@@ -1072,7 +1117,7 @@ pub async fn save_hermes_models_provider<R: tauri::Runtime>(
         .cloned()
         .unwrap_or_default();
 
-    let mut payload = input.provider;
+    let mut payload = provider;
     sanitize_hermes_provider_keys(&mut payload);
     normalize_provider_models_for_write(&mut payload);
     let first_model_id = payload
@@ -1110,13 +1155,27 @@ pub async fn save_hermes_models_provider<R: tauri::Runtime>(
     }
 
     write_yaml_sections_with_backup(
-        &app,
-        &config_path,
+        app,
+        config_path,
         &[("custom_providers", Value::Array(providers))],
-    )?;
-    drop(_guard);
-    emit_config_changed(&app, "window");
-    read_hermes_runtime_config(state).await
+    )
+}
+
+/// Read one `custom_providers` entry by its `name`, for model-list refreshes
+/// that keep the rest of the entry untouched.
+pub(crate) fn read_hermes_models_provider_at(
+    config_path: &Path,
+    provider_key: &str,
+) -> Result<Option<Value>, String> {
+    Ok(read_yaml_object_or_empty(config_path)?
+        .get("custom_providers")
+        .and_then(Value::as_array)
+        .and_then(|providers| {
+            providers
+                .iter()
+                .find(|provider| provider.get("name").and_then(Value::as_str) == Some(provider_key))
+                .cloned()
+        }))
 }
 
 #[tauri::command]
@@ -1534,7 +1593,14 @@ fn put_hermes_prompt_to_sqlite(
     content: &HermesPromptConfigContent,
 ) -> Result<(), String> {
     let value = adapter::prompt_to_db_value(content);
-    db.with_conn(|conn| db_put(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt), id, &value))
+    db.with_conn(|conn| {
+        db_put(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt),
+            id,
+            &value,
+        )
+    })
 }
 
 fn get_hermes_prompt_from_sqlite(
@@ -1542,7 +1608,13 @@ fn get_hermes_prompt_from_sqlite(
     id: &str,
 ) -> Result<Option<HermesPromptConfig>, String> {
     Ok(db
-        .with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt), id))?
+        .with_conn(|conn| {
+            db_get(
+                conn,
+                DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt),
+                id,
+            )
+        })?
         .map(adapter::prompt_from_db_value))
 }
 
@@ -1579,12 +1651,14 @@ pub async fn list_hermes_prompt_configs(
 ) -> Result<Vec<HermesPromptConfig>, String> {
     let db = state.db();
     let mut prompts = db.with_conn(|conn| {
-        Ok(
-            db_list(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt), Some(&prompt_order()?))?
-                .into_iter()
-                .map(adapter::prompt_from_db_value)
-                .collect::<Vec<_>>(),
-        )
+        Ok(db_list(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt),
+            Some(&prompt_order()?),
+        )?
+        .into_iter()
+        .map(adapter::prompt_from_db_value)
+        .collect::<Vec<_>>())
     })?;
     if !prompts.iter().any(|prompt| prompt.is_applied) {
         if let Some(local_prompt) = get_local_prompt_config(&db).await? {
@@ -1674,7 +1748,14 @@ pub async fn delete_hermes_prompt_config(
     // Only delete the DB prompt record. The live SOUL.md on disk is kept so
     // deleting a saved prompt never wipes the local runtime prompt.
     let db = state.db();
-    db.with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt), &id).map(|_| ()))?;
+    db.with_conn(|conn| {
+        db_delete(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt),
+            &id,
+        )
+        .map(|_| ())
+    })?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -1719,7 +1800,12 @@ async fn apply_hermes_prompt_config_internal_with_events<R: Runtime>(
         .ok_or_else(|| format!("Prompt config '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt), Some(config_id), &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt),
+            Some(config_id),
+            &now,
+        )
     })?;
     write_prompt_content_to_file(&db, Some(prompt.content.as_str())).await?;
     if emit_events {
@@ -1750,7 +1836,12 @@ pub async fn disable_hermes_prompt_config(
         .ok_or_else(|| format!("Prompt config '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt), None, &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Hermes, CliConfigKind::Prompt),
+            None,
+            &now,
+        )
     })?;
     write_prompt_content_to_file(&db, Some("")).await?;
     emit_config_changed(&app, "window");

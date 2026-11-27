@@ -9,6 +9,7 @@ import type {
   ProviderConnectivityStatusItem,
 } from '@/components/common/ProviderCard/types';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import { ProviderEnabledSwitch } from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import type {
@@ -128,6 +129,10 @@ const OpenCodeProviderCard: React.FC<OpenCodeProviderCardProps> = ({
   const { t } = useTranslation();
 
   const header = buildOpenCodeProviderCardModel(providerId, provider);
+  const pluginCardMeta = usePluginProviderCardMeta({
+    baseUrl: header.baseUrl,
+    providerId,
+  });
   const modelRows = React.useMemo<ModelDisplayData[]>(
     () => buildOpenCodeModelRows(providerId, provider, defaultModelReference),
     [providerId, provider, defaultModelReference],
@@ -167,6 +172,7 @@ const OpenCodeProviderCard: React.FC<OpenCodeProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: providerId,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -176,6 +182,7 @@ const OpenCodeProviderCard: React.FC<OpenCodeProviderCardProps> = ({
       onEdit,
       onCopy,
       onShare,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       // Same confirmation the old card had: delete removes the channel and every
       // model reference pointing into it.

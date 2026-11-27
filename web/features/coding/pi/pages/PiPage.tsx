@@ -1957,6 +1957,8 @@ const PiPage: React.FC = () => {
             onBatchTest={handleBatchTestProviders}
             batchTesting={batchTestingProviders}
             onAddProvider={() => openProviderModal()}
+            pluginCliKey="pi"
+            onPluginProviderChanged={() => loadConfig(true)}
             hint={<div>{t('pi.pageHint')}</div>}
             footer={(
               <Space wrap>

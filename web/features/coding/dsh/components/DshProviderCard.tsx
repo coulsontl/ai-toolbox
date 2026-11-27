@@ -4,6 +4,7 @@ import { CopyOutlined, DeleteOutlined, EditOutlined, ShareAltOutlined } from '@a
 import { useTranslation } from 'react-i18next';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import type {
   ProviderCardModels,
@@ -121,6 +122,10 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
   const { t } = useTranslation();
   const providerConfig = provider.provider ?? {};
   const baseUrl = getStringField(providerConfig, 'baseURL');
+  const pluginCardMeta = usePluginProviderCardMeta({
+    baseUrl,
+    providerId: provider.providerKey,
+  });
   const api = getStringField(providerConfig, 'api') || provider.api || '';
   // A catalog-backed route gets its name and protocol from the adapter, so the
   // second line says which env var holds the credential instead of pretending
@@ -205,6 +210,7 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
       draggable: hasProviderEntry && !selectable && !dragDisabled,
       sortableId: provider.providerKey,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -218,6 +224,7 @@ const DshProviderCard: React.FC<DshProviderCardProps> = ({
       onEdit,
       onCopy,
       onShare,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       deleteConfirm: false,
       deleteDisabledReason,

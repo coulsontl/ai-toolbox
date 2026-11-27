@@ -25,7 +25,7 @@ tauri-plugin-window-state = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-deep-link = "2"
 
-tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "process"] }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "process", "fs", "io-util", "sync", "time"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
@@ -87,6 +87,9 @@ encoding_rs = "0.8"
 russh = { version = "0.57", default-features = false, features = ["ring", "flate2", "rsa"] }
 russh-sftp = "2.1"
 rusqlite = { version = "0.39.0", features = ["bundled", "backup", "hooks"] }
+# Gateway middleware runs in-process; the `futures` feature lets async hooks
+# settle through rquickjs's promise integration.
+rquickjs = { version = "0.14", features = ["futures", "loader"] }
 tempfile = "3.23.0"
 base64 = "0.22"
 # `wayland-data-control` lets arboard read/write through the compositor's

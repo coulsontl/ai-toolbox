@@ -7,6 +7,7 @@ import { SkillsPage } from '@/features/coding/skills';
 import { McpPage } from '@/features/coding/mcp';
 import { ImagePage } from '@/features/coding/image';
 import { GatewayPage } from '@/features/coding/gateway';
+import { PluginsPage } from '@/features/coding/plugins';
 import { MiniBrowserPage } from '@/features/mini-browser';
 import {
   ClaudeCodeSessionDetailPage,
@@ -248,6 +249,10 @@ export const PAGE_ROUTES: RouteEntry[] = [
   { path: '/skills', component: SkillsPage },
   { path: '/mcp', component: McpPage },
   { path: '/gateway', routePath: '/gateway/*', component: GatewayPage },
+  // One KeepAlive instance covers the management tabs and
+  // `/plugins/page/:pluginId/:pageId`, so custom page frames survive
+  // sidebar navigation inside the workspace.
+  { path: '/plugins', routePath: '/plugins/*', component: PluginsPage },
   { path: '/mini-browser', component: MiniBrowserPage },
   { path: '/images', component: ImagePage },
 ];

@@ -1,0 +1,99 @@
+.pluginsPage {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: calc(100vh - var(--content-top-offset) - 48px);
+  min-height: 420px;
+  flex-direction: column;
+}
+
+.workspace {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  gap: 12px;
+}
+
+.stage {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.stageManage {
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 2px 24px 0;
+}
+
+.stagePage {
+  overflow: hidden;
+}
+
+.pageStage {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pageFrames {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.stagePlaceholder {
+  display: flex;
+  width: 100%;
+  min-height: 160px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 19;
+  border: 0;
+  background: color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+  cursor: default;
+
+  &:focus-visible {
+    outline: 2px solid var(--color-border-secondary);
+    outline-offset: -2px;
+  }
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.noticeError {
+  margin-bottom: 8px;
+  border-color: var(--color-status-error-border);
+  background: var(--color-status-error-bg);
+  color: var(--color-status-error);
+}

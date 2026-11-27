@@ -308,7 +308,7 @@ fn extract_error_value(value: &Value, pointers: &[&str]) -> Option<Value> {
 pub(in crate::coding::proxy_gateway::runtime) fn is_codex_responses_compact_route(
     route: &GatewayRoute,
 ) -> bool {
-    route.cli_key == GatewayCliKey::Codex
+    matches!(route.cli_key, GatewayCliKey::Codex | GatewayCliKey::Grok)
         && matches!(
             route.forwarded_path.as_str(),
             "/v1/responses/compact" | "/responses/compact"
@@ -363,6 +363,8 @@ mod tests {
             sort_index: Some(0),
             meta: ProviderGatewayMeta::default(),
             model_mapping: UpstreamModelMapping::default(),
+
+            plugin_provider: None,
         }
     }
 

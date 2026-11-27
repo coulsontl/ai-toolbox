@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import AppliedTag from '@/components/common/AppliedTag';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import OpenCodeStyleCard from '@/features/coding/shared/providerCardVariants/OpenCodeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import ProviderModelSection from '@/features/coding/shared/providerCardVariants/ProviderModelSection';
 import { ProviderEnabledSwitch } from '@/features/coding/shared/providerCardVariants/providerCardActions';
 import type {
@@ -125,6 +126,11 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
   const settings = parseZcodeProviderSettings(provider.settingsConfig);
   const apiType = settings?.config?.api?.type;
   const baseUrl = settings?.config?.api?.baseUrl ?? '';
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl,
+    providerId: provider.id,
+  });
   const apiKey = settings?.config?.access?.apiKey ?? '';
   const models = settings?.models ?? [];
   const defaultModelId = models.find((model) => model.isDefault)?.modelId;
@@ -261,6 +267,7 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
       connectivityStatus,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -270,6 +277,7 @@ const ZcodeProviderCard: React.FC<ZcodeProviderCardProps> = ({
     actions: {
       onEdit,
       onCopy,
+      ...pluginCardMeta.pluginActions,
       onDelete,
       deleteConfirm: false,
       deleteDisabledReason,

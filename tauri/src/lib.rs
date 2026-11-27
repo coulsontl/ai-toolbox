@@ -31,6 +31,7 @@ pub mod keep_awake;
 pub mod lightweight;
 pub mod linux_webview;
 pub mod mini_browser;
+pub mod plugins;
 pub mod settings;
 pub mod single_instance;
 pub mod startup_recovery;
@@ -1260,8 +1261,20 @@ pub fn run() {
                     warn!("Antigravity 默认配置初始化失败: {}", e);
                 }
 
+                // Gateway plugin system: persistence, markets, the on-demand
+                // Bun host and the in-process middleware engine.
+                let plugin_manager =
+                    plugins::PluginManager::new(db_state.clone(), app_data_dir.clone());
+
                 app.manage(db_state);
                 info!("SQLite 主数据库状态已注册到应用");
+
+                let middleware_for_startup = plugin_manager.middleware().clone();
+                app.manage(plugin_manager);
+                info!("插件管理器已注册到应用");
+                tauri::async_runtime::spawn(async move {
+                    middleware_for_startup.reload().await;
+                });
 
                 app.manage(coding::proxy_gateway::ProxyGatewayState::default());
                 info!("网关状态已注册到应用");
@@ -2243,10 +2256,13 @@ pub fn run() {
                 // If minimize_to_tray is false, do nothing - window will close normally
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            // Common
-            open_folder,
-            open_existing_folder,
+        .invoke_handler(|invoke| {
+            #[inline(never)]
+            fn core_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
+                let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                    // Common
+                    open_folder,
+                    open_existing_folder,
             set_window_background_color,
             // System clipboard (Monaco context menu + editor clipboard service)
             clipboard::copy_text_to_clipboard,
@@ -3170,7 +3186,15 @@ pub fn run() {
             coding::image::image_list_jobs,
             coding::image::image_create_job,
             coding::image::image_reveal_assets_dir,
-        ])
+                ];
+                handler(invoke)
+            }
+
+            if invoke.message.command().starts_with("plugins_") {
+                return plugins::invoke_handler(invoke);
+            }
+            core_invoke_handler(invoke)
+        })
         .build(tauri::generate_context!())
         .map_err(|e| {
             error!("构建 Tauri 应用失败: {}", e);

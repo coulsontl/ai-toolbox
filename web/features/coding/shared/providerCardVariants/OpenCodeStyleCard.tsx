@@ -1,9 +1,10 @@
 import React from 'react';
-import { Button, Popconfirm, Space, Tooltip, Typography } from 'antd';
+import { Button, Dropdown, Popconfirm, Space, Tooltip, Typography } from 'antd';
 import {
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  MoreOutlined,
 } from '@ant-design/icons';
 import { Share2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -11,8 +12,13 @@ import SdkTag from '@/components/common/SdkTag';
 import ProviderNameLink from '@/components/common/ProviderNameLink';
 import ProviderConnectivityStatus from '@/features/coding/shared/providerConnectivity/ProviderConnectivityStatus';
 import CardShell from './CardShell';
+import ProviderPluginBadge from './ProviderPluginBadge';
 import ProviderModelSection from './ProviderModelSection';
 import { ProviderEnabledSwitch } from './providerCardActions';
+import {
+  buildPluginProviderMenuItems,
+  dispatchProviderCardMenuClick,
+} from './providerCardMenu';
 import type { ProviderCardVariantProps } from './types';
 
 const { Text } = Typography;
@@ -53,6 +59,7 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
     isDisabled,
     onToggleDisabled,
     connectivityStatus,
+    pluginBadge,
     selectable = false,
     selected = false,
     onSelectChange,
@@ -64,6 +71,10 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
   } = providerState ?? {};
 
   const showId = provider.name !== provider.id;
+  // This style has no general "more" menu; when the provider came from a
+  // plugin, the same two plugin actions still need an entry point, and a
+  // single dropdown keeps them from competing with the icon rail.
+  const pluginMenuItems = buildPluginProviderMenuItems({ t, actions });
 
   return (
     <CardShell
@@ -92,6 +103,7 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
               baseUrl={provider.baseUrl}
               style={{ fontSize: 14, fontWeight: 600 }}
             />
+            {pluginBadge && <ProviderPluginBadge badge={pluginBadge} />}
             {nameTags}
           </div>
           <Space size={8} wrap>
@@ -158,6 +170,21 @@ const OpenCodeStyleCard: React.FC<ProviderCardVariantProps> = ({
           ) : (
             <Button size="small" danger icon={<DeleteOutlined />} onClick={actions.onDelete} />
           ))}
+          {pluginMenuItems.length > 0 && (
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: pluginMenuItems,
+                onClick: ({ key }) => dispatchProviderCardMenuClick(key, actions),
+              }}
+            >
+              <Button
+                size="small"
+                icon={<MoreOutlined />}
+                aria-label={t('common.more')}
+              />
+            </Dropdown>
+          )}
         </Space>
       </div>
 

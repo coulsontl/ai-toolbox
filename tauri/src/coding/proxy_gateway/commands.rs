@@ -1645,6 +1645,7 @@ pub async fn proxy_gateway_model_health_entries(
 pub async fn proxy_gateway_test_provider_model_connectivity(
     gateway_state: tauri::State<'_, ProxyGatewayState>,
     db_state: tauri::State<'_, SqliteDbState>,
+    plugin_manager: tauri::State<'_, crate::plugins::PluginManagerState>,
     request: GatewayConnectivityTestRequest,
 ) -> Result<GatewayConnectivityTestResponse, String> {
     {
@@ -1661,9 +1662,10 @@ pub async fn proxy_gateway_test_provider_model_connectivity(
     }
 
     let settings = settings::load_settings_from_sqlite_state(&db_state)?;
-    super::runtime::test_gateway_provider_model_connectivity(
+    super::runtime::test_gateway_provider_model_connectivity_with_plugins(
         settings,
         db_state.db().clone(),
+        Some(plugin_manager.inner().clone()),
         request,
     )
     .await

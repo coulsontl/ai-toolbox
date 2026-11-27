@@ -75,6 +75,9 @@ export function useSkills() {
     if (skill.source_type === 'central') {
       return t('skills.sourceCentral');
     }
+    if (skill.source_type === 'builtin') {
+      return t('skills.builtin.sourceLabel');
+    }
     return skill.source_type;
   }, [getRepoInfo, t]);
 

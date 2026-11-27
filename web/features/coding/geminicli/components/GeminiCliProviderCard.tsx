@@ -35,6 +35,7 @@ import {
   subscribeGatewayProviderProfiles,
 } from '@/features/coding/shared/gateway';
 import ClaudeStyleCard from '@/features/coding/shared/providerCardVariants/ClaudeStyleCard';
+import { usePluginProviderCardMeta } from '@/features/coding/shared/plugins/pluginCardMeta';
 import {
   renderProviderPrimaryAction,
 } from '@/features/coding/shared/providerCardVariants/providerCardActions';
@@ -178,6 +179,11 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
 
   const env = settingsConfig.env || {};
   const baseUrl = env.GOOGLE_GEMINI_BASE_URL?.trim();
+  const pluginCardMeta = usePluginProviderCardMeta({
+    meta: provider.meta,
+    baseUrl,
+    providerId: provider.id,
+  });
   const modelName = extractModelName(settingsConfig);
   const maskedApiKey = maskSecret(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
   const isOfficialProvider = provider.category === 'official';
@@ -200,7 +206,10 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
   const needsGatewayProxy =
     !isOfficialProvider &&
     !isLocalProvider &&
-    providerNeedsGatewayProxy(providerApiFormat, 'gemini_native');
+    providerNeedsGatewayProxy(providerApiFormat, 'gemini_native', {
+      meta: provider.meta,
+      baseUrl,
+    });
   const restoreDirectUnavailableTitle = t(
     'gateway.proxy.restoreDirectUnavailableHintProtocol',
     { cli: t('settings.gateway.cli.gemini') },
@@ -642,6 +651,7 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
       onToggleDisabled: isLocalProvider ? undefined : handleToggleDisabled,
       draggable: !selectable && !dragDisabled,
       sortableId: provider.id,
+      pluginBadge: pluginCardMeta.pluginBadge,
       selectable,
       selected,
       onSelectChange,
@@ -657,6 +667,7 @@ const GeminiCliProviderCard: React.FC<GeminiCliProviderCardProps> = ({
       onEdit: () => onEdit(provider),
       onCopy: () => onCopy(provider),
       onShare: () => onShare(provider),
+      ...pluginCardMeta.pluginActions,
       onDelete: isLocalProvider ? undefined : () => onDelete(provider),
       enabledStateLabel: provider.isDisabled
         ? t('geminicli.configDisabled')

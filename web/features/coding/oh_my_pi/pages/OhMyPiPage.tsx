@@ -2029,6 +2029,8 @@ const OhMyPiPage: React.FC = () => {
             ))}
             batchTestDisabledReason={t('ohMyPi.diagnostics.noTestableProvider')}
             onAddProvider={() => openProviderModal()}
+            pluginCliKey="oh_my_pi"
+            onPluginProviderChanged={() => loadConfig(true)}
             hint={<div>{t('ohMyPi.pageHint')}</div>}
             footer={(
               <Space wrap>

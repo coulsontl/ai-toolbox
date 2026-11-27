@@ -238,7 +238,7 @@ impl SharedBodySnapshot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct DebugHttpRequest {
     pub(super) id: u64,
     pub(super) method: String,
@@ -403,8 +403,8 @@ pub(super) async fn read_http_request_with_limit(
         .collect();
 
     let body_start = header_end.min(raw.len());
-    let declared_bytes = header_value(&headers, "content-length")
-        .and_then(|value| value.trim().parse::<u64>().ok());
+    let declared_bytes =
+        header_value(&headers, "content-length").and_then(|value| value.trim().parse::<u64>().ok());
     if let Some(declared) = declared_bytes {
         if declared > max_body_bytes as u64 {
             return Err(ReadHttpRequestError::BodyTooLarge {
@@ -513,9 +513,7 @@ pub(super) fn request_body_too_large_response(
         Some(declared) => format!(
             "{reason_prefix} ({declared} bytes exceeds the maximum allowed size of {limit_display})"
         ),
-        None => format!(
-            "{reason_prefix} (exceeds the maximum allowed size of {limit_display})"
-        ),
+        None => format!("{reason_prefix} (exceeds the maximum allowed size of {limit_display})"),
     };
     let mut error_object = json!({
         "type": "invalid_request_error",

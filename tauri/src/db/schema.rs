@@ -263,6 +263,35 @@ impl ImageEntityKind {
     }
 }
 
+/// Which kind of record a `plugin_entity` row holds.
+///
+/// The gateway plugin system keeps installed packages, market sources, per
+/// provider options, account display metadata and the singleton settings record
+/// in one table. They are all low-frequency user configuration with the same
+/// JSONB lifecycle, so a `kind` column is enough to tell them apart. The column
+/// is real rather than a JSON field for the same reason every other entity table
+/// uses one: payload structs deserialize just as happily under the wrong kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum PluginEntityKind {
+    InstalledPlugin,
+    MarketSource,
+    ProviderOption,
+    AccountMeta,
+    Settings,
+}
+
+impl PluginEntityKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InstalledPlugin => "installed_plugin",
+            Self::MarketSource => "market_source",
+            Self::ProviderOption => "provider_option",
+            Self::AccountMeta => "account_meta",
+            Self::Settings => "settings",
+        }
+    }
+}
+
 /// The physical row scope a table reads and writes.
 ///
 /// A consolidated table holds rows for many CLIs (or many relay kinds); the
@@ -354,6 +383,7 @@ pub enum DbTable {
     McpEntity(McpEntityKind),
     SyncEntity(SyncEntityKind),
     ImageEntity(ImageEntityKind),
+    PluginEntity(PluginEntityKind),
 
     CustomTool,
     ProxyGatewaySettings,
@@ -384,6 +414,7 @@ pub const ALL_TABLES: &[DbTable] = &[
     DbTable::ProxyGatewaySettings,
     DbTable::UsageSessionState,
     DbTable::ImageEntity(ImageEntityKind::Channel),
+    DbTable::PluginEntity(PluginEntityKind::InstalledPlugin),
     DbTable::RelayEntity(RelayKind::Channel),
     DbTable::RelayQuotaSnapshot,
     DbTable::RelayQuotaPoint,
@@ -416,6 +447,7 @@ impl DbTable {
             DbTable::McpEntity(_) => "mcp_entity",
             DbTable::SyncEntity(_) => "sync_entity",
             DbTable::ImageEntity(_) => "image_entity",
+            DbTable::PluginEntity(_) => "plugin_entity",
             DbTable::CustomTool => "custom_tool",
             DbTable::ProxyGatewaySettings => "proxy_gateway_settings",
             DbTable::UsageSessionState => "usage_session_state",
@@ -435,6 +467,7 @@ impl DbTable {
             DbTable::McpEntity(kind) => TableScope::kind(kind.as_str()),
             DbTable::SyncEntity(kind) => TableScope::kind(kind.as_str()),
             DbTable::ImageEntity(kind) => TableScope::kind(kind.as_str()),
+            DbTable::PluginEntity(kind) => TableScope::kind(kind.as_str()),
             DbTable::RelayEntity(kind) => TableScope::kind(kind.as_str()),
             _ => TableScope::NONE,
         }
@@ -682,8 +715,8 @@ mod tests {
         let names = all_table_names();
         assert_eq!(
             names.len(),
-            14,
-            "the consolidated schema has 14 physical JSONB tables; a different \
+            15,
+            "the consolidated schema has 15 physical JSONB tables; a different \
              count means ALL_TABLES and this expectation drifted apart"
         );
         let unique: HashSet<_> = names.iter().collect();
@@ -698,7 +731,14 @@ mod tests {
     fn consolidated_tables_are_named_once_but_scoped_many_times() {
         let provider_scopes: HashSet<_> = Cli::ALL
             .iter()
-            .map(|cli| DbTable::CliProvider(*cli).scope().bindings().next().unwrap().1)
+            .map(|cli| {
+                DbTable::CliProvider(*cli)
+                    .scope()
+                    .bindings()
+                    .next()
+                    .unwrap()
+                    .1
+            })
             .collect();
         assert_eq!(provider_scopes.len(), Cli::ALL.len());
         assert!(provider_scopes.contains("codex") && provider_scopes.contains("oh_my_pi"));
@@ -720,6 +760,7 @@ mod tests {
             DbTable::McpEntity(McpEntityKind::Favorite),
             DbTable::SyncEntity(SyncEntityKind::SshFileMapping),
             DbTable::ImageEntity(ImageEntityKind::Job),
+            DbTable::PluginEntity(PluginEntityKind::MarketSource),
             DbTable::RelayEntity(RelayKind::Channel),
             DbTable::RelayQuotaSnapshot,
         ];
@@ -754,7 +795,7 @@ mod tests {
 
     #[test]
     fn feature_entity_tables_are_named_once_but_scoped_many_times() {
-        let cases: [(&str, Vec<DbTable>); 4] = [
+        let cases: [(&str, Vec<DbTable>); 5] = [
             (
                 "skill_entity",
                 vec![
@@ -794,6 +835,16 @@ mod tests {
                     DbTable::ImageEntity(ImageEntityKind::Asset),
                 ],
             ),
+            (
+                "plugin_entity",
+                vec![
+                    DbTable::PluginEntity(PluginEntityKind::InstalledPlugin),
+                    DbTable::PluginEntity(PluginEntityKind::MarketSource),
+                    DbTable::PluginEntity(PluginEntityKind::ProviderOption),
+                    DbTable::PluginEntity(PluginEntityKind::AccountMeta),
+                    DbTable::PluginEntity(PluginEntityKind::Settings),
+                ],
+            ),
         ];
 
         for (expected_name, tables) in cases {
@@ -802,7 +853,10 @@ mod tests {
                 assert_eq!(table.name(), expected_name);
                 assert_eq!(table.scope().cli_key, None);
                 let kind = table.scope().kind.expect("feature tables are kind-scoped");
-                assert!(kinds.insert(kind), "duplicate kind {kind} in {expected_name}");
+                assert!(
+                    kinds.insert(kind),
+                    "duplicate kind {kind} in {expected_name}"
+                );
             }
         }
     }

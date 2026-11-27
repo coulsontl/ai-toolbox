@@ -19,6 +19,7 @@ import { SkillsButton } from '@/features/coding/skills';
 import { McpButton } from '@/features/coding/mcp';
 import { ImageButton } from '@/features/coding/image';
 import { GatewayButton } from '@/features/coding/gateway';
+import { PluginsButton } from '@/features/coding/plugins';
 import { MiniBrowserButton } from '@/features/mini-browser';
 import KeepAliveOutlet from '@/components/layout/KeepAliveOutlet';
 import { PAGE_ROUTES } from '@/app/routeConfig';
@@ -125,6 +126,7 @@ const MainLayout: React.FC = () => {
   const isSkillsPage = location.pathname.startsWith('/skills');
   const isMcpPage = location.pathname.startsWith('/mcp');
   const isGatewayPage = location.pathname.startsWith('/gateway');
+  const isPluginsPage = location.pathname.startsWith('/plugins');
   const isImagePage = location.pathname.startsWith('/images');
   // The embedded browser workbench is a standalone page of its own now; it is
   // reached from the toolbar entry and keeps its own route.
@@ -137,6 +139,7 @@ const MainLayout: React.FC = () => {
   const showAppHeader = shouldShowRouteAppHeader(routeChrome);
   const contentTopOffset = showAppHeader ? CONTENT_TOP_OFFSET : DRAG_BAR_HEIGHT;
   const isGatewayVisible = visibleTabs.includes('gateway');
+  const isPluginsVisible = visibleTabs.includes('plugins');
   const isImageVisible = visibleTabs.includes('image');
   // The browser toolbar entry stays gated by `visibleTabs`. It is off by
   // default: the tab is opt-in.
@@ -146,6 +149,7 @@ const MainLayout: React.FC = () => {
     || isSkillsPage
     || isMcpPage
     || isGatewayPage
+    || isPluginsPage
     || isImagePage
     || isMiniBrowserPage;
   const isNonTabPage = isStandalonePage || routeChrome.mode !== 'default';
@@ -211,6 +215,14 @@ const MainLayout: React.FC = () => {
 
     navigate(subTabs[0]?.path ?? '/settings', { replace: true });
   }, [isGatewayPage, isGatewayVisible, navigate, subTabs]);
+
+  React.useEffect(() => {
+    if (!isPluginsPage || isPluginsVisible) {
+      return;
+    }
+
+    navigate(subTabs[0]?.path ?? '/settings', { replace: true });
+  }, [isPluginsPage, isPluginsVisible, navigate, subTabs]);
 
   // Hiding the toolbar entry must also evict its route: an open /mini-browser
   // page would otherwise stay reachable with no visible way back to it.
@@ -379,6 +391,13 @@ const MainLayout: React.FC = () => {
               {isGatewayVisible && (
                 <>
                   <GatewayButton />
+                  <div className={styles.actionsDivider} />
+                </>
+              )}
+
+              {isPluginsVisible && (
+                <>
+                  <PluginsButton />
                   <div className={styles.actionsDivider} />
                 </>
               )}

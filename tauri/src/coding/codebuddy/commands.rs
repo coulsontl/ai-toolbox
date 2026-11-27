@@ -23,7 +23,9 @@ use crate::coding::workbuddy_family::runtime_config::{build_runtime_config, Fami
 use crate::db::helpers::{
     db_delete, db_get, db_list, db_max_i64, db_put, db_update_applied_status,
 };
-use crate::db::schema::{Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec};
+use crate::db::schema::{
+    Cli, CliConfigKind, DbTable, JsonFieldPath, OrderDirection, OrderField, OrderSpec,
+};
 use crate::db::SqliteDbState;
 use chrono::Local;
 use tauri::{Emitter, Runtime};
@@ -59,7 +61,7 @@ fn custom_config_dir_from_db(db: &SqliteDbState) -> Option<PathBuf> {
     .map(PathBuf::from)
 }
 
-async fn config_root_from_db(db: &SqliteDbState) -> (PathBuf, String) {
+pub(crate) async fn config_root_from_db(db: &SqliteDbState) -> (PathBuf, String) {
     match custom_config_dir_from_db(db) {
         Some(path) => (path, "custom".to_string()),
         None => paths::resolve_path_without_db(),
@@ -319,9 +321,13 @@ fn prompt_order() -> Result<OrderSpec, String> {
 
 fn next_sort_index(db: &SqliteDbState) -> Result<i32, String> {
     db.with_conn(|conn| {
-        Ok(db_max_i64(conn, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt), &JsonFieldPath::new("sort_index")?)?
-            .map(|value| value as i32 + 1)
-            .unwrap_or(0))
+        Ok(db_max_i64(
+            conn,
+            DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt),
+            &JsonFieldPath::new("sort_index")?,
+        )?
+        .map(|value| value as i32 + 1)
+        .unwrap_or(0))
     })
 }
 
@@ -338,8 +344,14 @@ fn prompt_from_content(id: String, content: CodebuddyPromptConfigContent) -> Cod
 }
 
 fn get_prompt(db: &SqliteDbState, id: &str) -> Result<Option<CodebuddyPromptConfig>, String> {
-    db.with_conn(|conn| db_get(conn, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt), id))
-        .map(|record| record.map(adapter::prompt_from_db_value))
+    db.with_conn(|conn| {
+        db_get(
+            conn,
+            DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt),
+            id,
+        )
+    })
+    .map(|record| record.map(adapter::prompt_from_db_value))
 }
 
 fn prompt_file_path(root: &Path) -> PathBuf {
@@ -367,7 +379,13 @@ pub async fn list_codebuddy_prompt_configs(
     let order = prompt_order()?;
     let prompts = state
         .db()
-        .with_conn(|conn| db_list(conn, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt), Some(&order)))
+        .with_conn(|conn| {
+            db_list(
+                conn,
+                DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt),
+                Some(&order),
+            )
+        })
         .map(|values| {
             values
                 .into_iter()
@@ -420,8 +438,8 @@ pub async fn update_codebuddy_prompt_config(
     let id = input
         .id
         .ok_or_else(|| "ID is required for update".to_string())?;
-    let existing = get_prompt(state.db(), &id)?
-        .ok_or_else(|| format!("CodeBuddy prompt '{id}' not found"))?;
+    let existing =
+        get_prompt(state.db(), &id)?.ok_or_else(|| format!("CodeBuddy prompt '{id}' not found"))?;
     let content = CodebuddyPromptConfigContent {
         name: input.name,
         content: input.content,
@@ -459,9 +477,14 @@ pub async fn delete_codebuddy_prompt_config(
     id: String,
 ) -> Result<(), String> {
     // Only delete the DB record. Keep the live CODEBUDDY.md on disk.
-    state
-        .db()
-        .with_conn(|conn| db_delete(conn, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt), &id).map(|_| ()))?;
+    state.db().with_conn(|conn| {
+        db_delete(
+            conn,
+            DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt),
+            &id,
+        )
+        .map(|_| ())
+    })?;
     let _ = app.emit("config-changed", "window");
     Ok(())
 }
@@ -532,7 +555,12 @@ pub async fn apply_codebuddy_prompt_internal_without_events(
         .ok_or_else(|| format!("CodeBuddy prompt '{config_id}' not found"))?;
     let now = Local::now().to_rfc3339();
     db.with_conn_mut(|conn| {
-        db_update_applied_status(conn, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt), Some(config_id), &now)
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt),
+            Some(config_id),
+            &now,
+        )
     })?;
     let (root, _) = config_root_from_db(db).await;
     write_prompt_content_file(&prompt_file_path(&root), Some(&prompt.content), "CodeBuddy")?;
@@ -556,11 +584,14 @@ pub async fn disable_codebuddy_prompt_config(
     let now = Local::now().to_rfc3339();
     // The id only gates the call (mirroring the shared `disableConfig(configId)`
     // contract); disabling is global, like every other CLI.
-    state
-        .db()
-        .with_conn_mut(|conn| {
-            db_update_applied_status(conn, DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt), None, &now)
-        })?;
+    state.db().with_conn_mut(|conn| {
+        db_update_applied_status(
+            conn,
+            DbTable::CliConfig(Cli::Codebuddy, CliConfigKind::Prompt),
+            None,
+            &now,
+        )
+    })?;
     let (root, _) = config_root_from_db(state.db()).await;
     write_prompt_content_file(&prompt_file_path(&root), None, "CodeBuddy")?;
     let _ = app.emit("config-changed", "window");

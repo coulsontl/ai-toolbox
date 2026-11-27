@@ -18,6 +18,16 @@
 - WSL/SSH 工具目标维护统一走 `remote_target`：强制复制策略与本机共用 `builtin_tool_forces_skill_copy`，其他工具仍用链接。复制副本的 `.ai-toolbox-skill-source` 标记记录远端中央源路径；只有匹配标记的副本或受管链接可更新/删除，用户真实目录和外部链接必须保留并警告。先准备同级临时副本再替换，复制失败保留旧目标；更新、取消同步、禁用及孤立清理必须走同一归属判断。
 - 对已经 `is_wsl_direct` 的内置工具，处理 WSL skills 同步时要优先判断“目标目录是否已直接在 WSL 内”，而不是只看当前 Windows 侧是否存在 UNC 显示路径。
 
+## 零之一、内置技能（builtin）
+
+- `builtin.rs` 负责跟随应用发布的 `ai-toolbox` Skill：源文件在 `tauri/resources/builtin_skills/ai-toolbox/`，通过 `include_str!` 编译期嵌入，不依赖用户磁盘上的模板。
+- 事实源仍是中央仓库：`id = "builtin:ai-toolbox"`、`source_type = "builtin"`、`source_ref = "ai-toolbox"`、`source_revision = CARGO_PKG_VERSION`、`central_path = "ai-toolbox"`。文件始终写到 `<central_repo>/ai-toolbox/`。
+- **内置行 ID 必须原样读写**：`db_extract_id`/`db_clean_id` 会剥掉第一个 `:` 之前的内容，把 `builtin:ai-toolbox` 变成 `ai-toolbox`，导致后续 upsert 写到另一行。`adapter::from_db_skill` 对 `source_type = "builtin"` 保留原始 `id`；新增任何按 ID 读写 Skill 的路径时不要套用通用清洗。
+- `ensure_builtin_skills` 是幂等入口：启动接线与 `skills_get_managed_skills` 首次查询都会调用。首次创建时默认同步到 Universal（`shared_agents`，`~/.agents/skills`）；若目标已有外部同名目录则只记 warning，DB 保持未同步。
+- 版本升级/文件被改动/文件缺失时自动覆盖中央仓库文件，但**只重同步 `enabled_tools` 里已有的工具**。绝不能把用户手动取消的 `shared_agents` 或任何工具重新勾回来。
+- 内置技能不可删除、不可编辑元数据、不可禁用、不可被安装覆盖；Inventory 导入必须跳过内置项，本地清单缺失时也不能删除或禁用它。工具同步（含 Universal）保持完全可交互，这是用户取消安装的唯一路径。
+- `skills_get_skill_documents` 允许预览 `references/plugins.md`，因此内置 Skill 的嵌套参考文档能在详情抽屉中显示。
+
 ## 一、模块概述
 
 Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从本地文件夹或 Git 仓库安装技能，并同步到多个 AI 编程工具（Claude Code、Cursor、Codex、OpenCode 等）。模块还支持技能发现、导入现有技能、系统托盘快捷菜单等功能。
@@ -40,6 +50,7 @@ Skills 模块提供 AI 编程工具技能的统一管理功能。用户可以从
 | onboarding.rs | 技能发现（扫描已安装工具） |
 | central_repo.rs | 中央仓库管理 |
 | git_fetcher.rs | Git 克隆/拉取操作 |
+| builtin.rs | 跟随应用发布的内置 `ai-toolbox` Skill：内嵌文件、首次安装、版本升级与只读保护 |
 | cache_cleanup.rs | Git 缓存清理 |
 | content_hash.rs | 目录内容哈希计算 |
 | tray_support.rs | 系统托盘菜单集成 |
