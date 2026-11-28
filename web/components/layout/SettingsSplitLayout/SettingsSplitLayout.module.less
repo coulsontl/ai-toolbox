@@ -1,0 +1,249 @@
+.splitLayout {
+  display: flex;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.page {
+  height: calc(100vh - var(--content-top-offset));
+  min-height: 0;
+  align-items: stretch;
+  background: var(--color-bg-layout);
+}
+
+.embedded {
+  width: 100%;
+  align-items: flex-start;
+}
+
+.nav {
+  display: flex;
+  flex: 0 0 196px;
+  width: 196px;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 12px 10px;
+  overflow-y: auto;
+  background: var(--color-bg-elevated);
+  transition: flex-basis 0.16s ease, width 0.16s ease;
+}
+
+.embedded .nav {
+  position: sticky;
+  top: calc(var(--gateway-header-height, 64px) + 12px);
+  align-self: flex-start;
+  /* Reach the bottom of the viewport at rest: content padding + page gap. */
+  height: calc(100vh - var(--content-top-offset) - var(--gateway-header-height, 64px) - 64px);
+  min-height: 260px;
+}
+
+.navCollapsed {
+  flex: 0 0 56px;
+  width: 56px;
+  padding: 12px 8px;
+}
+
+.navCollapsed .navItem {
+  gap: 0;
+  justify-content: center;
+  padding: 0;
+}
+
+.navCollapsed .navLabel {
+  display: none;
+}
+
+.navItem {
+  display: flex;
+  width: 100%;
+  height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  text-align: left;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary, var(--color-primary));
+    outline-offset: 2px;
+  }
+}
+
+.navItemActive {
+  background: var(--ant-color-primary, var(--color-primary));
+  color: #ffffff;
+
+  &:hover {
+    background: var(--ant-color-primary, var(--color-primary));
+    color: #ffffff;
+  }
+}
+
+.navIcon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.navLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navCollapse {
+  display: inline-flex;
+  width: 100%;
+  height: 36px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-top: auto;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary, var(--color-primary));
+    outline-offset: 2px;
+  }
+}
+
+.content {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.page .content {
+  min-height: 0;
+  padding: 20px 28px 32px;
+  overflow-y: auto;
+}
+
+.embedded .content {
+  padding: 0 0 24px 20px;
+}
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.contentBody {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.page .contentBody {
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .splitLayout {
+    flex-direction: column;
+  }
+
+  .page {
+    height: calc(100vh - var(--content-top-offset));
+  }
+
+  .embedded {
+    align-items: stretch;
+  }
+
+  .nav,
+  .embedded .nav {
+    position: static;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 6px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .navCollapsed {
+    width: 100%;
+    flex: 0 0 auto;
+    padding: 8px 12px;
+  }
+
+  .navCollapsed .navItem {
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 0 12px;
+  }
+
+  .navCollapsed .navLabel {
+    display: inline;
+  }
+
+  .navCollapse {
+    display: none;
+  }
+
+  .navItem {
+    width: auto;
+    flex: 0 0 auto;
+    padding: 0 12px;
+  }
+
+  .page .content {
+    padding: 16px;
+  }
+
+  .embedded .content {
+    width: 100%;
+    padding: 16px 0 24px;
+  }
+}

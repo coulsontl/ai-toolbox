@@ -2,18 +2,6 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-bottom: 24px;
-}
-
-.topBar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-}
-
-.topBarActionsOnly {
-  grid-template-columns: 1fr;
 }
 
 .titleBlock {
@@ -58,13 +46,6 @@
   width: 34px;
   height: 34px;
   border-radius: 8px;
-}
-
-.actionBar {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 6px;
 }
 
 .autoSaveText {
@@ -146,20 +127,6 @@
   border-color: var(--color-status-error-border);
   background: var(--color-status-error-bg);
   color: var(--color-status-error);
-}
-
-.contentGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-  gap: 10px;
-}
-
-.contentColumn {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .section {
@@ -630,16 +597,8 @@
 }
 
 @media (max-width: 1180px) {
-  .topBar {
-    grid-template-columns: 1fr;
-  }
-
-  .actionBar {
-    justify-content: flex-start;
-  }
-
-  .contentGrid {
-    grid-template-columns: 1fr;
+  .perCliGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

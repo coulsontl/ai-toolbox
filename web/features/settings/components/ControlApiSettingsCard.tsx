@@ -3,7 +3,6 @@ import {
   App,
   Button,
   Card,
-  Divider,
   InputNumber,
   Select,
   Space,
@@ -138,13 +137,17 @@ export const ControlApiSettingsCard: React.FC = () => {
 
   const running = status?.running === true;
   const approvalMode = settings.approval_mode;
+  const cliInstalled = cliStatus?.installed === true;
+  const cliSourceText = cliStatus?.binarySource
+    ? t('settings.controlApi.cliSource', { path: cliStatus.binarySource })
+    : null;
 
   return (
     <Card
       className={styles.card}
       title={
         <div className={styles.cardTitle}>
-          <span style={{ color: '#1890ff' }}>
+          <span className={styles.titleIcon}>
             <ApiOutlined />
           </span>
           <span>{t('settings.controlApi.title')}</span>
@@ -170,9 +173,7 @@ export const ControlApiSettingsCard: React.FC = () => {
         </Space>
       }
     >
-      <Text type="secondary" className={styles.hint}>
-        {t('settings.controlApi.description')}
-      </Text>
+      <span className={styles.description}>{t('settings.controlApi.description')}</span>
 
       <div className={styles.row}>
         <Space size={4}>
@@ -188,20 +189,22 @@ export const ControlApiSettingsCard: React.FC = () => {
         />
       </div>
 
-      <div className={styles.metaBlock}>
+      <div className={styles.metaList}>
         <div className={styles.metaRow}>
-          <Text type="secondary">{t('settings.controlApi.url')}</Text>
-          <Text code>{status?.url ?? '-'}</Text>
+          <span className={styles.metaLabel}>{t('settings.controlApi.url')}</span>
+          <span className={styles.metaValue} title={status?.url ?? undefined}>
+            {status?.url ?? '-'}
+          </span>
         </div>
         <div className={styles.metaRow}>
-          <Text type="secondary">{t('settings.controlApi.discoveryFile')}</Text>
-          <Text className={styles.path} title={status?.discoveryFile}>
+          <span className={styles.metaLabel}>{t('settings.controlApi.discoveryFile')}</span>
+          <span className={styles.metaValue} title={status?.discoveryFile}>
             {status?.discoveryFile ?? '-'}
-          </Text>
+          </span>
         </div>
       </div>
 
-      <Divider className={styles.divider} />
+      <div className={styles.separator} aria-hidden="true" />
 
       <div className={styles.row}>
         <Space size={4}>
@@ -234,9 +237,9 @@ export const ControlApiSettingsCard: React.FC = () => {
           ]}
         />
       </div>
-      <Text type="secondary" className={styles.hint}>
+      <span className={`${styles.hint} ${styles.hintAfter}`}>
         {t(`settings.controlApi.approvalModeHint.${approvalMode}`)}
-      </Text>
+      </span>
 
       <div className={styles.row}>
         <Space size={4}>
@@ -253,6 +256,7 @@ export const ControlApiSettingsCard: React.FC = () => {
           onBlur={handleTimeoutBlur}
           suffix={t('settings.controlApi.seconds')}
           aria-label={t('settings.controlApi.approvalTimeout')}
+          className={styles.timeoutInput}
         />
       </div>
 
@@ -272,51 +276,25 @@ export const ControlApiSettingsCard: React.FC = () => {
         />
       </div>
 
-      <Divider className={styles.divider} />
+      <div className={styles.separator} aria-hidden="true" />
 
       <div className={styles.cliHeader}>
-        <Space size={6}>
+        <Space size={8}>
           <CodeOutlined />
           <Text strong>{t('settings.controlApi.cliTitle')}</Text>
+          <Tag color={cliInstalled ? 'blue' : 'default'}>
+            {cliInstalled
+              ? t('settings.controlApi.cliInstalledTag')
+              : t('settings.controlApi.cliNotInstalledTag')}
+          </Tag>
         </Space>
-        <Tag color={cliStatus?.installed ? 'blue' : 'default'}>
-          {cliStatus?.installed
-            ? t('settings.controlApi.cliInstalledTag')
-            : t('settings.controlApi.cliNotInstalledTag')}
-        </Tag>
-      </div>
-      <Text type="secondary" className={styles.hint}>
-        {t('settings.controlApi.cliDescription')}
-      </Text>
-      <div className={styles.metaRow}>
-        <Text type="secondary">{t('settings.controlApi.cliPath')}</Text>
-        <Text className={styles.path} title={cliStatus?.installPath ?? undefined}>
-          {cliStatus?.installPath ?? '-'}
-        </Text>
-      </div>
-      {cliStatus?.installed && !cliStatus.onPath && (
-        <Text type="warning" className={styles.hint}>
-          {t('settings.controlApi.cliNotOnPath')}
-        </Text>
-      )}
-      {!cliStatus?.installed && !cliStatus?.binarySource && (
-        <Text type="secondary" className={styles.hint}>
-          {t('settings.controlApi.cliBuildHint')}
-        </Text>
-      )}
-      <Space wrap className={styles.cliActions}>
-        {cliStatus?.installed ? (
-          <Button
-            danger
-            loading={cliBusy}
-            onClick={() => void handleCliUninstall()}
-          >
+        {cliInstalled ? (
+          <Button danger loading={cliBusy} onClick={() => void handleCliUninstall()}>
             {t('settings.controlApi.cliRemove')}
           </Button>
         ) : (
           <Button
             type="primary"
-            icon={<CodeOutlined />}
             loading={cliBusy}
             disabled={!cliStatus?.binarySource}
             onClick={() => void handleCliInstall()}
@@ -324,15 +302,39 @@ export const ControlApiSettingsCard: React.FC = () => {
             {t('settings.controlApi.cliInstall')}
           </Button>
         )}
-      </Space>
-      {!cliStatus?.installed && cliStatus?.binarySource && (
-        <Text type="secondary" className={styles.hint}>
-          {t('settings.controlApi.cliSource', { path: cliStatus.binarySource })}
-        </Text>
-      )}
+      </div>
+
+      <div className={styles.cliBody}>
+        <span className={styles.hint}>{t('settings.controlApi.cliDescription')}</span>
+        {cliInstalled && (
+          <div className={styles.metaRow}>
+            <span className={styles.metaLabel}>{t('settings.controlApi.cliPath')}</span>
+            <span className={styles.metaValue} title={cliStatus?.installPath ?? undefined}>
+              {cliStatus?.installPath ?? '-'}
+            </span>
+          </div>
+        )}
+        {!cliInstalled && cliSourceText && (
+          <span
+            className={`${styles.hint} ${styles.hintEllipsis}`}
+            title={cliSourceText}
+          >
+            {cliSourceText}
+          </span>
+        )}
+        {cliInstalled && !cliStatus?.onPath && (
+          <span className={`${styles.hint} ${styles.hintWarning}`}>
+            {t('settings.controlApi.cliNotOnPath')}
+          </span>
+        )}
+        {!cliInstalled && !cliStatus?.binarySource && (
+          <span className={styles.hint}>{t('settings.controlApi.cliBuildHint')}</span>
+        )}
+      </div>
+
       <div className={styles.securityNote}>
         <SafetyCertificateOutlined />
-        <Text type="secondary">{t('settings.controlApi.securityNote')}</Text>
+        <span>{t('settings.controlApi.securityNote')}</span>
       </div>
     </Card>
   );

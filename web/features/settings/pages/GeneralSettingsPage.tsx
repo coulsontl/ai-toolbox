@@ -1,6 +1,14 @@
 import React from 'react';
-import { App, Typography, Button, Select, Space, message, Modal, Table, Switch, Input, Row, Col, Card, Divider, Checkbox } from 'antd';
-import { FolderOpen } from 'lucide-react';
+import { App, Typography, Button, Select, Space, message, Modal, Table, Switch, Input, Card, Divider, Checkbox } from 'antd';
+import {
+  Bot as AgentIcon,
+  Database as DatabaseIcon,
+  FolderOpen,
+  Globe as NetworkIcon,
+  Info as AboutIcon,
+  LayoutGrid as ModulesIcon,
+  Settings as GeneralIcon,
+} from 'lucide-react';
 import {
   EditOutlined,
   CloudUploadOutlined,
@@ -39,6 +47,8 @@ import { useThemeStore, type ThemeMode } from '@/stores/themeStore';
 import { SYSTEM_LANGUAGE, languages, type LanguagePreference } from '@/i18n';
 import { BackupSettingsModal, ControlApiSettingsCard, RemoteBackupRestoreModal, type RemoteBackupSelection } from '../components';
 import UpdateProgressModal from '@/components/common/UpdateProgressModal';
+import MarkdownPreview from '@/components/common/MarkdownPreview';
+import SettingsSplitLayout, { type SettingsSplitLayoutItem } from '@/components/layout/SettingsSplitLayout';
 import LinuxRenderingSetting from '../components/LinuxRenderingSetting';
 import FieldHelp from '@/components/common/FieldHelp';
 import { platform } from '@tauri-apps/plugin-os';
@@ -78,6 +88,12 @@ import { open as openFolderDialog } from '@tauri-apps/plugin-dialog';
 import styles from './GeneralSettingsPage.module.less';
 
 const { Text } = Typography;
+
+export const SETTINGS_SECTIONS = ['general', 'modules', 'agent', 'network', 'data', 'about'] as const;
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+export const isSettingsSection = (value: string | null | undefined): value is SettingsSection =>
+  typeof value === 'string' && (SETTINGS_SECTIONS as readonly string[]).includes(value);
 
 const TOOL_LABEL_KEYS: Record<string, string> = {
   opencode: 'subModules.opencode',
@@ -189,7 +205,15 @@ const SortableCodingChip: React.FC<SortableCodingChipProps> = ({ id, label, chec
   );
 };
 
-const GeneralSettingsPage: React.FC = () => {
+interface GeneralSettingsPageProps {
+  activeSection: SettingsSection;
+  onSectionChange: (section: SettingsSection) => void;
+}
+
+const GeneralSettingsPage: React.FC<GeneralSettingsPageProps> = ({
+  activeSection,
+  onSectionChange,
+}) => {
   const { t } = useTranslation();
   const { modal } = App.useApp();
   const { languagePreference, setLanguage } = useAppStore();
@@ -1002,402 +1026,466 @@ const GeneralSettingsPage: React.FC = () => {
     }
   };
 
-  return (
-    <div className={styles.container}>
-      <Row gutter={[16, 16]}>
-        {/* Left Column: General Settings */}
-        <Col xs={24} lg={12}>
-          <Card
-            title={<CardTitle icon={<AppstoreOutlined style={{ color: '#1890ff' }} />} title={t('settings.cards.general')} />}
-            className={styles.card}
-          >
-            {/* Appearance (Language + Theme) */}
-            <SectionTitle icon={<BulbOutlined style={{ color: '#faad14' }} />} title={t('settings.cards.appearance')} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.currentLanguage')}:</Text>
-                <Select
-                  value={languagePreference}
-                  onChange={handleLanguageChange}
-                  options={[
-                    { value: SYSTEM_LANGUAGE, label: t('settings.languageSystemDefault') },
-                    ...languages.map((lang) => ({
-                      value: lang.value,
-                      label: lang.label,
-                    })),
-                  ]}
-                  style={{ width: 160 }}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.currentTheme')}:</Text>
-                <Select
-                  value={themeMode}
-                  onChange={(value: ThemeMode) => setThemeMode(value)}
-                  options={[
-                    { value: 'light', label: t('theme.light') },
-                    { value: 'dark', label: t('theme.dark') },
-                    { value: 'system', label: t('theme.system') },
-                  ]}
-                  style={{ width: 160 }}
-                />
-              </div>
-              {isLinux && <LinuxRenderingSetting />}
-            </div>
+  const settingNavItems: SettingsSplitLayoutItem[] = [
+    { key: 'general', label: t('settings.nav.general'), icon: <GeneralIcon size={16} /> },
+    { key: 'modules', label: t('settings.nav.modules'), icon: <ModulesIcon size={16} /> },
+    { key: 'agent', label: t('settings.nav.agent'), icon: <AgentIcon size={16} /> },
+    { key: 'network', label: t('settings.nav.network'), icon: <NetworkIcon size={16} /> },
+    { key: 'data', label: t('settings.nav.data'), icon: <DatabaseIcon size={16} /> },
+    { key: 'about', label: t('settings.nav.about'), icon: <AboutIcon size={16} /> },
+  ];
 
-            <Divider />
+  const generalSection = (
+    <Card
+      title={<CardTitle icon={<AppstoreOutlined style={{ color: '#1890ff' }} />} title={t('settings.cards.general')} />}
+      className={styles.card}
+    >
+      {/* Appearance (Language + Theme) */}
+      <SectionTitle icon={<BulbOutlined style={{ color: '#faad14' }} />} title={t('settings.cards.appearance')} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.currentLanguage')}:</Text>
+          <Select
+            value={languagePreference}
+            onChange={handleLanguageChange}
+            options={[
+              { value: SYSTEM_LANGUAGE, label: t('settings.languageSystemDefault') },
+              ...languages.map((lang) => ({
+                value: lang.value,
+                label: lang.label,
+              })),
+            ]}
+            style={{ width: 160 }}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.currentTheme')}:</Text>
+          <Select
+            value={themeMode}
+            onChange={(value: ThemeMode) => setThemeMode(value)}
+            options={[
+              { value: 'light', label: t('theme.light') },
+              { value: 'dark', label: t('theme.dark') },
+              { value: 'system', label: t('theme.system') },
+            ]}
+            style={{ width: 160 }}
+          />
+        </div>
+        {isLinux && <LinuxRenderingSetting />}
+      </div>
 
-            {/* Window Settings */}
-            <SectionTitle icon={<DesktopOutlined style={{ color: '#13c2c2' }} />} title={t('settings.cards.window')} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.window.launchOnStartup')}</Text>
-                <Switch
-                  checked={launchOnStartup}
-                  onChange={setLaunchOnStartup}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.window.startMinimized')}</Text>
-                <Switch
-                  checked={startMinimized}
-                  disabled={!launchOnStartup}
-                  onChange={setStartMinimized}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.window.startLightweight')}</Text>
-                <Switch
-                  checked={startLightweight}
-                  onChange={setStartLightweight}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.window.minimizeToTrayOnClose')}</Text>
-                <Switch
-                  checked={minimizeToTrayOnClose}
-                  onChange={setMinimizeToTrayOnClose}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.window.lightweightOnClose')}</Text>
-                <Switch
-                  checked={lightweightOnClose}
-                  disabled={!minimizeToTrayOnClose}
-                  onChange={setLightweightOnClose}
-                />
-              </div>
-              <div className={styles.keepAwakeRow}>
-                <div className={styles.keepAwakeContent}>
-                  <Text>{t('settings.window.keepComputerAwake')}</Text>
-                  <Text type="secondary" className={styles.keepAwakeHint}>
-                    {t('settings.window.keepComputerAwakeDesc')}
-                  </Text>
-                  {keepComputerAwakeError && (
-                    <Text type="danger" className={styles.keepAwakeHint} role="alert" id="keep-awake-error">
-                      {t('settings.window.keepComputerAwakeFailed', { error: keepComputerAwakeError })}
-                    </Text>
-                  )}
-                </div>
-                <Switch
-                  checked={keepComputerAwake}
-                  loading={keepComputerAwakeUpdating}
-                  disabled={keepComputerAwakeUpdating}
-                  aria-label={t('settings.window.keepComputerAwake')}
-                  aria-describedby={keepComputerAwakeError ? 'keep-awake-error' : undefined}
-                  onChange={handleKeepComputerAwakeChange}
-                />
-              </div>
-            </div>
+      <Divider />
 
-            <Divider />
-
-            {/* About */}
-            <SectionTitle icon={<InfoCircleOutlined style={{ color: '#722ed1' }} />} title={t('settings.cards.about')} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.about.version')}:</Text>
-                <Text strong>{appVersion || '-'}</Text>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.about.autoCheckUpdate')}</Text>
-                <Switch
-                  checked={autoCheckUpdate}
-                  onChange={setAutoCheckUpdate}
-                />
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Space size={4}>
-                  <Text>{t('settings.about.receiveBetaUpdates')}</Text>
-                  <FieldHelp text={t('settings.about.receiveBetaUpdatesHelp')} />
-                </Space>
-                <Switch
-                  checked={receiveBetaUpdates}
-                  onChange={setReceiveBetaUpdates}
-                />
-              </div>
-              <Space wrap>
-                <Button
-                  icon={<SyncOutlined spin={checkingUpdate} />}
-                  onClick={() => handleCheckUpdate()}
-                  loading={checkingUpdate}
-                >
-                  {checkingUpdate ? t('settings.about.checking') : t('settings.about.checkUpdate')}
-                </Button>
-                {updateInfo?.hasUpdate && !updateInfo.scoopInstall && !updateInfo.debInstall && (
-                  <Button type="primary" onClick={handleGoToDownload}>
-                    {t('settings.about.goToDownload')} (v{updateInfo.latestVersion})
-                  </Button>
-                )}
-                {updateInfo?.hasUpdate && updateInfo.scoopInstall && (
-                  <Typography.Text type="warning">
-                    {t('settings.about.scoopUpdateHint', { version: updateInfo.latestVersion })}
-                  </Typography.Text>
-                )}
-                {updateInfo?.hasUpdate && updateInfo.debInstall && (
-                  <Typography.Text type="warning">
-                    {t('settings.about.debUpdateHint', { version: updateInfo.latestVersion })}{' '}
-                    <Typography.Link onClick={handleOpenReleasePage}>
-                      {t('settings.about.openDownloadPage')}
-                    </Typography.Link>
-                  </Typography.Text>
-                )}
-                <Button icon={<GithubOutlined />} onClick={handleOpenGitHub}>
-                  {t('settings.about.github')}
-                </Button>
-              </Space>
-            </div>
-          </Card>
-        </Col>
-
-        {/* Right Column: Tab Visibility + Network & Backup */}
-        <Col xs={24} lg={12}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <ControlApiSettingsCard />
-
-          {/* Tab Visibility Card */}
-          <Card
-            title={<CardTitle icon={<EyeOutlined style={{ color: '#722ed1' }} />} title={t('settings.cards.tabVisibility')} />}
-            className={styles.card}
-            extra={
-              <Button
-                type={reorderMode ? 'primary' : 'text'}
-                size="small"
-                icon={<DragOutlined />}
-                onClick={() => setReorderMode(!reorderMode)}
-              >
-                {t('settings.tabVisibility.sort')}
-              </Button>
-            }
-          >
-            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
-              {t('settings.tabVisibility.hint')}
+      {/* Window Settings */}
+      <SectionTitle icon={<DesktopOutlined style={{ color: '#13c2c2' }} />} title={t('settings.cards.window')} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.window.launchOnStartup')}</Text>
+          <Switch
+            checked={launchOnStartup}
+            onChange={setLaunchOnStartup}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.window.startMinimized')}</Text>
+          <Switch
+            checked={startMinimized}
+            disabled={!launchOnStartup}
+            onChange={setStartMinimized}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.window.startLightweight')}</Text>
+          <Switch
+            checked={startLightweight}
+            onChange={setStartLightweight}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.window.minimizeToTrayOnClose')}</Text>
+          <Switch
+            checked={minimizeToTrayOnClose}
+            onChange={setMinimizeToTrayOnClose}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.window.lightweightOnClose')}</Text>
+          <Switch
+            checked={lightweightOnClose}
+            disabled={!minimizeToTrayOnClose}
+            onChange={setLightweightOnClose}
+          />
+        </div>
+        <div className={styles.keepAwakeRow}>
+          <div className={styles.keepAwakeContent}>
+            <Text>{t('settings.window.keepComputerAwake')}</Text>
+            <Text type="secondary" className={styles.keepAwakeHint}>
+              {t('settings.window.keepComputerAwakeDesc')}
             </Text>
-            <div className={styles.tabVisibilityRows}>
-              <div className={styles.tabVisibilityRow}>
-                <Text type="secondary" className={styles.tabVisibilityRowLabel}>
-                  {t('settings.tabVisibility.codingTabs')}
-                </Text>
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
-                >
-                  <SortableContext items={codingTabOrder} strategy={rectSortingStrategy}>
-                    <div className={styles.sortableChipList}>
-                      {codingTabOrder.map((key) => (
-                        <SortableCodingChip
-                          key={key}
-                          id={key}
-                          label={t(`subModules.${key}`)}
-                          checked={visibleTabs.includes(key)}
-                          onToggle={(checked) => handleCodingTabToggle(key, checked)}
-                          reorderMode={reorderMode}
-                        />
-                      ))}
-                    </div>
-                  </SortableContext>
-                </DndContext>
-              </div>
-              <div className={styles.tabVisibilityRow}>
-                <Text type="secondary" className={styles.tabVisibilityRowLabel}>
-                  {t('settings.tabVisibility.otherModules')}
-                </Text>
-                <div className={styles.otherTabList}>
-                  {OTHER_TABS.map((key) => (
-                    <div
-                      key={key}
-                      className={`${styles.tabPill} ${visibleTabs.includes(key) ? styles.tabPillActive : styles.tabPillInactive}`}
-                      onClick={() => handleOtherTabToggle(key, !visibleTabs.includes(key))}
-                    >
-                      <span>{t(`subModules.${key}`)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </Card>
-
-          <Card
-            title={<CardTitle icon={<CloudServerOutlined style={{ color: '#52c41a' }} />} title={t('settings.cards.networkBackup')} />}
-            className={styles.card}
-          >
-            {/* Proxy Settings */}
-            <SectionTitle icon={<ApiOutlined style={{ color: '#fa8c16' }} />} title={t('settings.cards.proxy')} />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <Text>{t('settings.proxy.modeLabel')}</Text>
-                <Select
-                  value={proxyMode}
-                  onChange={(value: ProxyMode) => void handleProxyModeChange(value)}
-                  style={{ width: 160 }}
-                  options={[
-                    { value: 'direct', label: t('settings.proxy.modeDirect') },
-                    { value: 'custom', label: t('settings.proxy.modeCustom') },
-                    { value: 'system', label: t('settings.proxy.modeSystem') },
-                  ]}
-                />
-              </div>
-              {isCustomProxyMode ? (
-                <>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <Input
-                      value={proxyInput}
-                      onChange={(e) => setProxyInput(e.target.value)}
-                      onBlur={handleProxySave}
-                      onPressEnter={handleProxySave}
-                      placeholder={t('settings.proxy.urlPlaceholder')}
-                      style={{ flex: 1 }}
-                    />
-                    <Button
-                      onClick={handleProxyTest}
-                      loading={proxyTesting}
-                      disabled={!proxyInput}
-                    >
-                      {proxyTesting ? t('settings.proxy.testing') : t('settings.proxy.testConnection')}
-                    </Button>
-                  </div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('settings.proxy.hint')}
-                  </Text>
-                </>
-              ) : null}
-            </div>
-
-            <Divider />
-
-            {/* Data Directory (custom path override, issue #345) */}
-            <SectionTitle
-              icon={<FolderOpen size={16} aria-hidden="true" className={styles.dataDirIcon} />}
-              title={t('settings.dataDir.title')}
-              extra={
-                <Space size={4} wrap>
-                  <Button
-                    type="link"
-                    loading={dataDirBusy}
-                    disabled={!dataDirInfo || dataDirBusy || restoreLoading}
-                    onClick={() => void handleDataDirChange()}
-                  >
-                    {t('settings.dataDir.change')}
-                  </Button>
-                  <Button
-                    type="link"
-                    disabled={!dataDirInfo?.override || dataDirBusy || restoreLoading}
-                    onClick={() => void handleDataDirChange('reset')}
-                  >
-                    {t('settings.dataDir.reset')}
-                  </Button>
-                </Space>
-              }
-            />
-            <div className={styles.dataDirSection} aria-busy={dataDirBusy || (!dataDirInfo && !dataDirError)}>
-              <div className={styles.dataDirRow}>
-                <Text type="secondary">{t('settings.dataDir.current')}</Text>
-                <div className={styles.dataDirValue}>
-                  <span>{dataDirInfo?.effective || (dataDirError ? '—' : t('common.loading'))}</span>
-                  {dataDirInfo && (
-                    <Text type="secondary">
-                      ({dataDirInfo.is_custom ? t('settings.dataDir.custom') : t('settings.dataDir.defaultTag')})
-                    </Text>
-                  )}
-                </div>
-              </div>
-              {dataDirInfo?.restart_required && (
-                <div className={styles.dataDirRow} role="status">
-                  <Text type="secondary">{t('settings.dataDir.nextStart')}</Text>
-                  <div className={styles.dataDirValue}>
-                    <span>{dataDirInfo.next_start}</span>
-                    <Text type="warning">{t('settings.dataDir.pending')}</Text>
-                    <Button type="link" size="small" onClick={promptRestart} disabled={dataDirBusy || restoreLoading}>
-                      {t('common.restart')}
-                    </Button>
-                    <Button type="link" size="small" onClick={() => void handleDataDirChange('cancel')} disabled={dataDirBusy || restoreLoading}>
-                      {t('settings.dataDir.cancelChange')}
-                    </Button>
-                  </div>
-                </div>
-              )}
-              <Text type="secondary" className={styles.dataDirHint}>
-                {t('settings.dataDir.hint')}
+            {keepComputerAwakeError && (
+              <Text type="danger" className={styles.keepAwakeHint} role="alert" id="keep-awake-error">
+                {t('settings.window.keepComputerAwakeFailed', { error: keepComputerAwakeError })}
               </Text>
-              {dataDirError && <Text type="danger" role="alert" className={styles.dataDirHint}>{dataDirError}</Text>}
-            </div>
-
-            <Divider />
-
-            {/* Backup Settings */}
-            <SectionTitle
-              icon={<CloudSyncOutlined style={{ color: '#52c41a' }} />}
-              title={t('settings.cards.backup')}
-              extra={
-                <Button
-                  type="text"
-                  icon={<EditOutlined />}
-                  size="small"
-                  onClick={() => setBackupModalOpen(true)}
-                >
-                  {t('common.edit')}
-                </Button>
-              }
-            />
-            <Table
-              columns={backupColumns}
-              dataSource={backupData}
-              pagination={false}
-              size="small"
-              bordered
-              style={{ marginBottom: 16 }}
-            />
-            <Space wrap>
-              <Button
-                type="primary"
-                icon={<CloudUploadOutlined />}
-                onClick={handleBackup}
-                loading={backupLoading}
-              >
-                {t('settings.backupSettings.backupNow')}
-              </Button>
-              <Button icon={<CloudDownloadOutlined />} onClick={handleRestore} loading={restoreLoading}>
-                {t('settings.backupSettings.restoreBackup')}
-              </Button>
-              <Typography.Link onClick={handleOpenDataDir} style={{ fontSize: 14 }}>
-                {t('settings.backupSettings.openDataDir')}
-              </Typography.Link>
-            </Space>
-            {autoBackupEnabled && (
-              <div style={{ marginTop: 12 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {t('settings.autoBackup.statusEnabled')} | {t('settings.autoBackup.statusInterval', { days: autoBackupIntervalDays })} | {t('settings.autoBackup.lastTime')}: {lastAutoBackupTime ? formatBackupTime(lastAutoBackupTime) : t('settings.autoBackup.neverBackedUp')}
-                </Text>
-              </div>
             )}
-            <Divider />
-          </Card>
           </div>
-        </Col>
-      </Row>
+          <Switch
+            checked={keepComputerAwake}
+            loading={keepComputerAwakeUpdating}
+            disabled={keepComputerAwakeUpdating}
+            aria-label={t('settings.window.keepComputerAwake')}
+            aria-describedby={keepComputerAwakeError ? 'keep-awake-error' : undefined}
+            onChange={handleKeepComputerAwakeChange}
+          />
+        </div>
+      </div>
+    </Card>
+  );
 
-      {/* Modals */}
+  const modulesSection = (
+    <Card
+      title={<CardTitle icon={<EyeOutlined style={{ color: '#722ed1' }} />} title={t('settings.cards.tabVisibility')} />}
+      className={styles.card}
+      extra={
+        <Button
+          type={reorderMode ? 'primary' : 'text'}
+          size="small"
+          icon={<DragOutlined />}
+          onClick={() => setReorderMode(!reorderMode)}
+        >
+          {t('settings.tabVisibility.sort')}
+        </Button>
+      }
+    >
+      <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 12 }}>
+        {t('settings.tabVisibility.hint')}
+      </Text>
+      <div className={styles.tabVisibilityRows}>
+        <div className={styles.tabVisibilityRow}>
+          <Text type="secondary" className={styles.tabVisibilityRowLabel}>
+            {t('settings.tabVisibility.codingTabs')}
+          </Text>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext items={codingTabOrder} strategy={rectSortingStrategy}>
+              <div className={styles.sortableChipList}>
+                {codingTabOrder.map((key) => (
+                  <SortableCodingChip
+                    key={key}
+                    id={key}
+                    label={t(`subModules.${key}`)}
+                    checked={visibleTabs.includes(key)}
+                    onToggle={(checked) => handleCodingTabToggle(key, checked)}
+                    reorderMode={reorderMode}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
+        </div>
+        <div className={styles.tabVisibilityRow}>
+          <Text type="secondary" className={styles.tabVisibilityRowLabel}>
+            {t('settings.tabVisibility.otherModules')}
+          </Text>
+          <div className={styles.otherTabList}>
+            {OTHER_TABS.map((key) => (
+              <div
+                key={key}
+                className={`${styles.tabPill} ${visibleTabs.includes(key) ? styles.tabPillActive : styles.tabPillInactive}`}
+                onClick={() => handleOtherTabToggle(key, !visibleTabs.includes(key))}
+              >
+                <span>{t(`subModules.${key}`)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+
+  const agentSection = <ControlApiSettingsCard />;
+
+  const networkSection = (
+    <Card
+      title={<CardTitle icon={<ApiOutlined style={{ color: '#fa8c16' }} />} title={t('settings.cards.proxy')} />}
+      className={styles.card}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.proxy.modeLabel')}</Text>
+          <Select
+            value={proxyMode}
+            onChange={(value: ProxyMode) => void handleProxyModeChange(value)}
+            style={{ width: 160 }}
+            options={[
+              { value: 'direct', label: t('settings.proxy.modeDirect') },
+              { value: 'custom', label: t('settings.proxy.modeCustom') },
+              { value: 'system', label: t('settings.proxy.modeSystem') },
+            ]}
+          />
+        </div>
+        {isCustomProxyMode ? (
+          <>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Input
+                value={proxyInput}
+                onChange={(e) => setProxyInput(e.target.value)}
+                onBlur={handleProxySave}
+                onPressEnter={handleProxySave}
+                placeholder={t('settings.proxy.urlPlaceholder')}
+                style={{ flex: 1 }}
+              />
+              <Button
+                onClick={handleProxyTest}
+                loading={proxyTesting}
+                disabled={!proxyInput}
+              >
+                {proxyTesting ? t('settings.proxy.testing') : t('settings.proxy.testConnection')}
+              </Button>
+            </div>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {t('settings.proxy.hint')}
+            </Text>
+          </>
+        ) : null}
+      </div>
+    </Card>
+  );
+
+  const dataSection = (
+    <Card
+      title={<CardTitle icon={<CloudServerOutlined style={{ color: '#52c41a' }} />} title={t('settings.nav.data')} />}
+      className={styles.card}
+    >
+      {/* Data Directory (custom path override, issue #345) */}
+      <SectionTitle
+        icon={<FolderOpen size={16} aria-hidden="true" className={styles.dataDirIcon} />}
+        title={t('settings.dataDir.title')}
+        extra={
+          <Space size={4} wrap>
+            <Button
+              type="link"
+              loading={dataDirBusy}
+              disabled={!dataDirInfo || dataDirBusy || restoreLoading}
+              onClick={() => void handleDataDirChange()}
+            >
+              {t('settings.dataDir.change')}
+            </Button>
+            <Button
+              type="link"
+              disabled={!dataDirInfo?.override || dataDirBusy || restoreLoading}
+              onClick={() => void handleDataDirChange('reset')}
+            >
+              {t('settings.dataDir.reset')}
+            </Button>
+          </Space>
+        }
+      />
+      <div className={styles.dataDirSection} aria-busy={dataDirBusy || (!dataDirInfo && !dataDirError)}>
+        <div className={styles.dataDirRow}>
+          <Text type="secondary">{t('settings.dataDir.current')}</Text>
+          <div className={styles.dataDirValue}>
+            <span>{dataDirInfo?.effective || (dataDirError ? '—' : t('common.loading'))}</span>
+            {dataDirInfo && (
+              <Text type="secondary">
+                ({dataDirInfo.is_custom ? t('settings.dataDir.custom') : t('settings.dataDir.defaultTag')})
+              </Text>
+            )}
+          </div>
+        </div>
+        {dataDirInfo?.restart_required && (
+          <div className={styles.dataDirRow} role="status">
+            <Text type="secondary">{t('settings.dataDir.nextStart')}</Text>
+            <div className={styles.dataDirValue}>
+              <span>{dataDirInfo.next_start}</span>
+              <Text type="warning">{t('settings.dataDir.pending')}</Text>
+              <Button type="link" size="small" onClick={promptRestart} disabled={dataDirBusy || restoreLoading}>
+                {t('common.restart')}
+              </Button>
+              <Button type="link" size="small" onClick={() => void handleDataDirChange('cancel')} disabled={dataDirBusy || restoreLoading}>
+                {t('settings.dataDir.cancelChange')}
+              </Button>
+            </div>
+          </div>
+        )}
+        <Text type="secondary" className={styles.dataDirHint}>
+          {t('settings.dataDir.hint')}
+        </Text>
+        {dataDirError && <Text type="danger" role="alert" className={styles.dataDirHint}>{dataDirError}</Text>}
+      </div>
+
+      <Divider />
+
+      {/* Backup Settings */}
+      <SectionTitle
+        icon={<CloudSyncOutlined style={{ color: '#52c41a' }} />}
+        title={t('settings.cards.backup')}
+        extra={
+          <Button
+            type="text"
+            icon={<EditOutlined />}
+            size="small"
+            onClick={() => setBackupModalOpen(true)}
+          >
+            {t('common.edit')}
+          </Button>
+        }
+      />
+      <Table
+        columns={backupColumns}
+        dataSource={backupData}
+        pagination={false}
+        size="small"
+        bordered
+        style={{ marginBottom: 16 }}
+      />
+      <Space wrap>
+        <Button
+          type="primary"
+          icon={<CloudUploadOutlined />}
+          onClick={handleBackup}
+          loading={backupLoading}
+        >
+          {t('settings.backupSettings.backupNow')}
+        </Button>
+        <Button icon={<CloudDownloadOutlined />} onClick={handleRestore} loading={restoreLoading}>
+          {t('settings.backupSettings.restoreBackup')}
+        </Button>
+        <Typography.Link onClick={handleOpenDataDir} style={{ fontSize: 14 }}>
+          {t('settings.backupSettings.openDataDir')}
+        </Typography.Link>
+      </Space>
+      {autoBackupEnabled && (
+        <div style={{ marginTop: 12 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {t('settings.autoBackup.statusEnabled')} | {t('settings.autoBackup.statusInterval', { days: autoBackupIntervalDays })} | {t('settings.autoBackup.lastTime')}: {lastAutoBackupTime ? formatBackupTime(lastAutoBackupTime) : t('settings.autoBackup.neverBackedUp')}
+          </Text>
+        </div>
+      )}
+    </Card>
+  );
+
+  const aboutSection = (
+    <Card
+      title={<CardTitle icon={<InfoCircleOutlined style={{ color: '#722ed1' }} />} title={t('settings.nav.about')} />}
+      className={styles.card}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.about.version')}:</Text>
+          <Text strong>{appVersion || '-'}</Text>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text>{t('settings.about.autoCheckUpdate')}</Text>
+          <Switch
+            checked={autoCheckUpdate}
+            onChange={setAutoCheckUpdate}
+          />
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Space size={4}>
+            <Text>{t('settings.about.receiveBetaUpdates')}</Text>
+            <FieldHelp text={t('settings.about.receiveBetaUpdatesHelp')} />
+          </Space>
+          <Switch
+            checked={receiveBetaUpdates}
+            onChange={setReceiveBetaUpdates}
+          />
+        </div>
+        <Space wrap>
+          <Button
+            icon={<SyncOutlined spin={checkingUpdate} />}
+            onClick={() => handleCheckUpdate()}
+            loading={checkingUpdate}
+          >
+            {checkingUpdate ? t('settings.about.checking') : t('settings.about.checkUpdate')}
+          </Button>
+          {updateInfo?.hasUpdate && !updateInfo.scoopInstall && !updateInfo.debInstall && (
+            <Button type="primary" onClick={handleGoToDownload}>
+              {t('settings.about.goToDownload')} (v{updateInfo.latestVersion})
+            </Button>
+          )}
+          {updateInfo?.hasUpdate && updateInfo.scoopInstall && (
+            <Typography.Text type="warning">
+              {t('settings.about.scoopUpdateHint', { version: updateInfo.latestVersion })}
+            </Typography.Text>
+          )}
+          {updateInfo?.hasUpdate && updateInfo.debInstall && (
+            <Typography.Text type="warning">
+              {t('settings.about.debUpdateHint', { version: updateInfo.latestVersion })}{' '}
+              <Typography.Link onClick={handleOpenReleasePage}>
+                {t('settings.about.openDownloadPage')}
+              </Typography.Link>
+            </Typography.Text>
+          )}
+          <Button icon={<GithubOutlined />} onClick={handleOpenGitHub}>
+            {t('settings.about.github')}
+          </Button>
+        </Space>
+
+        <Divider style={{ margin: 0 }} />
+
+        <div className={styles.releaseNotes}>
+          <div className={styles.releaseNotesHeader}>
+            <Space size={8}>
+              <Text strong>{t('settings.about.releaseNotes')}</Text>
+              {updateInfo?.latestVersion ? (
+                <Text type="secondary">v{updateInfo.latestVersion}</Text>
+              ) : null}
+            </Space>
+            {updateInfo?.releaseUrl ? (
+              <Typography.Link onClick={handleOpenReleasePage}>
+                {t('settings.about.viewReleaseNotes')}
+              </Typography.Link>
+            ) : null}
+          </div>
+          {updateInfo?.releaseNotes ? (
+            <div className={styles.releaseNotesBody}>
+              <MarkdownPreview
+                content={updateInfo.releaseNotes}
+                style={{ background: 'transparent' }}
+              />
+            </div>
+          ) : (
+            <Text type="secondary" className={styles.releaseNotesEmpty}>
+              {t('settings.about.releaseNotesEmpty')}
+            </Text>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+
+  const sectionContent: Record<SettingsSection, React.ReactNode> = {
+    general: generalSection,
+    modules: modulesSection,
+    agent: agentSection,
+    network: networkSection,
+    data: dataSection,
+    about: aboutSection,
+  };
+
+  return (
+    <>
+      <SettingsSplitLayout
+        items={settingNavItems}
+        activeKey={activeSection}
+        onChange={(key) => {
+          if (isSettingsSection(key)) {
+            onSectionChange(key);
+          }
+        }}
+        variant="page"
+        collapsible
+        ariaLabel={t('settings.title')}
+      >
+        {sectionContent[activeSection]}
+      </SettingsSplitLayout>
+
+      {/* Dialogs stay mounted outside the split layout so switching categories
+          never interrupts an update download or a backup/restore flow. */}
       <BackupSettingsModal
         open={backupModalOpen}
         onClose={() => {
@@ -1415,7 +1503,6 @@ const GeneralSettingsPage: React.FC = () => {
         currentHostLabel={remoteRestoreChannel === 'webdav' ? webdav.hostLabel : ''}
       />
 
-      {/* Update Progress Modal */}
       <UpdateProgressModal
         open={updateModalOpen}
         progress={updateProgress}
@@ -1424,7 +1511,7 @@ const GeneralSettingsPage: React.FC = () => {
         downloaded={updateDownloaded}
         total={updateTotal}
       />
-    </div>
+    </>
   );
 };
 

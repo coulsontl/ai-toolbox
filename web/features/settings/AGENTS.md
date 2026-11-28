@@ -21,6 +21,8 @@
 - WSL 和 SSH 前端看起来相似，但产品语义不同：WSL 有自动同步和 WSL Direct 跳过逻辑；SSH 当前以手动同步为主。
 - 默认 mappings 的初始化放在 hook 里做一次性补全，避免后端返回空映射后页面无法操作。
 - WSL/SSH 模块 tab 的可见性依赖 `visibleTabs`，这样同步 UI 和主功能页的启用范围保持一致。
+- 应用设置页（`/settings`）与网关设置 Tab 共用 `web/components/layout/SettingsSplitLayout` 的左右分类外壳：应用页用 `variant="page"` 并依赖路由 `contentPadding: 'none'` 自己滚动右侧；网关设置用 `variant="embedded"`，左侧导航按 `--gateway-header-height` 粘性定位并撑到视口底部，避免与 `GatewayPage` 顶栏形成双滚动条，也避免短页面留下孤立的侧栏色块。导航可收起为图标栏（窄屏自动恢复横向胶囊条），新增分类只扩展两侧的 `items` 与右侧内容，不要各写一份侧栏样式。
+- `/settings` 的分类状态写入 `?section=`（`general | modules | agent | network | data | about`），并保留旧的 `?section=gateway` → `/gateway/settings` 重定向。`BackupSettingsModal`、`RemoteBackupRestoreModal`、`UpdateProgressModal` 必须挂在 `SettingsSplitLayout` 外侧，切换分类不得卸载或打断备份/恢复/更新。网关设置切换分类前必须先 `flushSave`，把 200ms debounce 内未落盘的改动立即提交。
 
 ## 关键流程
 

@@ -29,10 +29,18 @@ import {
 } from '@/services';
 import GatewayPrivacySettings from '@/features/coding/gateway/components/GatewayPrivacySettings';
 import GatewayAggregateSettings from '@/features/coding/gateway/components/GatewayAggregateSettings';
+import SettingsSplitLayout from '@/components/layout/SettingsSplitLayout';
 import styles from './GatewaySettingsPanel.module.less';
 
 type BusyAction = 'load' | 'autosave';
 type NoticeKind = 'success' | 'error' | 'info';
+type GatewaySettingsSection =
+  | 'listen'
+  | 'resilience'
+  | 'cli'
+  | 'aggregate'
+  | 'privacy'
+  | 'logs';
 type SupportedGatewayCliKey = Extract<
   GatewayCliKey,
   | 'claude'
@@ -237,6 +245,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
   const [busyAction, setBusyAction] = React.useState<BusyAction | null>('load');
   const [checkingPort, setCheckingPort] = React.useState(false);
   const [notice, setNotice] = React.useState<NoticeState | null>(null);
+  const [activeSection, setActiveSection] = React.useState<GatewaySettingsSection>('listen');
   const saveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveSequenceRef = React.useRef(0);
   const pendingSaveRef = React.useRef(false);
@@ -339,11 +348,56 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
       });
   }, []);
 
-  const triggerSave = React.useCallback(() => {
+  const hasUnsavedDraft = React.useCallback(
+    () => Boolean(
+      draftSettings
+      && savedSettings
+      && JSON.stringify(draftSettings) !== JSON.stringify(savedSettings),
+    ),
+    [draftSettings, savedSettings],
+  );
+
+  const runAutoSave = React.useCallback(() => {
     if (!draftSettings || !savedSettings) {
       return;
     }
     if (JSON.stringify(draftSettings) === JSON.stringify(savedSettings)) {
+      return;
+    }
+
+    const sequence = saveSequenceRef.current + 1;
+    saveSequenceRef.current = sequence;
+    setBusyAction('autosave');
+    void (async () => {
+      try {
+        const nextSettings = await updateProxyGatewaySettings({
+          ...draftSettings,
+          enabled_on_startup: status?.running ? true : draftSettings.enabled_on_startup,
+        });
+        if (saveSequenceRef.current !== sequence) {
+          return;
+        }
+        setSavedSettings(nextSettings);
+        setDraftSettings(cloneGatewaySettings(nextSettings));
+        setNotice({ kind: 'success', text: t('settings.gateway.notice.autoSaved') });
+      } catch (error) {
+        if (saveSequenceRef.current !== sequence) {
+          return;
+        }
+        setNotice({
+          kind: 'error',
+          text: t('settings.gateway.notice.saveFailed', { error: formatGatewayError(error) }),
+        });
+      } finally {
+        if (saveSequenceRef.current === sequence) {
+          setBusyAction(null);
+        }
+      }
+    })();
+  }, [draftSettings, savedSettings, status?.running, t]);
+
+  const triggerSave = React.useCallback(() => {
+    if (!hasUnsavedDraft()) {
       return;
     }
 
@@ -352,39 +406,34 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
       saveTimerRef.current = null;
     }
 
-    const sequence = saveSequenceRef.current + 1;
-    saveSequenceRef.current = sequence;
-    setBusyAction('autosave');
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
-      void (async () => {
-        try {
-          const nextSettings = await updateProxyGatewaySettings({
-            ...draftSettings,
-            enabled_on_startup: status?.running ? true : draftSettings.enabled_on_startup,
-          });
-          if (saveSequenceRef.current !== sequence) {
-            return;
-          }
-          setSavedSettings(nextSettings);
-          setDraftSettings(cloneGatewaySettings(nextSettings));
-          setNotice({ kind: 'success', text: t('settings.gateway.notice.autoSaved') });
-        } catch (error) {
-          if (saveSequenceRef.current !== sequence) {
-            return;
-          }
-          setNotice({
-            kind: 'error',
-            text: t('settings.gateway.notice.saveFailed', { error: formatGatewayError(error) }),
-          });
-        } finally {
-          if (saveSequenceRef.current === sequence) {
-            setBusyAction(null);
-          }
-        }
-      })();
+      runAutoSave();
     }, 200);
-  }, [draftSettings, savedSettings, status?.running, t]);
+  }, [hasUnsavedDraft, runAutoSave]);
+
+  /**
+   * Category navigation is an explicit commit point: a debounced edit must not
+   * be dropped just because the input never lost focus before the click.
+   */
+  const flushSave = React.useCallback(() => {
+    if (!hasUnsavedDraft()) {
+      return;
+    }
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    runAutoSave();
+  }, [hasUnsavedDraft, runAutoSave]);
+
+  const handleSectionChange = React.useCallback(
+    (nextSection: string) => {
+      flushSave();
+      setActiveSection(nextSection as GatewaySettingsSection);
+    },
+    [flushSave],
+  );
 
   React.useEffect(() => {
     if (!pendingSaveRef.current) {
@@ -489,48 +538,93 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
     );
   }
 
-  return (
-    <div className={styles.panel}>
-      {showTitleBlock || busyAction === 'autosave' ? (
-        <div className={joinClassNames(styles.topBar, !showTitleBlock && styles.topBarActionsOnly)}>
-          {showTitleBlock ? (
-            <div className={styles.titleBlock}>
-              <span className={styles.titleIcon}>
-                <Network size={18} aria-hidden="true" />
-              </span>
-              <div>
-                <h2>{t('settings.gateway.title')}</h2>
-                <p>{t('settings.gateway.subtitle')}</p>
-              </div>
-            </div>
-          ) : null}
+  const hasBannerContent =
+    busyAction === 'autosave' || Boolean(status?.last_error) || Boolean(notice);
 
-          <div className={styles.actionBar}>
-            {busyAction === 'autosave' ? (
-              <span className={styles.autoSaveText}>
-                <Loader2 size={12} className={styles.spin} aria-hidden="true" />
-                {t('settings.gateway.notice.autoSaving')}
-              </span>
-            ) : null}
-          </div>
-        </div>
+  const sectionItems = [
+    {
+      key: 'listen',
+      label: t('settings.gateway.sections.listen'),
+      icon: <Network size={16} aria-hidden="true" />,
+    },
+    {
+      key: 'resilience',
+      label: t('settings.gateway.sections.resilience'),
+      icon: <ArrowRightLeft size={16} aria-hidden="true" />,
+    },
+    {
+      key: 'cli',
+      label: t('settings.gateway.sections.cli'),
+      icon: <Terminal size={16} aria-hidden="true" />,
+    },
+    {
+      key: 'aggregate',
+      label: t('gateway.aggregate.title'),
+      icon: <Route size={16} aria-hidden="true" />,
+    },
+    {
+      key: 'privacy',
+      label: t('gateway.privacy.title'),
+      icon: <ShieldCheck size={16} aria-hidden="true" />,
+    },
+    {
+      key: 'logs',
+      label: t('settings.gateway.sections.logs'),
+      icon: <FileText size={16} aria-hidden="true" />,
+    },
+  ];
+
+  const sectionBanner = hasBannerContent ? (
+    <>
+      {busyAction === 'autosave' ? (
+        <span className={styles.autoSaveText}>
+          <Loader2 size={12} className={styles.spin} aria-hidden="true" />
+          {t('settings.gateway.notice.autoSaving')}
+        </span>
       ) : null}
-
       {status?.last_error ? (
         <div className={styles.inlineAlert} role="alert">
           <AlertCircle size={14} aria-hidden="true" />
           <span>{status.last_error}</span>
         </div>
       ) : null}
-
       {notice ? (
-        <div className={joinClassNames(styles.notice, styles[`notice_${notice.kind}`])} role="status" aria-live="polite">
+        <div
+          className={joinClassNames(styles.notice, styles[`notice_${notice.kind}`])}
+          role="status"
+          aria-live="polite"
+        >
           {notice.text}
         </div>
       ) : null}
+    </>
+  ) : undefined;
 
-      <div className={styles.contentGrid} onBlur={handleContentBlur}>
-        <div className={styles.contentColumn}>
+  return (
+    <div className={styles.panel}>
+      {showTitleBlock ? (
+        <div className={styles.titleBlock}>
+          <span className={styles.titleIcon}>
+            <Network size={18} aria-hidden="true" />
+          </span>
+          <div>
+            <h2>{t('settings.gateway.title')}</h2>
+            <p>{t('settings.gateway.subtitle')}</p>
+          </div>
+        </div>
+      ) : null}
+
+      <SettingsSplitLayout
+        items={sectionItems}
+        activeKey={activeSection}
+        onChange={handleSectionChange}
+        banner={sectionBanner}
+        variant="embedded"
+        collapsible
+        ariaLabel={t('settings.gateway.title')}
+      >
+        <div onBlur={handleContentBlur}>
+          {activeSection === 'listen' ? (
           <Section icon={<Network size={15} aria-hidden="true" />} title={t('settings.gateway.sections.listen')}>
             <div className={styles.fieldStack}>
               <FieldRow label={t('settings.gateway.fields.host')} description={t('settings.gateway.hints.host')}>
@@ -583,7 +677,9 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
               )}
             </div>
           </Section>
+          ) : null}
 
+          {activeSection === 'resilience' ? (
           <Section icon={<ArrowRightLeft size={15} aria-hidden="true" />} title={t('settings.gateway.sections.resilience')}>
             <div className={styles.fieldStack}>
               <div className={styles.subGroup}>
@@ -960,21 +1056,23 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
               </div>
             </div>
           </Section>
+          ) : null}
 
           {/*
-            Aggregate mode sits beside the resilience section: it also rewrites
-            the CLI runtime config, but it is controlled by its own engage /
-            restore commands instead of the panel's auto-saved settings payload.
+            Aggregate mode rewrites the CLI runtime config, but it is controlled
+            by its own engage / restore commands instead of the panel's
+            auto-saved settings payload.
           */}
+          {activeSection === 'aggregate' ? (
           <Section icon={<Route size={15} aria-hidden="true" />} title={t('gateway.aggregate.title')}>
             <GatewayAggregateSettings
               running={status?.running ?? false}
               onTakeoverChange={refreshCliStatuses}
             />
           </Section>
-        </div>
+          ) : null}
 
-        <div className={styles.contentColumn}>
+          {activeSection === 'cli' ? (
           <Section icon={<Terminal size={15} aria-hidden="true" />} title={t('settings.gateway.sections.cli')}>
             <div className={styles.perCliGrid}>
               {CLI_OPTIONS.map((option) => {
@@ -1081,11 +1179,15 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
               })}
             </div>
           </Section>
+          ) : null}
 
+          {activeSection === 'privacy' ? (
           <Section icon={<ShieldCheck size={15} aria-hidden="true" />} title={t('gateway.privacy.title')}>
             <GatewayPrivacySettings running={status?.running ?? false} />
           </Section>
+          ) : null}
 
+          {activeSection === 'logs' ? (
           <Section icon={<FileText size={15} aria-hidden="true" />} title={t('settings.gateway.sections.logs')}>
             <div className={styles.fieldStack}>
               <FieldRow
@@ -1201,20 +1303,20 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                 </FieldRow>
               </div>
             </div>
+            <div className={styles.footerMetrics}>
+              <div>
+                <Gauge size={14} aria-hidden="true" />
+                <span>{t('settings.gateway.metrics.logLevel', { level: deriveRequestLogLevel(draftSettings) })}</span>
+              </div>
+              <div>
+                <FileText size={14} aria-hidden="true" />
+                <span>{t('settings.gateway.metrics.logStorage')}</span>
+              </div>
+            </div>
           </Section>
+          ) : null}
         </div>
-      </div>
-
-      <div className={styles.footerMetrics}>
-        <div>
-          <Gauge size={14} aria-hidden="true" />
-          <span>{t('settings.gateway.metrics.logLevel', { level: deriveRequestLogLevel(draftSettings) })}</span>
-        </div>
-        <div>
-          <FileText size={14} aria-hidden="true" />
-          <span>{t('settings.gateway.metrics.logStorage')}</span>
-        </div>
-      </div>
+      </SettingsSplitLayout>
     </div>
   );
 };

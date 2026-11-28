@@ -40,9 +40,14 @@
   gap: 8px;
 }
 
-.hint {
+.titleIcon {
+  display: inline-flex;
+  color: var(--ant-color-primary);
+}
+
+.description {
   display: block;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-tertiary);
 }
@@ -52,19 +57,18 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  min-height: 32px;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
-.metaBlock {
+// Read-only status values: one borderless strip instead of a nested card.
+.metaList {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--color-bg-container);
-  border: 1px solid var(--color-border-card);
+  gap: 2px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--color-bg-elevated);
 }
 
 .metaRow {
@@ -73,11 +77,19 @@
   justify-content: space-between;
   gap: 12px;
   min-height: 20px;
-  font-size: 12px;
+  min-width: 0;
 }
 
-.path {
-  max-width: 65%;
+.metaLabel {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+
+// Long paths stay on one line; the full value is in the `title` attribute.
+.metaValue {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -85,12 +97,40 @@
   color: var(--color-text-secondary);
 }
 
-.divider {
-  margin: 16px 0 4px;
+.separator {
+  margin: 10px 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.hint {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+
+// A hint that belongs to the row above it (DESIGN.md: 2–4px).
+.hintAfter {
+  margin-top: 2px;
+}
+
+// Declared after `.hint` so it wins the equal-specificity color tie.
+.hintWarning {
+  color: var(--ant-color-warning);
+}
+
+.hintEllipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .approvalSelect {
   width: 200px;
+}
+
+.timeoutInput {
+  width: 110px;
 }
 
 .cliHeader {
@@ -98,28 +138,30 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 4px;
 }
 
-.cliActions {
-  margin-top: 12px;
+// Description, install path and CLI warnings stay one tight text group.
+.cliBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 2px;
+  min-width: 0;
 }
 
+// Footnote tier, same as the neighboring cards' helper text: stays on one line
+// in Chinese without a truncation that would hide the security statement.
 .securityNote {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px dashed var(--color-border-card);
+  margin-top: 8px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
 
   :global(.anticon) {
-    color: var(--color-text-tertiary);
     margin-top: 2px;
-  }
-
-  span {
-    font-size: 10px;
-    line-height: 1.5;
+    flex-shrink: 0;
   }
 }

@@ -841,6 +841,16 @@
       "proxy": "Network Proxy",
       "backup": "Data Backup"
     },
+    "nav": {
+      "general": "General",
+      "modules": "Modules",
+      "agent": "Agent Integration",
+      "network": "Network Proxy",
+      "data": "Data & Backup",
+      "about": "About & Updates",
+      "collapse": "Collapse navigation",
+      "expand": "Expand navigation"
+    },
     "currentLanguage": "Current Language",
     "currentTheme": "Current Theme",
     "lastBackup": "Last Backup",
@@ -1580,6 +1590,8 @@
       "updateFailedReason": "Reason",
       "openDownloadPage": "Open download page",
       "receiveBetaUpdates": "Receive beta updates",
+      "releaseNotes": "Release notes",
+      "releaseNotesEmpty": "No release notes yet. Check for updates to load the latest release notes.",
       "receiveBetaUpdatesHelp": "When enabled, update checks compare both the stable and the rolling beta build (e.g. 1.2.1-beta.261024a) and always offer the newer one: beta users are also notified when a stable ships, then follow beta again once a newer beta appears. Scoop / deb installs ignore this switch; they upgrade only through their package manager."
     },
     "dataDir": {

@@ -841,6 +841,16 @@
       "proxy": "网络代理",
       "backup": "数据备份"
     },
+    "nav": {
+      "general": "通用",
+      "modules": "模块显示",
+      "agent": "Agent 集成",
+      "network": "网络代理",
+      "data": "数据与备份",
+      "about": "关于与更新",
+      "collapse": "收起导航",
+      "expand": "展开导航"
+    },
     "currentLanguage": "当前语言",
     "currentTheme": "当前主题",
     "lastBackup": "上次备份",
@@ -1580,6 +1590,8 @@
       "updateFailedReason": "失败原因",
       "openDownloadPage": "打开下载页",
       "receiveBetaUpdates": "接收 Beta 更新",
+      "releaseNotes": "更新日志",
+      "releaseNotesEmpty": "暂无更新日志，点击「检查更新」获取最新发布说明。",
       "receiveBetaUpdatesHelp": "开启后检查更新会同时比较正式版与滚动 Beta 版（形如 1.2.1-beta.261024a，日期到秒级构建号），始终提示较新的那个：正式版发布后 Beta 用户也会收到正式版提醒，之后 Beta 再次更新时继续跟随 Beta。Scoop / deb 安装不受此开关影响，它们只能通过各自包管理器升级正式版。"
     },
     "dataDir": {

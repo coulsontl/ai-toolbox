@@ -245,14 +245,19 @@ export const PAGE_ROUTES: RouteEntry[] = [
       parentPath: '/coding/codebuddy',
     },
   },
-  { path: '/settings', component: SettingsPage },
+  { path: '/settings', component: SettingsPage, chrome: { contentPadding: 'none' } },
   { path: '/skills', component: SkillsPage },
   { path: '/mcp', component: McpPage },
   { path: '/gateway', routePath: '/gateway/*', component: GatewayPage },
   // One KeepAlive instance covers the management tabs and
   // `/plugins/page/:pluginId/:pageId`, so custom page frames survive
   // sidebar navigation inside the workspace.
-  { path: '/plugins', routePath: '/plugins/*', component: PluginsPage },
+  {
+    path: '/plugins',
+    routePath: '/plugins/*',
+    component: PluginsPage,
+    chrome: { contentPadding: 'none' },
+  },
   { path: '/mini-browser', component: MiniBrowserPage },
   { path: '/images', component: ImagePage },
 ];

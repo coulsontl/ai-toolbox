@@ -91,6 +91,47 @@ test('matchRouteEntry does not match partial sibling prefixes', () => {
   assert.equal(matchRouteEntry(routes, '/settings-panel'), undefined);
 });
 
+test('plugins workspace sub-routes inherit the borderless content chrome', () => {
+  const routes: RouteEntry[] = [
+    {
+      path: '/plugins',
+      routePath: '/plugins/*',
+      component: TestComponent,
+      chrome: { contentPadding: 'none' },
+    },
+  ];
+
+  // Every sidebar tab and custom plugin page lives below `/plugins`, so they
+  // all have to pick up the same zero-padding chrome from the parent route.
+  for (const pathname of [
+    '/plugins',
+    '/plugins/installed',
+    '/plugins/accounts',
+    '/plugins/market',
+    '/plugins/runtime',
+    '/plugins/page/demo-plugin/demo-page',
+  ]) {
+    assert.equal(
+      getRouteChrome(matchRouteEntry(routes, pathname)).contentPadding,
+      'none',
+      pathname,
+    );
+  }
+});
+
+test('settings page fills the viewport below the app chrome', () => {
+  // The split layout owns its own scrolling columns, so the shared content
+  // area must not add the default 24px padding around it.
+  const routes: RouteEntry[] = [
+    { path: '/settings', component: TestComponent, chrome: { contentPadding: 'none' } },
+  ];
+
+  assert.equal(
+    getRouteChrome(matchRouteEntry(routes, '/settings')).contentPadding,
+    'none',
+  );
+});
+
 test('route chrome defaults to the standard app chrome', () => {
   assert.deepEqual(getRouteChrome(undefined), {
     mode: 'default',
