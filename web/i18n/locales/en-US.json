@@ -4269,6 +4269,7 @@
       },
       "confirm": "Overwrite",
       "overwriteAll": "Overwrite All",
+      "skipAll": "Skip All",
       "skip": "Skip"
     },
     "targetExists": {

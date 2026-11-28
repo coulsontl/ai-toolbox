@@ -175,6 +175,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     const knownNames = new Set(existingNames);
     const skippedNames: string[] = [];
     let overwriteAll = false;
+    let skipAll = false;
 
     try {
       for (let i = 0; i < selectedPaths.length; i++) {
@@ -195,6 +196,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               if (skillName.trim()) {
                 knownNames.add(skillName.trim().toLowerCase());
               }
+              if (skipAll) {
+                skippedNames.push(skillName);
+                break;
+              }
               if (overwriteAll) {
                 overwrite = true;
                 continue;
@@ -214,6 +219,10 @@ export const ImportModal: React.FC<ImportModalProps> = ({
               } else if (resolution.action === 'alias') {
                 customName = resolution.alias;
                 overwrite = false;
+              } else if (resolution.action === 'skipAll') {
+                skipAll = true;
+                skippedNames.push(skillName);
+                break;
               } else {
                 skippedNames.push(skillName);
                 break;

@@ -418,6 +418,7 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
     const knownNames = new Set(existingNames);
     const skippedNames: string[] = [];
     let overwriteAll = false;
+    let skipAll = false;
 
     try {
       for (let i = 0; i < selections.length; i += 1) {
@@ -437,6 +438,10 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
               const conflictName = extractSkillName(errMsg);
               if (conflictName.trim()) {
                 knownNames.add(conflictName.trim().toLowerCase());
+              }
+              if (skipAll) {
+                skippedNames.push(conflictName);
+                break;
               }
               if (overwriteAll) {
                 overwrite = true;
@@ -458,6 +463,10 @@ export const AddSkillModal: React.FC<AddSkillModalProps> = ({
               } else if (resolution.action === 'alias') {
                 customName = resolution.alias;
                 overwrite = false;
+              } else if (resolution.action === 'skipAll') {
+                skipAll = true;
+                skippedNames.push(conflictName);
+                break;
               } else {
                 skippedNames.push(conflictName);
                 break;

@@ -59,7 +59,7 @@ sequenceDiagram
 - Inventory JSON 导入是完整 desired-state 覆盖：`enabled_tools` 需要真正对齐工具同步状态；未出现在清单里的本地 skill 默认禁用时不要保留旧 `group_id/user_group`，否则会重新冒出不在 registry 里的 legacy 分组。
 - “复制给 AI 整理”应复制面向文件工具的 prompt：先确保有导出的 `~/skill-group-{timestamp}.json` 路径，再要求 agent 读取该文件并输出/写入可导入 JSON 文件，避免聊天框承载巨型 JSON。
 - `ImportModal` 的 CC Switch 变体（`tool === 'cc_switch'`）会渲染 `source_enabled_tools` agent 徽标（key→label 从 `toolStatus.tools` 查，徽标是轻量 span，不复用 antd Tag），并提供“遵循 CC Switch 标记”开关（默认开，仅勾选 CC Switch 变体时出现）：开启时 CC Switch 来源的 skill 导入后同步目标 = 标记 ∩ 已安装工具（全未标记的 skill 不同步到任何工具），下方勾选只作用于其他来源；关闭时 CC Switch 来源同样使用勾选集合。Skills 导入是“前端先 `importExistingSkill` 安装到中央仓库、再逐 skill `syncSkillToTools`”的两段链路，标记替换只发生在第二段的 `selectedTools` 入参上。
-- 本地/Git 安装（`AddSkillModal`）与现有工具导入（`ImportModal`）遇到重名（`SKILL_EXISTS|{name}`）时，统一通过 `SkillConflictModal`（`useSkillConflictPrompt`）提供「以别名安装 / 覆盖 / 跳过（或全部覆盖）」决策，并在 `GitPickModal` 候选列表名称旁对已存在名称渲染轻量「已存在」提示，不阻塞勾选。
+- 本地/Git 安装（`AddSkillModal`）与现有工具导入（`ImportModal`）遇到重名（`SKILL_EXISTS|{name}`）时，统一通过 `SkillConflictModal`（`useSkillConflictPrompt`）提供「以别名安装 / 覆盖 / 跳过」决策；批量安装且有后续项时额外提供「全部覆盖 / 全部跳过」，「全部跳过」会为后续重名项静默记录跳过、不再弹窗，并在 `GitPickModal` 候选列表名称旁对已存在名称渲染轻量「已存在」提示，不阻塞勾选。
 - Skill 卡片里的本地来源文件夹图标只负责打开原始来源 `source_ref`，不能 fallback 到中央仓库 `central_path`；本地来源不存在时提示用户原始来源目录已丢失。打开目录用后端 `open_existing_folder`，不要直接用 Tauri opener 的 `openPath`，否则容易被 opener path scope 拦截；定位 `SKILL.md` 时不要硬编码 `\\SKILL.md`，应保留当前路径风格拼接分隔符。
 - 单项/批量输入不存在的分组名时，应先调用 `skills_save_group` 创建 first-class group，再把 skill 绑定到返回的稳定 id；不要静默保存成未分组。
 - Skills 管理页面向几百个条目时应优先使用 shared `management/VirtualGrid` 和按需菜单；普通浏览/分组展开可以虚拟化，拖拽排序模式保持完整列表渲染，避免虚拟化与 dnd-kit 排序语义冲突。

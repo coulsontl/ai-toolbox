@@ -12,7 +12,8 @@ export type SkillConflictResolution =
   | { action: 'alias'; alias: string }
   | { action: 'overwrite' }
   | { action: 'overwriteAll' }
-  | { action: 'skip' };
+  | { action: 'skip' }
+  | { action: 'skipAll' };
 
 export interface SkillConflictModalProps {
   open: boolean;
@@ -87,7 +88,7 @@ export const SkillConflictModal: React.FC<SkillConflictModalProps> = ({
       open={open}
       onCancel={() => onResolve({ action: 'skip' })}
       footer={null}
-      width={480}
+      width={580}
       zIndex={1050}
     >
       <p className={styles.description}>
@@ -117,12 +118,16 @@ export const SkillConflictModal: React.FC<SkillConflictModalProps> = ({
       </div>
 
       <div className={styles.footer}>
-        <Button
-          className={styles.cancelButton}
-          onClick={() => onResolve({ action: 'skip' })}
-        >
-          {isBatch ? t('skills.overwrite.skip') : t('common.cancel')}
-        </Button>
+        <div className={styles.skipActions}>
+          <Button onClick={() => onResolve({ action: 'skip' })}>
+            {isBatch ? t('skills.overwrite.skip') : t('common.cancel')}
+          </Button>
+          {isBatch && hasMore && (
+            <Button onClick={() => onResolve({ action: 'skipAll' })}>
+              {t('skills.overwrite.skipAll')}
+            </Button>
+          )}
+        </div>
 
         <div className={styles.actions}>
           <Button danger onClick={() => onResolve({ action: 'overwrite' })}>

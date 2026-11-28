@@ -4266,6 +4266,7 @@
       },
       "confirm": "覆盖",
       "overwriteAll": "全部覆盖",
+      "skipAll": "全部跳过",
       "skip": "跳过"
     },
     "targetExists": {
