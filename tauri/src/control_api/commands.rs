@@ -445,7 +445,7 @@ fn ensure_on_path(dir: &Path) -> Result<(), String> {
     let marker = unix_path_marker();
     let profile = unix_profile_path()?;
     let existing = std::fs::read_to_string(&profile).unwrap_or_default();
-    if existing.contains(marker) {
+    if existing.contains(&marker) {
         return Ok(());
     }
     let line = format!(
@@ -471,7 +471,7 @@ fn remove_from_path(_dir: &Path) -> Result<(), String> {
     let Ok(existing) = std::fs::read_to_string(&profile) else {
         return Ok(());
     };
-    if !existing.contains(marker) {
+    if !existing.contains(&marker) {
         return Ok(());
     }
     let cleaned = strip_unix_path_block(&existing, &marker);
