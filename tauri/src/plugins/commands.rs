@@ -21,6 +21,7 @@ use super::types::{
     PluginAccountMetaRecord, PluginPageSession, PluginProviderOptionValue, PluginSettings,
     RegisteredPluginPage,
 };
+use super::updater::{self, PluginUpdateSummary};
 use super::PluginManagerState;
 
 fn now_rfc3339() -> String {
@@ -121,6 +122,7 @@ pub async fn reload_plugins(
     app: &AppHandle,
     id: Option<&str>,
 ) -> Result<Vec<InstalledPluginRecord>, String> {
+    let _update_guard = manager.update_lock.lock().await;
     if let Some(id) = id {
         if store::get_installed_plugin(manager.db(), id)?.is_none() {
             return Err(format!("Plugin '{id}' is not installed"));
@@ -142,6 +144,56 @@ pub async fn plugins_reload(
     reload_plugins(&manager, &app, id.as_deref()).await
 }
 
+/// Apply updates and notify open desktop pages. Shared by the Tauri command
+/// and the Control API so both paths emit the same event.
+pub async fn update_plugins(
+    manager: &PluginManagerState,
+    app: &AppHandle,
+    plugin_id: Option<&str>,
+) -> Result<PluginUpdateSummary, String> {
+    let summary = updater::check_and_update_plugins(manager, plugin_id, true, true).await?;
+    if summary.updated_count > 0 {
+        let updated_ids: Vec<&str> = summary
+            .items
+            .iter()
+            .filter(|item| item.status == "updated")
+            .map(|item| item.plugin_id.as_str())
+            .collect();
+        let _ = app.emit(
+            "plugins-updated",
+            json!({
+                "updatedCount": summary.updated_count,
+                "updatedIds": updated_ids,
+            }),
+        );
+    }
+    Ok(summary)
+}
+
+#[tauri::command]
+pub async fn plugins_check_updates(
+    manager: State<'_, PluginManagerState>,
+    plugin_id: Option<String>,
+    record_check_time: Option<bool>,
+) -> Result<PluginUpdateSummary, String> {
+    let manager = manager.inner().clone();
+    if record_check_time.unwrap_or(true) {
+        updater::check_and_update_plugins(&manager, plugin_id.as_deref(), false, true).await
+    } else {
+        updater::check_plugins_read_only(&manager, plugin_id.as_deref()).await
+    }
+}
+
+#[tauri::command]
+pub async fn plugins_update_plugins(
+    manager: State<'_, PluginManagerState>,
+    app: AppHandle,
+    plugin_id: Option<String>,
+) -> Result<PluginUpdateSummary, String> {
+    let manager = manager.inner().clone();
+    update_plugins(&manager, &app, plugin_id.as_deref()).await
+}
+
 #[tauri::command]
 pub fn plugins_list_installed(
     manager: State<'_, PluginManagerState>,
@@ -156,6 +208,7 @@ pub async fn plugins_install(
     market_id: Option<String>,
 ) -> Result<InstalledPluginRecord, String> {
     let manager = manager.inner().clone();
+    let _update_guard = manager.update_lock.lock().await;
     let record = installer::install_plugin(
         manager.db(),
         manager.paths(),
@@ -175,6 +228,7 @@ pub async fn plugins_uninstall(
     purge_data: Option<bool>,
 ) -> Result<(), String> {
     let manager = manager.inner().clone();
+    let _update_guard = manager.update_lock.lock().await;
     installer::uninstall_plugin(manager.db(), manager.paths(), manager.bun(), &id).await?;
     let purge_result = if purge_data.unwrap_or(false) {
         // The record is gone already; a stale data folder is harmless, a
@@ -195,6 +249,7 @@ pub async fn plugins_set_enabled(
     enabled: bool,
 ) -> Result<InstalledPluginRecord, String> {
     let manager = manager.inner().clone();
+    let _update_guard = manager.update_lock.lock().await;
     let record = store::set_plugin_enabled(manager.db(), &id, enabled)?;
     reload_runtimes(&manager).await;
     Ok(record)
@@ -207,6 +262,7 @@ pub async fn plugins_set_options(
     options: Value,
 ) -> Result<InstalledPluginRecord, String> {
     let manager = manager.inner().clone();
+    let _update_guard = manager.update_lock.lock().await;
     let record = store::set_plugin_options(manager.db(), &id, &options)?;
     reload_runtimes(&manager).await;
     Ok(record)
@@ -254,6 +310,7 @@ pub async fn plugins_page_bridge_set_options(
     options: Value,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
+    let _update_guard = manager.update_lock.lock().await;
     let page_only = store::get_installed_plugin(manager.db(), &plugin_id)?
         .is_some_and(|record| record.is_page_only());
     let saved = page_bridge::set_page_options(manager.db(), &plugin_id, &options)?;

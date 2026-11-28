@@ -491,6 +491,11 @@ aitoolbox plugin reload my-plugin-id --json
 # 或只重载全部
 aitoolbox plugin reload --json
 
+# 3.1) npm/GitHub 插件查更新或更新（本地插件请继续用 reload）
+aitoolbox plugin update --check-only --json
+aitoolbox plugin update my-plugin-id --json
+aitoolbox plugin update --json
+
 # 4) 检查宿主状态
 aitoolbox plugin list --json
 aitoolbox plugin get my-plugin-id --json
@@ -533,7 +538,8 @@ aitoolbox provider test --cli codex --id <providerId> --json
 - 改 `package.json` 的页面清单、权限、图标、Provider 列表后必须 reload，宿主才会重新探测。
 - 改 Provider / 中间件代码后，reload 会按需重启对应运行时；如果模块有顶层缓存，禁用再启用或重启宿主更彻底。
 - 纯页面插件和纯中间件插件不需要 Bun；页面服务是 `127.0.0.1` 上的按需静态服务。
-- 插件全局设置也可用 CLI 维护：`aitoolbox plugin settings` 读取；`--bun-path` / `--clear-bun-path`、`--npm-registry` / `--china-mirror`、`--follow-app-proxy` 做局部更新。只想改一个字段时不要先 GET 再整体 PUT，后端会保留未传字段。
+- 插件全局设置也可用 CLI 维护：`aitoolbox plugin settings` 读取；`--bun-path` / `--clear-bun-path`、`--npm-registry` / `--china-mirror`、`--follow-app-proxy`、`--auto-update true|false`、`--auto-update-interval <HOURS>` 做局部更新。只想改一个字段时不要先 GET 再整体 PUT，后端会保留未传字段；`lastAutoUpdateCheckAt` 由后端维护，不要手工写。
+- `plugin update --check-only` 只查询版本，不写 `lastAutoUpdateCheckAt`；实际更新会下载并执行新版本代码（L2），并保留原 `spec` / `options` / `enabled` / `installedAt` / `marketId`。锁定版本、本地插件、GitHub check-only 会返回 `skipped`；全量 npm 检查包含已停用插件，更新后仍保持停用。
 - 渠道级每日自动签到用 `aitoolbox plugin provider-auto-checkin <provider> --enabled true|false`；渠道选项用 `aitoolbox plugin provider-options <provider> [--set '<JSON>']`。
 - Bun 宿主需要复位时用 `aitoolbox plugin host-restart`（L1，可逆但有中断）；`aitoolbox plugin bun-probe <path>` 只验证一个可执行文件，不写入设置。
 
@@ -554,6 +560,8 @@ aitoolbox provider test --cli codex --id <providerId> --json
 | 添加到 CLI 后仍不通 | `aitoolbox provider list --cli <key>`；`aitoolbox gateway clis --json` 看目标 CLI 是否已被接管；Base URL 是否指向网关 | 直接 `aitoolbox provider test`（后端用原始凭据）；不要先 `restore`，否则会丢 aggregate 配置 |
 | 请求日志里看不到插件流量 | 网关是否启动；客户端是否真的经网关；插件 Provider 是否被选中 | `aitoolbox gateway status`、`aitoolbox gateway logs` |
 | 修改代码后行为没变 | 是否执行了 `aitoolbox plugin reload`；Bun host 是否被复用 | reload 指定 id；必要时 disable→enable |
+| npm 插件有新版本但没自动更新 | `aitoolbox plugin settings` 的 `autoUpdateEnabled` / `autoUpdateIntervalHours` / `lastAutoUpdateCheckAt`；插件是否 enabled；spec 是否锁定版本；Bun 是否可用 | 打开自动更新或 `aitoolbox plugin update`；锁定版本改为未锁定 spec 后重装；先 `plugin bun-ensure` |
+| `plugin update` 提示 skipped | 来源是 local/GitHub check-only/锁定版本，或没有 npm 包名 | 本地插件用 `plugin reload`；GitHub 用单插件 `plugin update <id>`；锁定版本需改 spec |
 
 ### 6.3 安全边界
 

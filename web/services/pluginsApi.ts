@@ -88,6 +88,36 @@ export interface PluginSettings {
   followAppProxy: boolean;
   /** Explicit per-channel auto check-in switches keyed by provider id. */
   providerAutoCheckin?: Record<string, boolean>;
+  /** Background auto-update opt-in; defaults to false. */
+  autoUpdateEnabled?: boolean;
+  /** Hours between automatic checks; the backend clamps to 1..=720. */
+  autoUpdateIntervalHours?: number;
+  /**
+   * When the last full update check ran. Backend-owned: never send a value,
+   * `savePluginSettings` clears it before invoking the command.
+   */
+  lastAutoUpdateCheckAt?: string | null;
+}
+
+/** One plugin's outcome from an update check or apply pass. */
+export interface PluginUpdateItem {
+  pluginId: string;
+  packageName: string;
+  displayName: string;
+  currentVersion: string;
+  latestVersion: string;
+  /** `up_to_date` | `available` | `updated` | `skipped` | `failed`. */
+  status: string;
+  /** Skip reason, error text, or a short success note. */
+  message: string;
+}
+
+export interface PluginUpdateSummary {
+  checkedAt: string;
+  updatedCount: number;
+  availableCount: number;
+  failedCount: number;
+  items: PluginUpdateItem[];
 }
 
 export interface BunRuntimeStatus {
@@ -539,8 +569,24 @@ export const getPluginMarketListings = (filters?: {
 export const getPluginSettings = (): Promise<PluginSettings> =>
   invoke<PluginSettings>('plugins_get_settings');
 
+/**
+ * Persist plugin settings. `lastAutoUpdateCheckAt` is backend-owned, so a stale
+ * snapshot must never be written back; the store keeps the DB value regardless.
+ */
 export const savePluginSettings = (settings: PluginSettings): Promise<PluginSettings> =>
-  invoke<PluginSettings>('plugins_save_settings', { settings });
+  invoke<PluginSettings>('plugins_save_settings', {
+    settings: { ...settings, lastAutoUpdateCheckAt: null },
+  });
+
+/** Desktop check: a full check records `lastAutoUpdateCheckAt`. */
+export const checkPluginUpdates = (pluginId?: string): Promise<PluginUpdateSummary> =>
+  invoke<PluginUpdateSummary>('plugins_check_updates', {
+    pluginId: pluginId ?? null,
+    recordCheckTime: true,
+  });
+
+export const updatePlugins = (pluginId?: string): Promise<PluginUpdateSummary> =>
+  invoke<PluginUpdateSummary>('plugins_update_plugins', { pluginId: pluginId ?? null });
 
 export const getPluginBunStatus = (): Promise<BunRuntimeStatus> =>
   invoke<BunRuntimeStatus>('plugins_bun_status');

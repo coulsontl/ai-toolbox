@@ -18,7 +18,7 @@
 - **独立 Settings 行 + 默认 `always_ask`**：控制面默认开启但所有写操作都要桌面确认；模式包括 `always_ask` / `ask_high_risk` / `auto_approve` / `read_only`。`read_only` 直接拒绝写请求，不是靠前端隐藏按钮。
 - **授权用 oneshot 而不是轮询**：`ApprovalHub` 注册 `requestId` + `oneshot::Sender<bool>`，HTTP handler `await` 同一个 channel；前端 `ControlApiApprovalModal` 调 `control_api_resolve_approval` 解阻塞。超时 408、拒绝 403，CLI 都映射为退出码 4。
 - **本地插件 reload 的快速通道只限 L1**：`always_ask` + 用户开启 `auto_approve_local_plugin_reload` 时，只有本地目录来源、且风险为 L1 的 `plugin reload` 跳过弹窗；L2 永远需要确认。策略纯函数 `approval::decide` 必须保持可单测。
-- **风险分级集中在路由层**：L0 只读；L1 可逆写（provider/model/config/prompt/reload/enable/restart/health reset）；L2 删除 provider、远程安装插件、卸载插件、gateway start/stop/takeover。不要在 `cli_dispatch` 里偷偷执行未过 `approve_write` 的写操作。
+- **风险分级集中在路由层**：L0 只读；L1 可逆写（provider/model/config/prompt/reload/enable/restart/health reset）；L2 删除 provider、远程安装插件、卸载插件、插件更新（下载并执行新版本插件代码）、gateway start/stop/takeover。不要在 `cli_dispatch` 里偷偷执行未过 `approve_write` 的写操作。
 - **发现文件是同机唯一凭据载体**：CLI 读取 URL + Token，绝不打印；桌面端只显示路径。服务停止/退出时必须删除自己 pid 的发现文件，避免下一次启动误读旧 Token。
 - **HTTP 客户端独立**：`cli/` 不依赖 Tauri/WebView，使用 clap + 手写阻塞 HTTP/1.1；不要为了复用后端类型把 CLI 拖进 Tauri 依赖树。
 
@@ -102,7 +102,7 @@ sequenceDiagram
   Routes-->>Agent: JSON（无明文凭据）
 ```
 
-插件写入走 `plugin_commands::*`；CLI 写入走 `cli_dispatch::*`；Gateway 写入走 `proxy_gateway::commands::*`。三者都不绕过既有命令。
+插件写入走 `plugin_commands::*`（插件更新复用 `plugin_commands::update_plugins`，check-only 复用 `plugins_check_updates`）；CLI 写入走 `cli_dispatch::*`；Gateway 写入走 `proxy_gateway::commands::*`。三者都不绕过既有命令。
 
 ## 易错点与历史坑（Gotchas）
 
@@ -124,6 +124,7 @@ sequenceDiagram
 - **发布包的 sidecar 位置**：`aitoolbox` 以 `bundle.externalBin` 随安装包分发，Tauri 会把它放在主程序同目录（Windows 安装目录、macOS `Contents/MacOS`、Linux deb/rpm 与 AppImage 的 `usr/bin`）。`find_cli_binary()` 的「exe 同目录」候选就是这条路径，不要为了安装包再加环境变量或硬编码 `/usr/bin`。
 - **已安装 CLI 的自动同步**：`sync_installed_cli_if_present()` 只在 `install_path()` 已存在时动作，**绝不**为未安装用户创建文件或修改 PATH/shell rc；启动时经 `spawn_blocking` fire-and-forget 调用，失败只 `log::warn`，不能阻塞桌面端启动。内容比较先比长度再比字节；更新走同目录临时文件 + rename（Unix 保持 `0o755`），目标被占用时返回 Err。
 - **授权超时与策略切换竞态**：超时分支必须先从 hub 移除再发 `control-api-approval-expired`，否则前端允许按钮会打到一个已死的 channel。停止控制面或切到 `read_only` 时必须 `ApprovalHub::cancel_all()` 并广播 expired；前端收到 `resolved: false` 只提示过期，不要重试 resolve。
+- **`POST /v1/plugins/update` 是双模式路由**：先 `parse_update_request` 严格解析（body 必须是对象；`id` 缺省/null → 全量，空串或非 string → 400；`checkOnly` 缺省/null → false，非 bool → 400），再按模式分支。`checkOnly=true` 走 `plugins_check_updates(..., Some(false))`，**不调用 `approve_write`、不写 `lastAutoUpdateCheckAt`**，是真正的 L0；其余情况走 `approve_write(RiskLevel::L2, "plugin.update", ...)`，审批通过后**重新检查插件是否仍存在**再执行（审批期间可能被卸载），避免把 404 包成 500。执行统一走 `plugin_commands::update_plugins`，不要在路由里重写安装或版本比较逻辑。设置补丁新增 `autoUpdateEnabled` / `autoUpdateIntervalHours`（整数且 ≤ `u32::MAX`，`1..=720` 由 store clamp），返回前把 `last_auto_update_check_at` 置空，时间戳始终由后端维护。
 - **插件页面路由会在 reload 后过期**：`page_server.sync_enabled_plugins` 不仅检查插件启用/page 是否存在，还比较入口文件名和解析后的 `service_port`；任一变化就撤销旧 token，让下次打开重新签发。否则新清单会继续用旧目录/旧 CSP 端口服务。
 
 ## 跨模块依赖

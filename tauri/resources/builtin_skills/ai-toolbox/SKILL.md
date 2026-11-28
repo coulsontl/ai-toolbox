@@ -35,8 +35,8 @@ aitoolbox cli list --json
 - 写入：新增/修改供应商 → `apply` → `provider test`；改全局配置 → `config set` 后再 `config get` 核对；提示词 → `prompt apply` 后检查 `isApplied`。
 - 网关：`gateway status` / `gateway clis` → `engage` 或 `switch` → `gateway logs --only-failed`；停止前先 `restore`。
 - 已被网关接管的 CLI 不要手工 `restore` 再改供应商：直接 `provider update` / `provider apply` / `model add`，后端会恢复直连、写入、再按原模式重新接管。
-- 插件：`plugin install` → `plugin reload` → `plugin logs` / `plugin middleware` / `plugin accounts` → `plugin link-cli`。
-- 插件运行环境：`plugin settings`（Bun 路径、npm registry、是否跟随应用代理）、`plugin bun-status` / `plugin bun-ensure` / `plugin bun-probe <path>`、`plugin host-status` / `plugin host-restart`、`plugin pages`（自定义页面清单）。
+- 插件：`plugin install` → `plugin reload` → `plugin logs` / `plugin middleware` / `plugin accounts` → `plugin link-cli`；npm/GitHub 插件检查或升级用 `plugin update [id] [--check-only]`。
+- 插件运行环境：`plugin settings`（Bun 路径、npm registry、是否跟随应用代理、自动更新开关/间隔）、`plugin bun-status` / `plugin bun-ensure` / `plugin bun-probe <path>`、`plugin host-status` / `plugin host-restart`、`plugin pages`（自定义页面清单）。
 - 每次写操作后做一次只读核对，不要只相信退出码。
 
 ### 1.4 授权与失败处理
@@ -65,7 +65,7 @@ aitoolbox cli list --json
 | 会话管理 | 浏览、搜索、重命名、导入、导出和删除各 CLI 的会话记录 | 各 CLI Tab 的会话区或 `Session` 入口 |
 | WSL / SSH 同步 | 把本机配置、MCP 和 Skills 同步到 WSL 或远程 SSH 主机 | `Settings` → WSL / SSH |
 | 备份恢复 | 本地、WebDAV、GitHub/Gitee 私有仓库备份，可加密、可自动执行 | `Settings` → 备份 |
-| 插件体系 | 安装 Magpie / OpenCode 兼容插件，提供 Provider 渠道、Gateway 中间件和自定义页面 | `Plugins` / 插件中心，或 `aitoolbox plugin` |
+| 插件体系 | 安装、重载、检查更新和升级 Magpie / OpenCode 兼容插件，提供 Provider 渠道、Gateway 中间件和自定义页面 | `Plugins` / 插件中心，或 `aitoolbox plugin` |
 | 本地控制 API | 让本机 Agent 通过 `127.0.0.1` + Bearer Token 调用同一套配置能力，写操作默认弹窗授权 | `Settings` → Agent 集成 |
 | 系统托盘 | 不打开主窗口即可切换常用供应商、模型、提示词、MCP 和 Skills | 托盘菜单 |
 | 深链接 | 通过 `aitoolbox://` 导入或分享供应商配置 | 浏览器 / 聊天应用 |

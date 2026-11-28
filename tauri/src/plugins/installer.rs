@@ -172,7 +172,7 @@ fn resolve_local_path(spec: &str) -> Result<PathBuf, String> {
 
 /// Split `@scope/name@1.2.3` into the package name and optional version. The
 /// leading `@` of a scope is never a version separator.
-fn split_npm_spec(spec: &str) -> (&str, Option<&str>) {
+pub(super) fn split_npm_spec(spec: &str) -> (&str, Option<&str>) {
     match spec.rfind('@') {
         Some(index) if index > 0 => (&spec[..index], Some(&spec[index + 1..])),
         _ => (spec, None),

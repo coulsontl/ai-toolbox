@@ -4,6 +4,7 @@ import {
   ArrowDownAZ,
   ArrowUpAZ,
   Combine,
+  Download,
   Layers,
   Loader2,
   PackageCheck,
@@ -24,12 +25,15 @@ import { useTranslation } from 'react-i18next';
 import {
   setPluginEnabled,
   uninstallPlugin,
+  updatePlugins,
   type BunRuntimeStatus,
   type InstalledPluginRecord,
   type MiddlewareStateView,
   type PluginAccountSummary,
   type PluginKind,
   type PluginSettings,
+  type PluginUpdateItem,
+  type PluginUpdateSummary,
 } from '@/services';
 import {
   formatMicroseconds,
@@ -55,9 +59,14 @@ interface InstalledPluginsViewProps {
   bunStatus: BunRuntimeStatus | null;
   pluginSettings: PluginSettings | null;
   chinaMirrorBusy: boolean;
+  /** Latest known available update per plugin id, shared with the runtime view. */
+  updateItems: Record<string, PluginUpdateItem>;
+  checkingUpdates: boolean;
   loading: boolean;
   refreshing?: boolean;
   onRefresh?: () => void;
+  onCheckUpdates: () => Promise<PluginUpdateSummary>;
+  onUpdateSummary: (summary: PluginUpdateSummary) => void;
   onDataChanged: () => Promise<void>;
   onToggleChinaMirror: (enabled: boolean) => void;
   onOpenInstall: () => void;
@@ -75,9 +84,13 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   bunStatus,
   pluginSettings,
   chinaMirrorBusy,
+  updateItems,
+  checkingUpdates,
   loading,
   refreshing = false,
   onRefresh,
+  onCheckUpdates,
+  onUpdateSummary,
   onDataChanged,
   onToggleChinaMirror,
   onOpenInstall,
@@ -93,6 +106,12 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   const [search, setSearch] = React.useState('');
   const [sortDirection, setSortDirection] = React.useState<SortDirection>('asc');
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [updatingAll, setUpdatingAll] = React.useState(false);
+  const [updatingIds, setUpdatingIds] = React.useState<Set<string>>(() => new Set());
+  const availableUpdateItems = React.useMemo(
+    () => Object.values(updateItems),
+    [updateItems],
+  );
   const [uninstallTarget, setUninstallTarget] = React.useState<InstalledPluginRecord | null>(null);
   const [purgeData, setPurgeData] = React.useState(false);
   const [uninstallBusy, setUninstallBusy] = React.useState(false);
@@ -160,6 +179,111 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
       );
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const reportCheckSummary = (summary: PluginUpdateSummary) => {
+    const firstFailure = summary.items.find((item) => item.status === 'failed');
+    if (summary.availableCount > 0 && summary.failedCount > 0) {
+      message.warning(
+        t('plugins.installed.notice.checkUpdatesPartial', {
+          available: summary.availableCount,
+          failed: summary.failedCount,
+        }),
+      );
+      return;
+    }
+    if (summary.availableCount > 0) {
+      message.info(
+        t('plugins.installed.notice.updatesAvailable', { count: summary.availableCount }),
+      );
+      return;
+    }
+    if (summary.failedCount > 0) {
+      message.error(
+        t('plugins.installed.notice.checkUpdatesFailed', {
+          error: firstFailure?.message || t('common.unknown'),
+        }),
+      );
+      return;
+    }
+    message.success(t('plugins.installed.notice.upToDate'));
+  };
+
+  const reportUpdateSummary = (summary: PluginUpdateSummary, all: boolean) => {
+    const firstFailure = summary.items.find((item) => item.status === 'failed');
+    if (summary.updatedCount > 0 && summary.failedCount > 0) {
+      message.warning(
+        t('plugins.installed.notice.updatePartial', {
+          updated: summary.updatedCount,
+          failed: summary.failedCount,
+        }),
+      );
+      return;
+    }
+    if (summary.updatedCount > 0) {
+      message.success(
+        t(
+          all
+            ? 'plugins.installed.notice.updateAllSuccess'
+            : 'plugins.installed.notice.updateSuccess',
+          { count: summary.updatedCount },
+        ),
+      );
+      return;
+    }
+    if (summary.failedCount > 0) {
+      message.error(
+        t('plugins.installed.notice.updateFailed', {
+          error: firstFailure?.message || t('common.unknown'),
+        }),
+      );
+      return;
+    }
+    message.success(t('plugins.installed.notice.upToDate'));
+  };
+
+  const handleCheckUpdates = async () => {
+    try {
+      const summary = await onCheckUpdates();
+      reportCheckSummary(summary);
+    } catch (error) {
+      message.error(
+        t('plugins.installed.notice.checkUpdatesFailed', {
+          error: formatPluginError(error),
+        }),
+      );
+    }
+  };
+
+  const handleUpdate = async (plugin?: InstalledPluginRecord) => {
+    const all = !plugin;
+    if (all) {
+      setUpdatingAll(true);
+    } else {
+      setUpdatingIds((current) => new Set(current).add(plugin.id));
+    }
+    try {
+      const summary = await updatePlugins(plugin?.id);
+      onUpdateSummary(summary);
+      await onDataChanged();
+      reportUpdateSummary(summary, all);
+    } catch (error) {
+      message.error(
+        t('plugins.installed.notice.updateFailed', {
+          error: formatPluginError(error),
+        }),
+      );
+    } finally {
+      if (all) {
+        setUpdatingAll(false);
+      } else {
+        setUpdatingIds((current) => {
+          const next = new Set(current);
+          next.delete(plugin.id);
+          return next;
+        });
+      }
     }
   };
 
@@ -374,6 +498,36 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
           </Tooltip>
           <button
             type="button"
+            className={styles.actionButton}
+            disabled={checkingUpdates || refreshing || updatingAll}
+            onClick={() => void handleCheckUpdates()}
+          >
+            <RefreshCw
+              size={14}
+              className={checkingUpdates ? styles.spin : undefined}
+              aria-hidden="true"
+            />
+            <span>{t('plugins.installed.checkUpdates')}</span>
+          </button>
+          {availableUpdateItems.length > 1 ? (
+            <button
+              type="button"
+              className={styles.actionButton}
+              disabled={checkingUpdates || updatingAll || updatingIds.size > 0}
+              onClick={() => void handleUpdate()}
+            >
+              {updatingAll ? (
+                <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+              ) : (
+                <Download size={14} aria-hidden="true" />
+              )}
+              <span>
+                {t('plugins.installed.updateAll', { count: availableUpdateItems.length })}
+              </span>
+            </button>
+          ) : null}
+          <button
+            type="button"
             className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
             onClick={onOpenInstall}
           >
@@ -410,6 +564,8 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
             const middlewareState = getMiddlewareState(plugin);
             const canManageAccounts = isProviderPluginKind(category) && plugin.hasProviderEntry;
             const busy = busyId === plugin.id;
+            const updateItem = updateItems[plugin.id];
+            const updating = updatingIds.has(plugin.id);
             const openablePages = plugin.enabled ? plugin.pages ?? [] : [];
             const providerStatuses = plugin.providers.map((provider) => ({
               provider,
@@ -452,6 +608,13 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                       {plugin.displayName || plugin.packageName}
                     </span>
                     <span className={styles.rowVersion}>v{plugin.version || '—'}</span>
+                    {updateItem ? (
+                      <span className={styles.updateBadge}>
+                        {t('plugins.installed.updateAvailable', {
+                          version: updateItem.latestVersion,
+                        })}
+                      </span>
+                    ) : null}
                     {showSourceTag ? (
                       <span className={styles.rowSourceTag}>
                         {sourceLabel(plugin.sourceType)}
@@ -537,6 +700,21 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                   ) : null}
                 </div>
                 <div className={styles.rowActions}>
+                  {updateItem ? (
+                    <button
+                      type="button"
+                      className={`${styles.textButton} ${styles.textButtonAccent}`}
+                      disabled={updating || updatingAll}
+                      onClick={() => void handleUpdate(plugin)}
+                    >
+                      {updating ? (
+                        <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+                      ) : (
+                        <Download size={14} aria-hidden="true" />
+                      )}
+                      <span>{t('plugins.installed.actions.update')}</span>
+                    </button>
+                  ) : null}
                   {canManageAccounts ? (
                     <button
                       type="button"

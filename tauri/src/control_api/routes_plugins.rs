@@ -34,6 +34,7 @@ pub async fn dispatch(
         }
         (&Method::POST, "install") => install(context, body).await,
         (&Method::POST, "reload") => reload(context, body).await,
+        (&Method::POST, "update") if segments.len() == 2 => update(context, &body).await,
         (&Method::GET, "providers") if is_provider_listing(segments) => {
             let listing = plugin_commands::plugins_list_providers(manager_state(context))
                 .await
@@ -407,7 +408,7 @@ async fn save_settings(context: &ServerContext, body: &Value) -> ApiResult<Value
         .map_err(ApiError::from)?;
     if !apply_settings_patch(&mut settings, body)? {
         return Err(ApiError::bad_request(
-            "Provide at least one of 'bunManualPath', 'npmRegistry', 'followAppProxy' or 'providerAutoCheckin'",
+            "Provide at least one of 'bunManualPath', 'npmRegistry', 'followAppProxy', 'providerAutoCheckin', 'autoUpdateEnabled' or 'autoUpdateIntervalHours'",
         ));
     }
     approve_write(
@@ -419,6 +420,10 @@ async fn save_settings(context: &ServerContext, body: &Value) -> ApiResult<Value
         false,
     )
     .await?;
+    // The timestamp is backend-owned. store::save_plugin_settings also
+    // preserves the DB value; clearing here documents that the control plane
+    // never accepts a caller-supplied check time.
+    settings.last_auto_update_check_at = None;
     let saved = plugin_commands::plugins_save_settings(manager_state(context), settings)
         .map_err(ApiError::from)?;
     Ok(redacted(serde_json::to_value(saved)?))
@@ -450,6 +455,25 @@ fn apply_settings_patch(settings: &mut PluginSettings, body: &Value) -> ApiResul
         settings.follow_app_proxy = value
             .as_bool()
             .ok_or_else(|| ApiError::bad_request("'followAppProxy' must be a boolean"))?;
+        changed = true;
+    }
+    if let Some(value) = body.get("autoUpdateEnabled") {
+        settings.auto_update_enabled = value
+            .as_bool()
+            .ok_or_else(|| ApiError::bad_request("'autoUpdateEnabled' must be a boolean"))?;
+        changed = true;
+    }
+    if let Some(value) = body.get("autoUpdateIntervalHours") {
+        let hours = value.as_u64().ok_or_else(|| {
+            ApiError::bad_request("'autoUpdateIntervalHours' must be a non-negative integer")
+        })?;
+        if hours > u32::MAX as u64 {
+            return Err(ApiError::bad_request(
+                "'autoUpdateIntervalHours' is too large",
+            ));
+        }
+        // store::save_plugin_settings clamps to 1..=720.
+        settings.auto_update_interval_hours = hours as u32;
         changed = true;
     }
     if let Some(value) = body.get("providerAutoCheckin") {
@@ -587,6 +611,84 @@ async fn reload(context: &ServerContext, body: Value) -> ApiResult<Value> {
     Ok(redacted(serde_json::to_value(records)?))
 }
 
+/// `POST /v1/plugins/update`: L0 check-only, or L2 apply.
+async fn update(context: &ServerContext, body: &Value) -> ApiResult<Value> {
+    let (id, check_only) = parse_update_request(body)?;
+    if let Some(id) = &id {
+        ensure_plugin_exists(context, id)?;
+    }
+
+    if check_only {
+        // L0: no approval and no persisted last-check timestamp.
+        let manager = manager_state(context);
+        let summary = plugin_commands::plugins_check_updates(manager, id, Some(false))
+            .await
+            .map_err(ApiError::from)?;
+        return Ok(redacted(serde_json::to_value(summary)?));
+    }
+
+    let action_summary = match &id {
+        Some(id) => format!("Update plugin '{id}' to its latest package"),
+        None => "Update every installed plugin that has a newer npm version".to_string(),
+    };
+    approve_write(
+        context,
+        RiskLevel::L2,
+        "plugin.update",
+        action_summary,
+        id.clone(),
+        false,
+    )
+    .await?;
+    // The approval can take a while; the plugin may have been removed meanwhile.
+    if let Some(id) = &id {
+        ensure_plugin_exists(context, id)?;
+    }
+
+    let manager = manager_state(context);
+    let summary = plugin_commands::update_plugins(
+        manager.inner(),
+        &context.app,
+        id.as_deref(),
+    )
+    .await
+    .map_err(ApiError::from)?;
+    Ok(redacted(serde_json::to_value(summary)?))
+}
+
+fn ensure_plugin_exists(context: &ServerContext, id: &str) -> ApiResult<()> {
+    let installed = store::get_installed_plugin(manager_state(context).db(), id)
+        .map_err(ApiError::from)?;
+    if installed.is_none() {
+        return Err(ApiError::not_found(format!("Plugin '{id}' is not installed")));
+    }
+    Ok(())
+}
+
+fn parse_update_request(body: &Value) -> ApiResult<(Option<String>, bool)> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("Request body must be a JSON object"))?;
+    let id = match object.get("id") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(id)) if !id.trim().is_empty() => Some(id.clone()),
+        Some(Value::String(_)) => {
+            return Err(ApiError::bad_request("'id' must not be empty"));
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request("'id' must be a string"));
+        }
+    };
+    let check_only = match object.get("checkOnly") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return Err(ApiError::bad_request("'checkOnly' must be a boolean"));
+        }
+    };
+    Ok((id, check_only))
+}
+
 enum AccountCall {
     Check,
     Usage,
@@ -666,6 +768,7 @@ mod tests {
             npm_registry: "https://registry.npmjs.org".to_string(),
             follow_app_proxy: true,
             provider_auto_checkin: HashMap::from([("demo".to_string(), true)]),
+            ..PluginSettings::default()
         };
 
         let changed = apply_settings_patch(
@@ -691,6 +794,18 @@ mod tests {
         assert!(changed);
         assert_eq!(settings.provider_auto_checkin.get("other"), Some(&false));
         assert_eq!(settings.provider_auto_checkin.len(), 1);
+
+        let changed = apply_settings_patch(
+            &mut settings,
+            &json!({
+                "autoUpdateEnabled": true,
+                "autoUpdateIntervalHours": 12,
+            }),
+        )
+        .unwrap();
+        assert!(changed);
+        assert!(settings.auto_update_enabled);
+        assert_eq!(settings.auto_update_interval_hours, 12);
     }
 
     #[test]
@@ -699,13 +814,17 @@ mod tests {
         assert!(!apply_settings_patch(&mut settings, &json!({})).unwrap());
         assert!(!apply_settings_patch(&mut settings, &json!({"unknown": 1})).unwrap());
 
-        let wrong_type = apply_settings_patch(&mut settings, &json!({"followAppProxy": "yes"}))
-            .unwrap_err();
-        assert_eq!(wrong_type.status, 400);
-
-        let wrong_map = apply_settings_patch(&mut settings, &json!({"providerAutoCheckin": []}))
-            .unwrap_err();
-        assert_eq!(wrong_map.status, 400);
+        for body in [
+            json!({"followAppProxy": "yes"}),
+            json!({"autoUpdateEnabled": "yes"}),
+            json!({"autoUpdateIntervalHours": -1}),
+            json!({"autoUpdateIntervalHours": 1.5}),
+            json!({"autoUpdateIntervalHours": u64::MAX}),
+            json!({"providerAutoCheckin": []}),
+        ] {
+            let error = apply_settings_patch(&mut settings, &body).unwrap_err();
+            assert_eq!(error.status, 400, "{body}");
+        }
     }
 
     #[test]
@@ -716,9 +835,39 @@ mod tests {
             "npmRegistry",
             "followAppProxy",
             "providerAutoCheckin",
+            "autoUpdateEnabled",
+            "autoUpdateIntervalHours",
+            "lastAutoUpdateCheckAt",
         ] {
             assert!(value.get(key).is_some(), "missing {key} in {value}");
         }
+    }
+
+    #[test]
+    fn update_request_parsing_is_strict() {
+        assert_eq!(parse_update_request(&json!({})).unwrap(), (None, false));
+        assert_eq!(
+            parse_update_request(&json!({"id": null, "checkOnly": null})).unwrap(),
+            (None, false)
+        );
+        assert_eq!(
+            parse_update_request(&json!({"id": "demo", "checkOnly": true})).unwrap(),
+            (Some("demo".to_string()), true)
+        );
+
+        for body in [
+            json!({"id": ""}),
+            json!({"id": "   "}),
+            json!({"id": 42}),
+            json!({"checkOnly": "true"}),
+            json!({"checkOnly": 1}),
+        ] {
+            let error = parse_update_request(&body).unwrap_err();
+            assert_eq!(error.status, 400, "{body}");
+        }
+
+        let error = parse_update_request(&json!([])).unwrap_err();
+        assert_eq!(error.status, 400);
     }
 
     #[test]

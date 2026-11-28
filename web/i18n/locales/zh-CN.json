@@ -6614,7 +6614,8 @@
         "uninstall": "卸载",
         "openPage": "打开页面",
         "enable": "启用",
-        "disable": "停用"
+        "disable": "停用",
+        "update": "更新"
       },
       "confirmUninstallTitle": "卸载插件",
       "confirmUninstallContent": "将卸载「{{name}}」。插件保存的本地数据（KV 与文件）默认保留，重新安装后可继续使用。",
@@ -6636,7 +6637,20 @@
       "pageSummary": "{{pages}} 个页面 · {{permissions}} 项权限",
       "bunReady": "插件运行在 Bun {{version}} 上",
       "bunMissing": "Bun 运行时未就绪",
-      "viewRuntime": "查看运行时"
+      "viewRuntime": "查看运行时",
+      "checkUpdates": "检查更新",
+      "updateAvailable": "有新版 v{{version}}",
+      "updateAll": "更新全部 ({{count}})",
+      "notice": {
+        "updatesAvailable": "发现 {{count}} 个插件有新版本",
+        "upToDate": "所有插件均为最新版本",
+        "updateSuccess": "已更新 {{count}} 个插件",
+        "updateAllSuccess": "已更新全部 {{count}} 个插件",
+        "updateFailed": "更新失败：{{error}}",
+        "updatePartial": "已更新 {{updated}} 个，{{failed}} 个失败",
+        "checkUpdatesPartial": "发现 {{available}} 个新版本，{{failed}} 个检查失败",
+        "checkUpdatesFailed": "检查更新失败：{{error}}"
+      }
     },
     "accounts": {
       "providersTitle": "渠道",
@@ -6973,7 +6987,21 @@
       "chinaMirror": "国内镜像",
       "chinaMirrorHint": "启用后使用 npmmirror 镜像加速插件安装与市场拉取",
       "npmRegistryHint": "自定义插件包源地址",
-      "refreshAll": "刷新"
+      "refreshAll": "刷新",
+      "autoUpdate": "自动更新",
+      "autoUpdateHint": "仅自动更新已启用且未锁定版本的 npm 插件；更新后保留原启用状态与选项。",
+      "updateInterval": "检查频率",
+      "updateIntervalHint": "后台每隔多久检查一次新版本",
+      "updateIntervalHours": "每 {{hours}} 小时",
+      "lastAutoUpdateCheck": "上次检查",
+      "lastAutoUpdateNever": "尚未检查",
+      "checkUpdatesNow": "立即检查更新",
+      "notice": {
+        "checkUpdatesAvailable": "发现 {{count}} 个插件有新版本",
+        "checkUpdatesUpToDate": "所有插件均为最新版本",
+        "checkUpdatesPartial": "发现 {{available}} 个新版本，{{failed}} 个检查失败",
+        "checkUpdatesFailed": "检查更新失败：{{error}}"
+      }
     },
     "providerCard": {
       "badge": "插件",

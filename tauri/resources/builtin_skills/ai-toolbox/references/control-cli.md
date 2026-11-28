@@ -58,6 +58,7 @@ aitoolbox plugin list
 aitoolbox plugin get <id>
 aitoolbox plugin install <本地目录|npm 包|github:owner/repo>
 aitoolbox plugin reload [id]
+aitoolbox plugin update [id] [--check-only]
 aitoolbox plugin enable <id>
 aitoolbox plugin disable <id>
 aitoolbox plugin remove <id> [--purge-data]
@@ -74,7 +75,7 @@ aitoolbox plugin account-check <provider> [--account <id>] [--proxy <url>]
 aitoolbox plugin account-usage <provider> [--account <id>] [--proxy <url>]
 aitoolbox plugin account-checkin <provider> [--account <id>] [--proxy <url>]
 aitoolbox plugin link-cli <provider> --json-body <path|->
-aitoolbox plugin settings [--bun-path <PATH> | --clear-bun-path] [--npm-registry <URL>] [--china-mirror true|false] [--follow-app-proxy true|false] [--json-body <path|->]
+aitoolbox plugin settings [--bun-path <PATH> | --clear-bun-path] [--npm-registry <URL>] [--china-mirror true|false] [--follow-app-proxy true|false] [--auto-update true|false] [--auto-update-interval <HOURS>] [--json-body <path|->]
 aitoolbox plugin bun-status
 aitoolbox plugin bun-ensure
 aitoolbox plugin bun-probe <path>
@@ -83,7 +84,8 @@ aitoolbox plugin host-restart
 aitoolbox plugin pages
 ```
 
-- `plugin settings` 不带修改参数时是 GET，返回 `bunManualPath` / `npmRegistry` / `followAppProxy` / `providerAutoCheckin`；带任一参数或 `--json-body` 时是 PUT，只更新传入字段（未传字段保留）。`--china-mirror true|false` 映射到 `https://registry.npmmirror.com` / `https://registry.npmjs.org`；`--clear-bun-path` 把 `bunManualPath` 置空，恢复自动探测。
+- `plugin settings` 不带修改参数时是 GET，返回 `bunManualPath` / `npmRegistry` / `followAppProxy` / `providerAutoCheckin` / `autoUpdateEnabled` / `autoUpdateIntervalHours` / `lastAutoUpdateCheckAt`；带任一参数或 `--json-body` 时是 PUT，只更新传入字段（未传字段保留）。`--china-mirror true|false` 映射到 `https://registry.npmmirror.com` / `https://registry.npmjs.org`；`--clear-bun-path` 把 `bunManualPath` 置空，恢复自动探测。`lastAutoUpdateCheckAt` 由后端维护，`--json-body` 传入也不会覆盖；`autoUpdateIntervalHours` 由后端 clamp 到 1–720。
+- `plugin update` 不带 `--check-only` 时会实际下载并安装新版本（L2；本地/锁定版本/local/GitHub 的规则见下）。`--check-only` 只查询，不写 `lastAutoUpdateCheckAt`，不下载、不启动 Bun。全量 npm 检查包含已停用插件，更新后仍保持停用；`spec` / `options` / `enabled` / `installedAt` / `marketId` 会保留。GitHub check-only 无法比较版本，返回 `skipped` 并提示执行单插件更新；单插件 apply 会用原 spec 重装。单插件 apply 的本地 socket 至少 600s，全部 apply 至少 1800s。
 - `plugin provider-options` 不传 `--set` 时读取，传 `--set` 时整对象替换该渠道的选项（与 `plugin options` 相同语义）。
 - `plugin provider-auto-checkin` 只切换渠道级每日自动签到开关；账号级旧标记的兼容合并由后端处理。
 - `plugin bun-status` / `plugin bun-probe <path>` 只读：分别查看当前 Bun 运行时来源与探测任意可执行文件；`plugin bun-ensure` 会下载/校验托管 Bun（L1，需要授权）。
@@ -275,7 +277,7 @@ aitoolbox gateway restore --cli <cliKey>
 授权请求会显示在桌面模态框：
 
 - L1（可逆写法）：新增/修改供应商、模型、配置、提示词、应用配置、切换网关主 Provider。
-- L2（高风险）：删除供应商、停止网关、接管/恢复 CLI、卸载插件、远程安装插件。
+- L2（高风险）：删除供应商、停止网关、接管/恢复 CLI、卸载插件、远程安装插件、插件更新（会下载并执行新版本插件代码）。
 - `read_only` 模式下所有写操作直接返回 403；停止控制面或切到 `read_only` 时挂起弹窗会立即过期，CLI 得到退出码 4。
 - 不要尝试通过直接改 SQLite、CLI 配置文件或调用内部 IPC 来绕过授权。`control.json` 只在 §1.1 的降级场景中于内存内读取 `url`/`token`，不写回、不回显。授权是用户对信任边界的决定。
 
@@ -313,6 +315,7 @@ POST   /v1/plugins/providers/refresh-models
 POST   /v1/plugins/providers/:provider/refresh-models
 GET    /v1/plugins/settings
 PUT    /v1/plugins/settings
+POST   /v1/plugins/update
 GET    /v1/plugins/pages
 GET    /v1/plugins/bun
 POST   /v1/plugins/bun/ensure
@@ -321,6 +324,8 @@ GET    /v1/plugins/host
 POST   /v1/plugins/host/restart
 DELETE /v1/plugins/:id?purgeData=true
 ```
+
+`POST /v1/plugins/update` 的 body 是 `{ "id": "<pluginId>", "checkOnly": true|false }`；`id` 可省略或为 `null`。`checkOnly=true` 为 L0 只读，否则为 L2。
 
 所有端点（除 `GET /v1/ping`）都要求 `Authorization: Bearer <token>`，且拒绝带 `Origin` 的浏览器请求；`Host` 必须是 `127.0.0.1:<port>` 或 `localhost:<port>`。
 

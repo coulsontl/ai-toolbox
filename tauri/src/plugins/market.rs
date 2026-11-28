@@ -668,6 +668,43 @@ async fn fetch_npm_info(
     Ok(info)
 }
 
+/// Lightweight `/latest` lookup for the updater: exactly one registry GET and
+/// no Bun involvement. Errors are surfaced so the caller can mark the item as
+/// failed instead of silently reporting "up to date".
+pub(super) async fn fetch_npm_latest_version(
+    client: &Client,
+    registry: &str,
+    package: &str,
+) -> Result<String, String> {
+    let path = npm_package_url_path(package);
+    let latest_url = format!("{}/{path}/latest", registry.trim_end_matches('/'));
+    let response = client
+        .get(&latest_url)
+        .timeout(Duration::from_secs(NPM_REQUEST_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|error| format!("npm registry request for {package} failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "npm registry returned HTTP {} for {package}",
+            response.status()
+        ));
+    }
+    let value: Value = response
+        .json()
+        .await
+        .map_err(|error| format!("npm registry returned invalid JSON for {package}: {error}"))?;
+    let version = value
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if version.is_empty() {
+        return Err(format!("npm registry returned no version for {package}"));
+    }
+    Ok(version.to_string())
+}
+
 /// Normalize `repository` (string or `{ "url": ... }`) into a web URL.
 fn repository_url(value: &Value) -> String {
     let raw = match value {

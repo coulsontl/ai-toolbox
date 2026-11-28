@@ -9,6 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
+use rusqlite::Connection;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -248,31 +249,76 @@ pub fn delete_market_source(db: &SqliteDbState, id: &str) -> Result<bool, String
 
 // ---- settings ---------------------------------------------------------------
 
-pub fn get_plugin_settings(db: &SqliteDbState) -> Result<PluginSettings, String> {
-    let value =
-        db.with_conn(|conn| db_get(conn, table(PluginEntityKind::Settings), SETTINGS_RECORD_ID))?;
+/// Read settings through an already-locked connection.
+///
+/// `SqliteDbState::with_conn` is not re-entrant, so this helper must only be
+/// called from inside a `with_conn` closure. It never acquires the lock itself.
+fn read_plugin_settings_from_conn(conn: &Connection) -> Result<PluginSettings, String> {
+    let value = db_get(conn, table(PluginEntityKind::Settings), SETTINGS_RECORD_ID)?;
     match value {
         None => Ok(PluginSettings::default()),
         Some(value) => parse_value(value, "plugin settings"),
     }
 }
 
+pub fn get_plugin_settings(db: &SqliteDbState) -> Result<PluginSettings, String> {
+    db.with_conn(|conn| read_plugin_settings_from_conn(conn))
+}
+
 pub fn save_plugin_settings(
     db: &SqliteDbState,
     settings: &PluginSettings,
 ) -> Result<PluginSettings, String> {
-    let mut settings = settings.clone();
-    // The runtime settings form owns the Bun path, registry and proxy switch.
-    // Channel check-in switches are written by `set_provider_auto_checkin`;
-    // preserving them here keeps an unrelated save from silently erasing them.
-    settings.provider_auto_checkin = get_plugin_settings(db)?.provider_auto_checkin;
-    insert_record(
-        db,
-        PluginEntityKind::Settings,
-        SETTINGS_RECORD_ID,
-        &settings,
-    )?;
-    get_plugin_settings(db)
+    db.with_conn(|conn| {
+        let existing = read_plugin_settings_from_conn(conn)?;
+        let mut next = settings.clone();
+        // The runtime settings form owns the Bun path, registry and proxy switch.
+        // Channel check-in switches are written by `set_provider_auto_checkin`;
+        // preserving them here keeps an unrelated save from silently erasing them.
+        next.provider_auto_checkin = existing.provider_auto_checkin;
+        // The update timestamp is backend-owned. Preserve it even when the caller
+        // sends a stale value, so a full save can never roll back a fresher check.
+        next.last_auto_update_check_at = existing.last_auto_update_check_at;
+        next.auto_update_interval_hours = next.auto_update_interval_hours.clamp(1, 720);
+        let value = record_to_value(&next)?;
+        db_put(
+            conn,
+            table(PluginEntityKind::Settings),
+            SETTINGS_RECORD_ID,
+            &value,
+        )?;
+        Ok(next)
+    })
+}
+
+/// Persist when the last full update check completed.
+///
+/// This is the only writer of `lastAutoUpdateCheckAt`. The read/patch/insert
+/// happens under one lock, so a concurrent settings save cannot roll it back.
+pub fn set_last_auto_update_check_at(
+    db: &SqliteDbState,
+    timestamp: &str,
+) -> Result<(), String> {
+    db.with_conn(|conn| {
+        let patched = db_patch_fields(
+            conn,
+            table(PluginEntityKind::Settings),
+            SETTINGS_RECORD_ID,
+            &[("lastAutoUpdateCheckAt", Value::String(timestamp.to_string()))],
+        )?;
+        if patched.is_some() {
+            return Ok(());
+        }
+        let mut settings = PluginSettings::default();
+        settings.last_auto_update_check_at = Some(timestamp.to_string());
+        let value = record_to_value(&settings)?;
+        db_put(
+            conn,
+            table(PluginEntityKind::Settings),
+            SETTINGS_RECORD_ID,
+            &value,
+        )
+    })
 }
 
 /// Persist one channel-level auto check-in switch.
@@ -285,16 +331,19 @@ pub fn set_provider_auto_checkin(
     if provider_id.is_empty() {
         return Err("Provider id cannot be empty".to_string());
     }
-    let mut settings = get_plugin_settings(db)?;
-    settings
-        .provider_auto_checkin
-        .insert(provider_id.to_string(), enabled);
-    insert_record(
-        db,
-        PluginEntityKind::Settings,
-        SETTINGS_RECORD_ID,
-        &settings,
-    )?;
+    db.with_conn(|conn| {
+        let mut settings = read_plugin_settings_from_conn(conn)?;
+        settings
+            .provider_auto_checkin
+            .insert(provider_id.to_string(), enabled);
+        let value = record_to_value(&settings)?;
+        db_put(
+            conn,
+            table(PluginEntityKind::Settings),
+            SETTINGS_RECORD_ID,
+            &value,
+        )
+    })?;
     Ok(enabled)
 }
 
@@ -543,10 +592,107 @@ mod tests {
             npm_registry: "https://registry.npmmirror.com".to_string(),
             follow_app_proxy: false,
             provider_auto_checkin: HashMap::new(),
+            ..PluginSettings::default()
         };
         let saved = save_plugin_settings(&db, &settings).unwrap();
         assert_eq!(saved, settings);
         assert_eq!(get_plugin_settings(&db).unwrap(), settings);
+    }
+
+    #[test]
+    fn plugin_settings_preserve_the_backend_update_timestamp() {
+        let db = test_db();
+        set_last_auto_update_check_at(&db, "2026-11-28T12:00:00Z").unwrap();
+
+        let mut stale = get_plugin_settings(&db).unwrap();
+        stale.auto_update_enabled = true;
+        // A caller that read settings before a newer check must not roll it back.
+        stale.last_auto_update_check_at = Some("2020-01-01T00:00:00Z".to_string());
+        let saved = save_plugin_settings(&db, &stale).unwrap();
+
+        assert!(saved.auto_update_enabled);
+        assert_eq!(
+            saved.last_auto_update_check_at.as_deref(),
+            Some("2026-11-28T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn plugin_settings_clamp_the_auto_update_interval() {
+        let db = test_db();
+        let mut settings = PluginSettings::default();
+
+        settings.auto_update_interval_hours = 0;
+        assert_eq!(
+            save_plugin_settings(&db, &settings)
+                .unwrap()
+                .auto_update_interval_hours,
+            1
+        );
+
+        settings.auto_update_interval_hours = 721;
+        assert_eq!(
+            save_plugin_settings(&db, &settings)
+                .unwrap()
+                .auto_update_interval_hours,
+            720
+        );
+
+        settings.auto_update_interval_hours = 12;
+        assert_eq!(
+            save_plugin_settings(&db, &settings)
+                .unwrap()
+                .auto_update_interval_hours,
+            12
+        );
+    }
+
+    #[test]
+    fn set_last_auto_update_check_at_creates_or_patches_the_settings_row() {
+        let db = test_db();
+        assert!(get_plugin_settings(&db).unwrap().last_auto_update_check_at.is_none());
+
+        set_last_auto_update_check_at(&db, "2026-11-28T12:00:00Z").unwrap();
+        let first = get_plugin_settings(&db).unwrap();
+        assert_eq!(
+            first.last_auto_update_check_at.as_deref(),
+            Some("2026-11-28T12:00:00Z")
+        );
+        assert_eq!(first.npm_registry, "https://registry.npmjs.org");
+
+        set_last_auto_update_check_at(&db, "2026-11-29T12:00:00Z").unwrap();
+        assert_eq!(
+            get_plugin_settings(&db)
+                .unwrap()
+                .last_auto_update_check_at
+                .as_deref(),
+            Some("2026-11-29T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn provider_auto_checkin_does_not_clobber_the_update_timestamp() {
+        let db = test_db();
+        set_last_auto_update_check_at(&db, "2026-11-28T12:00:00Z").unwrap();
+
+        assert!(set_provider_auto_checkin(&db, "demo", true).unwrap());
+        let settings = get_plugin_settings(&db).unwrap();
+        assert_eq!(settings.provider_auto_checkin.get("demo"), Some(&true));
+        assert_eq!(
+            settings.last_auto_update_check_at.as_deref(),
+            Some("2026-11-28T12:00:00Z")
+        );
+
+        // A settings save must keep both the channel map and the timestamp.
+        let mut next = settings.clone();
+        next.provider_auto_checkin.clear();
+        next.last_auto_update_check_at = None;
+        let saved = save_plugin_settings(&db, &next).unwrap();
+        assert_eq!(saved.provider_auto_checkin.get("demo"), Some(&true));
+        assert_eq!(
+            saved.last_auto_update_check_at.as_deref(),
+            Some("2026-11-28T12:00:00Z")
+        );
     }
 
     #[test]

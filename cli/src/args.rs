@@ -86,6 +86,13 @@ pub enum PluginCommand {
     Reload {
         id: Option<String>,
     },
+    /// Check for plugin updates, or update them (latest npm / GitHub reinstall)
+    Update {
+        id: Option<String>,
+        /// Only report available updates; do not install anything
+        #[arg(long)]
+        check_only: bool,
+    },
     Enable {
         id: String,
     },
@@ -205,6 +212,12 @@ pub struct PluginSettingsFields {
     /// Route market and npm requests through the app proxy
     #[arg(long, value_name = "true|false")]
     pub follow_app_proxy: Option<bool>,
+    /// Enable background auto-updates
+    #[arg(long, value_name = "true|false")]
+    pub auto_update: Option<bool>,
+    /// Auto-update interval in hours (clamped to 1..=720 by the backend)
+    #[arg(long, value_name = "HOURS")]
+    pub auto_update_interval: Option<u32>,
     /// Full settings patch JSON (file path or - for stdin)
     #[arg(long, value_name = "PATH|-")]
     pub json_body: Option<String>,
@@ -547,6 +560,10 @@ mod tests {
             "true",
             "--follow-app-proxy",
             "false",
+            "--auto-update",
+            "true",
+            "--auto-update-interval",
+            "6",
         ])
         .unwrap();
         let Command::Plugin {
@@ -558,6 +575,8 @@ mod tests {
                             clear_bun_path,
                             china_mirror,
                             follow_app_proxy,
+                            auto_update,
+                            auto_update_interval,
                             ..
                         },
                 },
@@ -569,12 +588,41 @@ mod tests {
         assert!(!clear_bun_path);
         assert_eq!(china_mirror, Some(true));
         assert_eq!(follow_app_proxy, Some(false));
+        assert_eq!(auto_update, Some(true));
+        assert_eq!(auto_update_interval, Some(6));
 
         let parsed = Cli::try_parse_from(["aitoolbox", "plugin", "settings"]).unwrap();
         assert!(matches!(
             parsed.command,
             Command::Plugin {
                 command: PluginCommand::Settings { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_plugin_update_commands() {
+        let parsed =
+            Cli::try_parse_from(["aitoolbox", "plugin", "update", "demo-id"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Plugin {
+                command: PluginCommand::Update {
+                    id: Some(ref id),
+                    check_only: false,
+                }
+            } if id == "demo-id"
+        ));
+
+        let parsed =
+            Cli::try_parse_from(["aitoolbox", "plugin", "update", "--check-only"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Plugin {
+                command: PluginCommand::Update {
+                    id: None,
+                    check_only: true,
+                }
             }
         ));
     }

@@ -252,6 +252,16 @@ pub struct PluginSettings {
     /// channel, its explicit value wins from then on.
     #[serde(default)]
     pub provider_auto_checkin: HashMap<String, bool>,
+    /// Whether the background pass checks enabled, unpinned npm plugins.
+    #[serde(default)]
+    pub auto_update_enabled: bool,
+    /// How often the background pass checks for updates; clamped on save.
+    #[serde(default = "default_auto_update_interval_hours")]
+    pub auto_update_interval_hours: u32,
+    /// Backend-owned timestamp of the last full check. Only
+    /// `store::set_last_auto_update_check_at` may change it.
+    #[serde(default)]
+    pub last_auto_update_check_at: Option<String>,
 }
 
 impl Default for PluginSettings {
@@ -261,6 +271,9 @@ impl Default for PluginSettings {
             npm_registry: default_npm_registry(),
             follow_app_proxy: true,
             provider_auto_checkin: HashMap::new(),
+            auto_update_enabled: false,
+            auto_update_interval_hours: default_auto_update_interval_hours(),
+            last_auto_update_check_at: None,
         }
     }
 }
@@ -351,6 +364,10 @@ pub fn empty_json_object() -> Value {
 
 fn default_npm_registry() -> String {
     "https://registry.npmjs.org".to_string()
+}
+
+fn default_auto_update_interval_hours() -> u32 {
+    24
 }
 
 fn default_true() -> bool {
@@ -475,10 +492,16 @@ mod tests {
         assert_eq!(settings.npm_registry, "https://registry.npmjs.org");
         assert!(settings.follow_app_proxy);
         assert!(settings.bun_manual_path.is_empty());
+        assert!(!settings.auto_update_enabled);
+        assert_eq!(settings.auto_update_interval_hours, 24);
+        assert!(settings.last_auto_update_check_at.is_none());
 
         let parsed: PluginSettings = serde_json::from_value(json!({})).unwrap();
         assert_eq!(parsed.npm_registry, settings.npm_registry);
         assert!(parsed.follow_app_proxy);
+        assert!(!parsed.auto_update_enabled);
+        assert_eq!(parsed.auto_update_interval_hours, 24);
+        assert!(parsed.last_auto_update_check_at.is_none());
     }
 
     #[test]

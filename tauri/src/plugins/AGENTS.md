@@ -2,7 +2,7 @@
 
 ## 一句话职责
 
-- `tauri/src/plugins/` 是 AI Toolbox 的 Magpie 兼容插件宿主：负责插件与自定义市场源持久化、按需 Bun 运行时管理、OpenCode v1 / Magpie Provider 宿主进程、进程内 `rquickjs` 网关中间件引擎、按需启动的插件自定义页面静态服务器（`magpie.page` / `magpie.pages`）、插件私有持久化存储（`storage:kv` / `storage:files`）、插件 OAuth 后台续期与渠道级每日自动签到，以及网关和 17 个 CLI Tab 的双向接入桥接。
+- `tauri/src/plugins/` 是 AI Toolbox 的 Magpie 兼容插件宿主：负责插件与自定义市场源持久化、按需 Bun 运行时管理、OpenCode v1 / Magpie Provider 宿主进程、进程内 `rquickjs` 网关中间件引擎、按需启动的插件自定义页面静态服务器（`magpie.page` / `magpie.pages`）、插件私有持久化存储（`storage:kv` / `storage:files`）、插件 OAuth 后台续期与渠道级每日自动签到、npm 插件版本检查与后台自动更新，以及网关和 17 个 CLI Tab 的双向接入桥接。
 
 ## Source of Truth
 
@@ -11,6 +11,7 @@
 - 插件账号的真实 OAuth/API 凭据不在 SQLite 中，而是以 OpenCode/Magpie 兼容格式保存在 `<app_data>/plugins/plugin-auth.json`（`0600` 权限，读写必须经过 `store::acquire_auth_file_lock` 排他锁）。Tauri 命令 DTO 与诊断日志绝不返回或记录明文 `access`/`refresh`/`key`。
 - 账号展示与签到元数据存于 `PluginAccountMetaRecord`（`plugin_entity` / `AccountMeta`）：除显示名、启用态、排序外，持久化 `quota` / `quota_updated_at`（`plugins_account_usage` 与 `plugins_account_check` 仅在快照含真实内容时落盘——宿主会把空响应归一化为全空对象，全空或仅 `error` 不覆盖旧快照，随 `plugins_list_accounts` 返回供前端秒开）以及全部 `#[serde(default)]` 的 `auto_checkin` 与 `last_checkin_day` / `last_checkin_until` / `last_checkin_outcome` / `last_checkin_at` / `last_checkin_message` / `last_checkin_credit` / `last_checkin_streak`，旧记录零迁移。
 - 渠道级自动签到开关存于 `PluginSettings.provider_auto_checkin: HashMap<provider_id, bool>`（同样 `#[serde(default)]`，零迁移），由 `plugins_set_provider_auto_checkin` 单独写入；`store::resolve_provider_auto_checkin` 合并它和旧账号级 `auto_checkin`：显式渠道值优先，未记录的渠道只要任一账号旧标记为 `true` 就视为开启。`plugins_save_settings` 会保留该字段，避免运行时设置表单把它覆盖清空。
+- 自动更新设置同样落在 `PluginSettings`：`auto_update_enabled`（`#[serde(default)]`，默认关闭）、`auto_update_interval_hours`（serde 默认 24，`save_plugin_settings` 统一 clamp 到 `1..=720`）、`last_auto_update_check_at`（`Option<String>`，**后端独占**：只有 `store::set_last_auto_update_check_at` 能写，任何 `save_plugin_settings` / `PUT /v1/plugins/settings` 都无条件保留 DB 中的值，包括调用方传来的过期非空时间戳）。
 - 市场离线兜底数据来自编译期嵌入的 `tauri/resources/magpie_market_fallback.json`；拉取失败时内置源回退到该快照，自定义源回退到各自本地缓存，并记录 `last_error`。
 - CLI Tab 的插件关联事实源分两类：6 个网关接管型 DB CLI（Claude Code / Claude Desktop / Codex / Grok / Kimi / Gemini CLI）以 `cli_provider` 记录的 `data.meta.pluginProvider` 为准；10 个文件配置型 CLI（OpenCode / OpenClaw / Pi / Oh My Pi / OmO Native / Hermes / DSH / ZCode / WorkBuddy / CodeBuddy）以各模块规范配置文件中指向本机网关 `/plugin/<provider_id>/v1` 的供应商节点为准；Antigravity CLI 仅支持 Google 官方 OAuth，刻意标记 `supported: false`。
 
@@ -25,6 +26,8 @@
 - **插件页面按需静态托管**：`page_server` 在首次 `plugins_open_page` 时才 bind `127.0.0.1:0`，每个 `(plugin_id, page_id)` 用 `ring` 随机源 + HMAC 签发 32 字符 token，路由为 `/_plugin/<token>/<rel_path>`；token 只绑定入口 HTML 的父目录，逐段拒绝 `..` / `\` / NUL 并二次 canonicalize。纯页面插件（无 provider entry 且所有页面无 `service.port`）不进入 Bun 宿主，本地安装也不会触发 Bun 下载。
 - **页面持久化存储按权限开放**：`storage:kv` 提供单插件一个 JSON 对象（单值 ≤ 1 MiB、整体 ≤ 20 MiB），`storage:files` 提供 `files/` 私有文件树（单文件 ≤ 20 MiB、总量 ≤ 200 MiB）。KV 与文件写入都走同目录临时文件 + `sync_all` + rename（Windows 共享冲突 3×10ms 重试）；文件路径逐段拒绝绝对路径、`..`、`\`、`:`（NTFS ADS）、NUL、空段、盘符、Windows 保留名与超过 16 层的深度，并拒绝任何 symlink 组件。Bun 宿主通过 `AI_TOOLBOX_PLUGINS_DATA_DIR` 获知数据根目录。
 - **插件账号后台维护按需启动 Bun**：`background_tasks::run_plugin_background_pass` 由 `coding/auth_refresh` 在启动后与每 15 分钟调用。它先只读 `plugin-auth.json` 与 SQLite：只有存在「启用中、OAuth、带 refresh、`expires > 0` 且距过期 ≤ 15 分钟（含已过期）」的账号时才调用宿主 `keepSignedIn`（宿主内部遵守 `auth.keepAlive !== false`）；只有存在「所属渠道级 `auto_checkin == true`、账号自身启用、对应插件启用且当天尚未结算」的账号时才调用 `checkin`，同一渠道下的每个启用账号各自记录 `last_checkin_*`。没有候选时绝不启动 Bun。`due_checkin_accounts` 是这条判定链的纯函数入口，单元测试直接覆盖渠道对多账号生效、停用账号跳过、渠道关闭不产生候选、旧账号级标记兼容。
+- **自动更新是 opt-in 且独立于账号维护**：`run_plugin_background_pass` 不再因 `plugin-auth.json` 账号为空而提前 `return`；账号续期/签到之后总会调用 `maybe_auto_update_plugins`。它按 `auto_update_enabled` → `auto_update_due`（时间戳为空/不可解析视作到期）→ `auto_update_candidates`（`enabled && source == "npm" && package_name 非空 && 未锁定版本`）短路，任一不满足即零网络、零 Bun、不写时间戳。版本检查只发 `market::fetch_npm_latest_version` 的轻量 GET（走 `PluginManager::http_client()`，尊重 `npmRegistry` / `followAppProxy`），不启动 Bun；只有确认有新版本才用 `installer::install_plugin(pkg@latest, market_id)` 安装。
+- **更新与所有已安装记录写入共用 `update_lock`**：`PluginManager::update_lock`（`tokio::sync::Mutex<()>`）串行化 `plugins_install` / `plugins_uninstall` / `plugins_set_enabled` / `plugins_set_options` / `plugins_page_bridge_set_options` / `reload_plugins` 与更新本身。`bun add` 期间用户不能卸载、改 enabled/options 或触发 reload，因此更新结束后用安装前快照 `restore_user_owned_fields` 回写 `spec` / `options` / `enabled` / `installed_at` / `market_id` 不会覆盖新状态、也不会复活已卸载记录。后台任务用 `try_lock()`，拿不到就跳过本轮，绝不排队。
 - **页面 CSP 必须写明完整 origin**：WKWebView 的 `sandbox` 页面是不透明 origin，`'self'` 不匹配任何自身资源。HTML 响应的 `default/script/style/img/font-src` 同时列出 `http://<监听地址>/_plugin/<token>/`；SVG 响应单独下发 `sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; connect-src 'none'`，防止 SVG 脚本绕过出网限制。
 
 ## 关键流程
@@ -65,18 +68,20 @@ sequenceDiagram
 - **纯页面插件不得拿到 service**：安装解析 `magpie.page(s).service` 时仅当 `has_provider_entry == true` 才保留 `service_port` / `service_option`；`open_page` 再次强制清空，防止旧记录或伪造清单把页面的 `connect-src` 指向本机其他程序的端口。
 - **网关中间件 `ctx.state` 与 `onEvent` 会话**：`ctx.state` 按插件在 `onRequest → onProvider → onEvent → onResponse` 之间序列化往返；SSE 流式回复用 `open_event_session` 为每个 `onEvent` 模块保留一份已编译 runtime，逐帧只 re-arm deadline，禁止每帧重新编译模块。中间件拿到的 `ctx.protocol` 是 Magpie 词表（`anthropic` / `chat` / `responses` / `gemini`），`ctx.agent` 是 CLI key；运行时注入限流的 `console`，缺失它会让含 `console.log` 的中间件抛 `ReferenceError`。
 - **页面读取只认声明过的权限**：`plugins_page_bridge_read` 先校验插件 `enabled` 与 `permissions` 是否包含 `usage:summary` / `usage:day` / `providers:list`，未知 scope 一律拒绝；`providers:list` 只返回 `cli_provider.data` 的 id/name/启用状态，绝不返回 key、token、header 或账号凭据。
+- **版本比较与跳过规则不得放宽**：`updater::is_pinned_npm_spec` 把任何非空且非 `latest` 的 version 视为锁定（含 `^1.0.0`、dist-tag），锁定版本永远 `skipped`，**绝不**“先装 latest 再恢复旧 spec”；`is_newer_version` 是自研严格 semver 比较（支持 `v` 前缀、1–3 段补零、prerelease 按 §11 比较；非法输入或相等一律 false），不要换成字符串比较，也不要为了省事新增 `semver` 依赖。GitHub check-only 无法比较版本，必须返回 `skipped` 并提示直接更新，不能误报 `up_to_date`。
+- **单项失败不能中断整轮**：每个插件单独捕获 registry/安装错误，记 `status = "failed"` + `message`，同时写 `manager.host().record_log("updater", "error", ...)` 和 `log::warn!`，然后继续下一项；循环结束只在 `updated_count > 0` 时调用一次 `commands::reload_runtimes` 并发 `plugins-updated`。全量/后台检查才写 `last_auto_update_check_at`，单插件手动检查与 Control API `checkOnly=true` 不写。
 - **存储配额与清理是后端强约束**：`storage:kv` / `storage:files` 的每次调用都在 Rust 侧重新校验插件记录，前端可伪造的只有参数；KV 的大小限制按序列化后的字节数计算，文件配额在写入前按「目录总量 − 旧文件 + 新文件」计算。`plugins_uninstall(id, purgeData)` 默认保留数据，只有 `purgeData === true` 才删除 `plugin_data_dir`；卸载后先删记录再删目录，重复删除不存在的数据不算错误。
 
 ## 跨模块依赖
 
 - 依赖 `db/`（`DbTable::PluginEntity`、schema `v38`）、`coding/cli_resolver.rs`（本机 Bun 探测与 `CREATE_NO_WINDOW`）、`http_client.rs`（应用代理透传）以及各 CLI 模块的规范写入 helper。
-- 被 `coding/proxy_gateway/`（`GatewayRuntimeContext` 通过 `AppHandle` 读取 `PluginManagerState`，接入 `gateway_bridge` 与 `middleware_rt`）、`coding/auth_refresh/`（`OfficialAuthTool::Plugins` 调用 `background_tasks::run_plugin_background_pass`）和 `lib.rs`（托管 `PluginManagerState` 与注册 50 个 `plugins_*` 命令）依赖。
-- 跨端契约（51 个 Tauri 命令、`cliKey` 采用 coding 子 Tab 拼写如 `claudecode`/`geminicli`/`workbuddy` 而非网关 `app_type`）由前端 `web/services/pluginsApi.ts` 消费，前端交互规范见 `web/features/coding/plugins/AGENTS.md`。
+- 被 `coding/proxy_gateway/`（`GatewayRuntimeContext` 通过 `AppHandle` 读取 `PluginManagerState`，接入 `gateway_bridge` 与 `middleware_rt`）、`coding/auth_refresh/`（`OfficialAuthTool::Plugins` 调用 `background_tasks::run_plugin_background_pass`）和 `lib.rs`（托管 `PluginManagerState` 与注册 51 个 `plugins_*` 命令）依赖。
+- 跨端契约（51 个 `commands::plugins_*` + 3 个 `cli_integration::*` = 54 个 Tauri 命令、`cliKey` 采用 coding 子 Tab 拼写如 `claudecode`/`geminicli`/`workbuddy` 而非网关 `app_type`）由前端 `web/services/pluginsApi.ts` 消费，前端交互规范见 `web/features/coding/plugins/AGENTS.md`；Control API 侧同样复用 `commands::update_plugins`，不重写安装链路。
 - `gateway_bridge::header_map_to_json` 必须丢弃入站的 `authorization` / `x-api-key` / `x-goog-api-key`：真实凭据由 Bun 宿主按账号注入，网关占位 Key 绝不能覆盖它。`plugin_spec` 非空时 `find_plugin_provider_row` 只接受精确匹配，绝不回退到同名其他插件。
 
 ## 最小验证
 
 - `cd tauri && cargo test --test sqlite_jsonb --jobs 2`（含真实 `v37 -> v38` 文件库迁移）
-- `cd tauri && cargo test --lib plugins:: --jobs 2`（市场、安装、页面清单探测、页面静态服务器与 token 吊销、页面读取权限、KV/文件持久化与配额、Bun 协议/背压/熔断、`rquickjs` 中间件、`gateway_bridge`、17 CLI 集成、`optionValues` 合并）
+- `cd tauri && cargo test --lib plugins:: --jobs 2`（市场、安装、页面清单探测、页面静态服务器与 token 吊销、页面读取权限、KV/文件持久化与配额、Bun 协议/背压/熔断、`rquickjs` 中间件、`gateway_bridge`、17 CLI 集成、`optionValues` 合并、`updater` 的 semver/候选/到期/字段恢复）
 - `cd tauri && cargo test --lib proxy_gateway::runtime:: --jobs 2`（网关直连路由、插件转发、中间件接线回归）
 - `cd tauri && cargo check`

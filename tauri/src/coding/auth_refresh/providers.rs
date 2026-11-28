@@ -47,6 +47,6 @@ pub(super) async fn plugins_background_pass(
     let Some(manager) = app.try_state::<crate::plugins::PluginManagerState>() else {
         return Err("PluginManagerState is not registered yet".to_string());
     };
-    crate::plugins::background_tasks::run_plugin_background_pass(manager.inner()).await;
+    crate::plugins::background_tasks::run_plugin_background_pass(manager.inner(), Some(app)).await;
     Ok(())
 }

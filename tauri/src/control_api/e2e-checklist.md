@@ -55,6 +55,10 @@
 | `plugin settings`（只读） | 记录 `bunManualPath` / `npmRegistry` / `followAppProxy` / `providerAutoCheckin` | 只读返回；不含凭据 | 输出与设置页对比 | 无需 |
 | `plugin settings --china-mirror true`（L1） | 记录原 `npmRegistry` | 只改 `npmRegistry`；其余字段保留；`plugin settings` 读回一致 | 读回；设置页显示镜像开启 | `--china-mirror false` 或恢复 DB |
 | `plugin settings --bun-path` / `--clear-bun-path`（L1） | 记录原 `bunManualPath` | 局部更新；未传字段不变；非法路径不阻止保存但 `bun-status` 反映不可用 | `plugin settings`；`plugin bun-status` | 回写原路径；恢复 DB |
+| `plugin settings --auto-update true --auto-update-interval 6`（L1） | 记录原自动更新字段与 `lastAutoUpdateCheckAt` | 只改 `autoUpdateEnabled` / `autoUpdateIntervalHours`；其它字段与时间戳保留；间隔 0/721 被 clamp | `plugin settings` 读回；DB 快照 | 回写原值；恢复 DB |
+| `plugin update --check-only`（L0） | 记录版本、插件目录、`lastAutoUpdateCheckAt` | 退出 0；返回 `items`（含 skipped 原因）；不下载、不写时间戳、不改目录 | `--json`；目录哈希；settings 快照 | 无需 |
+| `plugin update <id>`（L2） | 记录 `spec` / `options` / `enabled` / `installedAt` / `marketId` 与版本 | 版本变化；上述用户字段不变；runtime reload；`plugins-updated` 事件触发 | `plugin get`；目录 package.json；前端版本号 | 回装原版本或恢复 DB/目录 |
+| `plugin update`（L2，全量） | 记录 enabled/disabled 与 pinned/local/GitHub 记录 | 只更新未锁定的 npm；disabled 更新后仍 disabled；pinned/local/GitHub 为 skipped | `--json` 的 `items`；`plugin get` | 恢复 DB/目录 |
 | `plugin provider-options --set`（L1） | 记录原 options | 与 `plugin options` 相同：GET 不带 `--set`，PUT 整对象替换 | 读回；`plugin providers` 的 `optionValues` | 回写原 options |
 | `plugin provider-auto-checkin --enabled`（L1） | 记录渠道与账号级签到状态 | 渠道级开关翻转；未配置过的渠道首次写入显式值；账号级旧标记仍兼容 | `plugin providers` 的 `autoCheckin`；`plugin accounts` | 反向命令；恢复 DB |
 | `plugin bun-status` / `plugin bun-probe`（只读） | 记录可用 Bun 与路径 | 返回 `available/path/source`；probe 只验证版本，不写设置 | 输出；`plugin settings` 未变 | 无需 |

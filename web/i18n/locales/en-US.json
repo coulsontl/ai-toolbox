@@ -6617,7 +6617,8 @@
         "uninstall": "Uninstall",
         "openPage": "Open page",
         "enable": "Enable",
-        "disable": "Disable"
+        "disable": "Disable",
+        "update": "Update"
       },
       "confirmUninstallTitle": "Uninstall plugin",
       "confirmUninstallContent": "Uninstall \"{{name}}\". The plugin's local data (KV and files) is kept by default and stays available after reinstalling.",
@@ -6639,7 +6640,20 @@
       "pageSummary": "{{pages}} pages · {{permissions}} permissions",
       "bunReady": "Plugins run on Bun {{version}}",
       "bunMissing": "Bun runtime is not ready",
-      "viewRuntime": "View runtime"
+      "viewRuntime": "View runtime",
+      "checkUpdates": "Check updates",
+      "updateAvailable": "New v{{version}}",
+      "updateAll": "Update all ({{count}})",
+      "notice": {
+        "updatesAvailable": "{{count}} plugin update(s) available",
+        "upToDate": "All plugins are up to date",
+        "updateSuccess": "Updated {{count}} plugin(s)",
+        "updateAllSuccess": "Updated all {{count}} plugin(s)",
+        "updateFailed": "Update failed: {{error}}",
+        "updatePartial": "Updated {{updated}}, {{failed}} failed",
+        "checkUpdatesPartial": "{{available}} update(s) available, {{failed}} check(s) failed",
+        "checkUpdatesFailed": "Failed to check updates: {{error}}"
+      }
     },
     "accounts": {
       "providersTitle": "Channels",
@@ -6976,7 +6990,21 @@
       "chinaMirror": "China mirror",
       "chinaMirrorHint": "Use the npmmirror registry to speed up plugin installs and market fetches",
       "npmRegistryHint": "Custom plugin package registry URL",
-      "refreshAll": "Refresh"
+      "refreshAll": "Refresh",
+      "autoUpdate": "Auto-update",
+      "autoUpdateHint": "Only enabled npm plugins on unpinned versions; enabled state and options are preserved.",
+      "updateInterval": "Check frequency",
+      "updateIntervalHint": "How often to check for new versions in the background",
+      "updateIntervalHours": "Every {{hours}} h",
+      "lastAutoUpdateCheck": "Last checked",
+      "lastAutoUpdateNever": "Never checked",
+      "checkUpdatesNow": "Check now",
+      "notice": {
+        "checkUpdatesAvailable": "{{count}} plugin update(s) available",
+        "checkUpdatesUpToDate": "All plugins are up to date",
+        "checkUpdatesPartial": "{{available}} update(s) available, {{failed}} check(s) failed",
+        "checkUpdatesFailed": "Failed to check updates: {{error}}"
+      }
     },
     "providerCard": {
       "badge": "Plugin",

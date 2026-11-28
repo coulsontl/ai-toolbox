@@ -32,7 +32,7 @@
 | Codex | yes | 12h | Lead 3d inside Codex ensure_fresh |
 | Kimi | yes | 15m | Lead inside Kimi ensure_fresh |
 | Antigravity | yes | 15m | Lead 5m inside Antigravity ensure_fresh; refresh takes the account-operation lock and only rewrites the live credential when the applied provider owns the applied account |
-| Plugins | yes | 15m | Delegates to `plugins::background_tasks::run_plugin_background_pass`: renews plugin OAuth tokens only when one is within 15 minutes of expiry (or expired with a refresh token), and runs due daily check-ins. Reads SQLite / `plugin-auth.json` first; never starts Bun without a candidate |
+| Plugins | yes | 15m | Delegates to `plugins::background_tasks::run_plugin_background_pass`: renews plugin OAuth tokens only when one is within 15 minutes of expiry (or expired with a refresh token), runs due daily check-ins, then runs due npm plugin auto-updates. Reads SQLite / `plugin-auth.json` first; never starts Bun without a candidate; auto-updates are skipped entirely when disabled, not due, or no candidate exists |
 
 ## Gotchas
 
@@ -42,6 +42,7 @@
 - Failures are isolated per account / per tool (debug log only).
 - Plugin renewal goes through the Bun host's `keepSignedIn` RPC, which itself honours the plugin's `auth.keepAlive === false`; the shared scheduler never refreshes a plugin token directly.
 - Plugin check-in bookkeeping lives in `PluginAccountMetaRecord` (`auto_checkin`, `last_checkin_*`), not in this module; a `failed` outcome retries after 30 minutes, and `claimed` / `done` / `ineligible` / `inactive` / `captcha` settle the Beijing day.
+- The Plugins pass must not early-return when `plugin-auth.json` has no accounts: `maybe_auto_update_plugins` runs after the account work on every tick. Auto-update uses `try_lock` on the plugin manager's `update_lock`, so a long `bun add` never queues a second pass; because the pass is inline, one slow update can delay the next tick of other tools in this scheduler, but never the current tick's completed refreshes/check-ins.
 
 ## Minimal verification
 

@@ -10,13 +10,14 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
 
 use crate::db::SqliteDbState;
 
 use super::bun_host::auth::{self, PluginAccountSummary};
 use super::store;
 use super::types::{InstalledPluginRecord, PluginAccountMetaRecord};
-use super::PluginManager;
+use super::{updater, PluginManager, PluginManagerState};
 
 /// Refresh an OAuth token once it is this close to expiry (or already past).
 pub const REFRESH_LEAD_MS: i64 = 15 * 60 * 1000;
@@ -35,51 +36,123 @@ fn beijing_day(now: DateTime<FixedOffset>) -> String {
     now.format("%Y-%m-%d").to_string()
 }
 
-/// One startup/interval pass: renew due OAuth tokens and run due check-ins.
-pub async fn run_plugin_background_pass(manager: &PluginManager) {
+/// One startup/interval pass: renew due OAuth tokens, run due check-ins, and
+/// run a due plugin update check. The account portion may be empty; the update
+/// check is independent of plugin accounts.
+pub async fn run_plugin_background_pass(
+    manager: &PluginManagerState,
+    app: Option<&AppHandle>,
+) {
     let accounts = match auth::list_accounts(manager.db(), manager.paths()) {
         Ok(accounts) => accounts,
         Err(error) => {
             log::debug!("plugin background pass could not read plugin-auth.json: {error}");
+            Vec::new()
+        }
+    };
+    if !accounts.is_empty() {
+        let records = store::list_installed_plugins(manager.db()).unwrap_or_default();
+        let metas = store::list_account_metas(manager.db()).unwrap_or_default();
+        let enabled_plugins: HashSet<String> = records
+            .iter()
+            .filter(|record| record.enabled)
+            .map(|record| record.id.clone())
+            .collect();
+        let provider_plugins = provider_plugin_ids(&records);
+        let provider_auto_checkin =
+            store::resolve_provider_auto_checkin(manager.db()).unwrap_or_default();
+        let meta_by_account: HashMap<&str, &PluginAccountMetaRecord> =
+            metas.iter().map(|meta| (meta.id.as_str(), meta)).collect();
+        let now = beijing_now();
+
+        refresh_due_accounts(
+            manager,
+            &accounts,
+            &meta_by_account,
+            &provider_plugins,
+            &enabled_plugins,
+            now,
+        )
+        .await;
+        checkin_due_accounts(
+            manager,
+            &accounts,
+            &meta_by_account,
+            &provider_auto_checkin,
+            &provider_plugins,
+            &enabled_plugins,
+            now,
+        )
+        .await;
+    }
+
+    maybe_auto_update_plugins(manager, app).await;
+}
+
+/// Run one due auto-update check. Disabled, not-due, or candidate-free passes
+/// return before any HTTP request or Bun start.
+async fn maybe_auto_update_plugins(
+    manager: &PluginManagerState,
+    app: Option<&AppHandle>,
+) {
+    let settings = match store::get_plugin_settings(manager.db()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            log::warn!("plugin auto-update could not read settings: {error}");
             return;
         }
     };
-    if accounts.is_empty() {
+    if !settings.auto_update_enabled {
         return;
     }
-    let records = store::list_installed_plugins(manager.db()).unwrap_or_default();
-    let metas = store::list_account_metas(manager.db()).unwrap_or_default();
-    let enabled_plugins: HashSet<String> = records
-        .iter()
-        .filter(|record| record.enabled)
-        .map(|record| record.id.clone())
-        .collect();
-    let provider_plugins = provider_plugin_ids(&records);
-    let provider_auto_checkin =
-        store::resolve_provider_auto_checkin(manager.db()).unwrap_or_default();
-    let meta_by_account: HashMap<&str, &PluginAccountMetaRecord> =
-        metas.iter().map(|meta| (meta.id.as_str(), meta)).collect();
-    let now = beijing_now();
+    if !updater::auto_update_due(&settings, Utc::now()) {
+        return;
+    }
+    let records = match store::list_installed_plugins(manager.db()) {
+        Ok(records) => records,
+        Err(error) => {
+            log::warn!("plugin auto-update could not read installed plugins: {error}");
+            return;
+        }
+    };
+    if updater::auto_update_candidates(&records).is_empty() {
+        return;
+    }
 
-    refresh_due_accounts(
-        manager,
-        &accounts,
-        &meta_by_account,
-        &provider_plugins,
-        &enabled_plugins,
-        now,
-    )
-    .await;
-    checkin_due_accounts(
-        manager,
-        &accounts,
-        &meta_by_account,
-        &provider_auto_checkin,
-        &provider_plugins,
-        &enabled_plugins,
-        now,
-    )
-    .await;
+    let Ok(_update_guard) = manager.update_lock.try_lock() else {
+        return;
+    };
+    match updater::check_and_update_plugins_locked(manager, None, true, false, true).await {
+        Ok(summary) => {
+            if summary.updated_count == 0 {
+                return;
+            }
+            let updated_ids: Vec<&str> = summary
+                .items
+                .iter()
+                .filter(|item| item.status == "updated")
+                .map(|item| item.plugin_id.as_str())
+                .collect();
+            if let Some(app) = app {
+                let _ = app.emit(
+                    "plugins-updated",
+                    json!({
+                        "updatedCount": summary.updated_count,
+                        "updatedIds": updated_ids,
+                    }),
+                );
+            } else {
+                log::info!(
+                    "plugin auto-update completed without an AppHandle: {} updated",
+                    summary.updated_count
+                );
+            }
+        }
+        Err(error) => {
+            log::warn!("plugin auto-update pass failed: {error}");
+            manager.host().record_log("updater", "error", &error);
+        }
+    }
 }
 
 async fn refresh_due_accounts(

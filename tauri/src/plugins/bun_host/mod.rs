@@ -831,6 +831,11 @@ impl BunHost {
         self.logs.snapshot(limit.clamp(1, LOG_CAPACITY))
     }
 
+    /// Record a host-level message without starting the Bun process.
+    pub fn record_log(&self, source: &str, level: &str, message: &str) {
+        self.logs.push(source, level, message);
+    }
+
     pub fn clear_logs(&self) {
         self.logs.clear();
     }

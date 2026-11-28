@@ -108,17 +108,37 @@ fn run(cli: &Cli) -> Result<Value, Failure> {
 }
 
 fn connect(cli: &Cli) -> Result<Client, Failure> {
+    connect_with_timeout(cli, cli.timeout)
+}
+
+fn connect_with_timeout(cli: &Cli, timeout_secs: u64) -> Result<Client, Failure> {
     let path = cli
         .control_file
         .clone()
         .unwrap_or_else(discovery::default_path);
     let discovery = discovery::read(&path).map_err(Failure::Unavailable)?;
     let (host, port) = discovery.endpoint().map_err(Failure::Unavailable)?;
-    Ok(Client::new(host, port, discovery.token, cli.timeout))
+    Ok(Client::new(host, port, discovery.token, timeout_secs))
+}
+
+/// `bun add` can legitimately run for up to five minutes. Keep the local
+/// socket alive long enough for one update, or for an update-all pass.
+fn plugin_command_timeout(command: &PluginCommand, base: u64) -> u64 {
+    match command {
+        PluginCommand::Update {
+            check_only: false,
+            id: Some(_),
+        } => base.max(600),
+        PluginCommand::Update {
+            check_only: false,
+            id: None,
+        } => base.max(1800),
+        _ => base,
+    }
 }
 
 fn run_plugin(cli: &Cli, command: &PluginCommand) -> Result<Value, Failure> {
-    let client = connect(cli)?;
+    let client = connect_with_timeout(cli, plugin_command_timeout(command, cli.timeout))?;
     match command {
         PluginCommand::List => Ok(client.request(Method::Get, "/v1/plugins", None)?.body),
         PluginCommand::Get { id } => Ok(client
@@ -141,6 +161,12 @@ fn run_plugin(cli: &Cli, command: &PluginCommand) -> Result<Value, Failure> {
             let body = json!({ "id": id });
             Ok(client
                 .request(Method::Post, "/v1/plugins/reload", Some(&body))?
+                .body)
+        }
+        PluginCommand::Update { id, check_only } => {
+            let body = json!({ "id": id, "checkOnly": check_only });
+            Ok(client
+                .request(Method::Post, "/v1/plugins/update", Some(&body))?
                 .body)
         }
         PluginCommand::Enable { id } => Ok(client
@@ -844,6 +870,12 @@ fn settings_patch(fields: &PluginSettingsFields) -> Result<Value, Failure> {
     if let Some(follow_app_proxy) = fields.follow_app_proxy {
         patch["followAppProxy"] = json!(follow_app_proxy);
     }
+    if let Some(auto_update) = fields.auto_update {
+        patch["autoUpdateEnabled"] = json!(auto_update);
+    }
+    if let Some(auto_update_interval) = fields.auto_update_interval {
+        patch["autoUpdateIntervalHours"] = json!(auto_update_interval);
+    }
     Ok(patch)
 }
 
@@ -1035,7 +1067,10 @@ fn summarize_item(item: &Value) -> String {
     .find_map(|key| object.get(*key).and_then(Value::as_str))
     .unwrap_or("?");
     let mut line = id.to_string();
-    if let Some(name) = object.get("name").and_then(Value::as_str) {
+    let name = ["displayName", "name", "packageName"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str));
+    if let Some(name) = name {
         if name != id {
             line.push_str(&format!("  {name}"));
         }
@@ -1050,6 +1085,25 @@ fn summarize_item(item: &Value) -> String {
     }
     if let Some(kind) = object.get("kind").and_then(Value::as_str) {
         line.push_str(&format!("  ({kind})"));
+    }
+    let current = object
+        .get("currentVersion")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let latest = object
+        .get("latestVersion")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !current.is_empty() && !latest.is_empty() {
+        line.push_str(&format!("  v{current} -> v{latest}"));
+    }
+    if let Some(status) = object.get("status").and_then(Value::as_str) {
+        line.push_str(&format!("  [{status}]"));
+    }
+    if let Some(message) = object.get("message").and_then(Value::as_str) {
+        if !message.trim().is_empty() {
+            line.push_str(&format!("  {message}"));
+        }
     }
     line
 }
@@ -1082,6 +1136,8 @@ mod tests {
             npm_registry: None,
             china_mirror: None,
             follow_app_proxy: None,
+            auto_update: None,
+            auto_update_interval: None,
             json_body: None,
         }
     }
@@ -1117,6 +1173,70 @@ mod tests {
         };
         let patch = settings_patch(&fields).unwrap();
         assert_eq!(patch["bunManualPath"], "");
+    }
+
+    #[test]
+    fn settings_patch_maps_auto_update_fields() {
+        let fields = PluginSettingsFields {
+            auto_update: Some(true),
+            auto_update_interval: Some(6),
+            ..settings_fields()
+        };
+        let patch = settings_patch(&fields).unwrap();
+        assert_eq!(patch["autoUpdateEnabled"], true);
+        assert_eq!(patch["autoUpdateIntervalHours"], 6);
+    }
+
+    #[test]
+    fn plugin_update_gets_a_longer_socket_timeout() {
+        let base = 120;
+        assert_eq!(
+            plugin_command_timeout(
+                &PluginCommand::Update {
+                    id: Some("demo".to_string()),
+                    check_only: false,
+                },
+                base,
+            ),
+            600
+        );
+        assert_eq!(
+            plugin_command_timeout(
+                &PluginCommand::Update {
+                    id: None,
+                    check_only: false,
+                },
+                base,
+            ),
+            1800
+        );
+        assert_eq!(
+            plugin_command_timeout(
+                &PluginCommand::Update {
+                    id: Some("demo".to_string()),
+                    check_only: true,
+                },
+                base,
+            ),
+            120
+        );
+        assert_eq!(plugin_command_timeout(&PluginCommand::List, base), 120);
+    }
+
+    #[test]
+    fn summarize_item_shows_update_versions_and_status() {
+        let item = json!({
+            "pluginId": "demo",
+            "displayName": "Demo",
+            "currentVersion": "1.0.0",
+            "latestVersion": "1.1.0",
+            "status": "available",
+            "message": "",
+        });
+        assert_eq!(
+            summarize_item(&item),
+            "demo  Demo  v1.0.0 -> v1.1.0  [available]"
+        );
     }
 
     #[test]

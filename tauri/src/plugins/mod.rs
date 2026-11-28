@@ -21,6 +21,7 @@ pub mod page_storage;
 pub mod paths;
 pub mod store;
 pub mod types;
+pub mod updater;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +46,9 @@ pub struct PluginManager {
     middleware: Arc<MiddlewareRuntime>,
     gateway: PluginGatewayState,
     page_server: Arc<PluginPageServer>,
+    /// Serializes package mutations: installs, uninstalls, record edits,
+    /// reloads and update checks. Background updates use `try_lock`.
+    pub(crate) update_lock: tokio::sync::Mutex<()>,
 }
 
 pub type PluginManagerState = Arc<PluginManager>;
@@ -63,6 +67,7 @@ impl PluginManager {
             middleware,
             gateway: PluginGatewayState::new(),
             page_server: Arc::new(PluginPageServer::new()),
+            update_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -124,7 +129,7 @@ pub(crate) async fn http_client_for(
 ///
 /// Kept behind `#[inline(never)]` out of `lib.rs`'s main `generate_handler!`:
 /// in unoptimized Windows debug builds, LLVM allocates a separate stack slot
-/// per match arm, so folding 48 more commands into the 700-command root
+/// per match arm, so folding 51 more commands into the 700-command root
 /// handler overflows Windows' default 1 MiB main-thread stack (`0xc000041d`).
 #[inline(never)]
 pub fn invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
@@ -134,6 +139,8 @@ pub fn invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
         commands::plugins_install,
         commands::plugins_uninstall,
         commands::plugins_reload,
+        commands::plugins_check_updates,
+        commands::plugins_update_plugins,
         commands::plugins_set_enabled,
         commands::plugins_set_options,
         commands::plugins_list_markets,

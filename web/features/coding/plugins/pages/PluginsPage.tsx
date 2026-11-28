@@ -1,9 +1,11 @@
 import React from 'react';
 import { App, Spin } from 'antd';
+import { listen } from '@tauri-apps/api/event';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useKeepAlive } from '@/components/layout/KeepAliveOutlet';
 import {
+  checkPluginUpdates,
   closePluginPage,
   ensurePluginBun,
   getPluginBunStatus,
@@ -22,6 +24,8 @@ import {
   type PluginAccountSummary,
   type PluginPageSession,
   type PluginSettings,
+  type PluginUpdateItem,
+  type PluginUpdateSummary,
   type RegisteredPluginPage,
 } from '@/services';
 import InstalledPluginsView from '../components/InstalledPluginsView';
@@ -97,6 +101,9 @@ const PluginsPage: React.FC = () => {
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [installedRefreshing, setInstalledRefreshing] = React.useState(false);
+  // Shared by the runtime and installed views so both show the same versions.
+  const [updateItems, setUpdateItems] = React.useState<Record<string, PluginUpdateItem>>({});
+  const [checkingUpdates, setCheckingUpdates] = React.useState(false);
   const [bunBusy, setBunBusy] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [refreshKey, setRefreshKey] = React.useState(0);
@@ -421,6 +428,96 @@ const PluginsPage: React.FC = () => {
     }
   };
 
+  // A full desktop check records the timestamp on the backend; mirror the
+  // returned value so the runtime view updates without a settings reload.
+  const handleCheckUpdates = async (): Promise<PluginUpdateSummary> => {
+    setCheckingUpdates(true);
+    try {
+      const summary = await checkPluginUpdates();
+      setUpdateItems(
+        Object.fromEntries(
+          summary.items
+            .filter((item) => item.status === 'available')
+            .map((item) => [item.pluginId, item]),
+        ),
+      );
+      setPluginSettings((current) =>
+        current ? { ...current, lastAutoUpdateCheckAt: summary.checkedAt } : current,
+      );
+      return summary;
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
+
+  // Failed items keep their badge so the reader can retry them.
+  const handleUpdateSummary = (summary: PluginUpdateSummary) => {
+    const settledIds = new Set(
+      summary.items
+        .filter((item) => item.status !== 'failed' && item.status !== 'available')
+        .map((item) => item.pluginId),
+    );
+    setUpdateItems((current) => {
+      const next: Record<string, PluginUpdateItem> = {};
+      for (const [pluginId, item] of Object.entries(current)) {
+        if (!settledIds.has(pluginId)) {
+          next[pluginId] = item;
+        }
+      }
+      return next;
+    });
+  };
+
+  const refreshAfterPluginUpdate = React.useCallback(async () => {
+    const results = await Promise.allSettled([
+      listInstalledPlugins(),
+      getPluginSettings(),
+      listPluginPages(),
+    ]);
+    const [installedResult, settingsResult, pagesResult] = results;
+    if (installedResult.status === 'fulfilled') {
+      setInstalledPlugins(installedResult.value);
+    }
+    if (settingsResult.status === 'fulfilled') {
+      setPluginSettings(settingsResult.value);
+    }
+    if (pagesResult.status === 'fulfilled') {
+      setRegisteredPages(pagesResult.value);
+      setPagesError(null);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ updatedIds?: string[] }>('plugins-updated', (event) => {
+      const updatedIds = event.payload?.updatedIds ?? [];
+      if (updatedIds.length > 0) {
+        setUpdateItems((current) => {
+          const next = { ...current };
+          for (const pluginId of updatedIds) {
+            delete next[pluginId];
+          }
+          return next;
+        });
+      }
+      void refreshAfterPluginUpdate();
+    }).then((stop) => {
+      if (disposed) {
+        stop();
+        return;
+      }
+      unlisten = stop;
+    }).catch(() => {
+      // Updates still refresh through the manual buttons when the event bridge
+      // is unavailable (for example while the page runs in a browser).
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshAfterPluginUpdate]);
+
   const handleBunClick = async () => {
     if (bunStatus?.available || bunStatus?.downloading) {
       navigate(getPluginsPathForTab('runtime'));
@@ -624,9 +721,13 @@ const PluginsPage: React.FC = () => {
                 bunStatus={bunStatus}
                 pluginSettings={pluginSettings}
                 chinaMirrorBusy={chinaMirrorBusy}
+                updateItems={updateItems}
+                checkingUpdates={checkingUpdates}
                 loading={loading}
                 refreshing={installedRefreshing}
                 onRefresh={() => void handleRefreshInstalled()}
+                onCheckUpdates={handleCheckUpdates}
+                onUpdateSummary={handleUpdateSummary}
                 onDataChanged={reloadSharedData}
                 onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
                 onOpenInstall={() => openInstallModal()}
@@ -669,7 +770,9 @@ const PluginsPage: React.FC = () => {
                 refreshKey={refreshKey}
                 pluginSettings={pluginSettings}
                 chinaMirrorBusy={chinaMirrorBusy}
+                checkingUpdates={checkingUpdates}
                 onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
+                onCheckUpdates={handleCheckUpdates}
                 onSettingsSaved={setPluginSettings}
                 onBunStatusChange={setBunStatus}
               />

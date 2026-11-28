@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Input, Switch, Tooltip } from 'antd';
+import { App, Input, Select, Switch, Tooltip } from 'antd';
 import {
   Activity,
   Copy,
@@ -32,6 +32,7 @@ import {
   type MiddlewareStateView,
   type PluginRuntimeLogEntry,
   type PluginSettings,
+  type PluginUpdateSummary,
 } from '@/services';
 import {
   formatMicroseconds,
@@ -48,7 +49,9 @@ interface PluginRuntimeViewProps {
   refreshKey: number;
   pluginSettings: PluginSettings | null;
   chinaMirrorBusy: boolean;
+  checkingUpdates: boolean;
   onToggleChinaMirror: (enabled: boolean) => void;
+  onCheckUpdates: () => Promise<PluginUpdateSummary>;
   onSettingsSaved: (settings: PluginSettings) => void;
   onBunStatusChange: (status: BunRuntimeStatus) => void;
 }
@@ -58,7 +61,13 @@ const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   npmRegistry: 'https://registry.npmjs.org',
   followAppProxy: true,
   providerAutoCheckin: {},
+  autoUpdateEnabled: false,
+  autoUpdateIntervalHours: 24,
+  lastAutoUpdateCheckAt: null,
 };
+
+/** The presets offered by the interval picker; a custom backend value is added on top. */
+const UPDATE_INTERVAL_PRESETS = [6, 12, 24, 72, 168];
 
 const redactLogEntries = (entries: PluginRuntimeLogEntry[]): PluginRuntimeLogEntry[] =>
   entries.map((entry) => ({ ...entry, message: redactPluginLog(entry.message) }));
@@ -68,7 +77,9 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   refreshKey,
   pluginSettings,
   chinaMirrorBusy,
+  checkingUpdates,
   onToggleChinaMirror,
+  onCheckUpdates,
   onSettingsSaved,
   onBunStatusChange,
 }) => {
@@ -144,20 +155,48 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
     void loadAll();
   }, [loadAll, refreshKey]);
 
-  // The page-level mirror switch writes settings immediately; keep this
-  // page's draft registry in step even while the form has unrelated edits.
+  // The page-level mirror switch and update checks write settings immediately;
+  // keep this page in step without overwriting fields the reader is editing.
   React.useEffect(() => {
     if (!pluginSettings) {
       return;
     }
-    setDraft((current) =>
-      current.npmRegistry === pluginSettings.npmRegistry
-        ? current
-        : { ...current, npmRegistry: pluginSettings.npmRegistry });
-    setSettings((current) =>
-      current && current.npmRegistry !== pluginSettings.npmRegistry
-        ? { ...current, npmRegistry: pluginSettings.npmRegistry }
-        : current);
+    setDraft((current) => {
+      const next = { ...current };
+      let changed = false;
+      if (current.npmRegistry !== pluginSettings.npmRegistry) {
+        next.npmRegistry = pluginSettings.npmRegistry;
+        changed = true;
+      }
+      if (!settingsDirtyRef.current) {
+        const autoUpdateEnabled = pluginSettings.autoUpdateEnabled ?? false;
+        const autoUpdateIntervalHours = pluginSettings.autoUpdateIntervalHours ?? 24;
+        if (current.autoUpdateEnabled !== autoUpdateEnabled) {
+          next.autoUpdateEnabled = autoUpdateEnabled;
+          changed = true;
+        }
+        if (current.autoUpdateIntervalHours !== autoUpdateIntervalHours) {
+          next.autoUpdateIntervalHours = autoUpdateIntervalHours;
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    setSettings((current) => {
+      if (!current) {
+        return current;
+      }
+      const next = {
+        ...current,
+        npmRegistry: pluginSettings.npmRegistry,
+        lastAutoUpdateCheckAt: pluginSettings.lastAutoUpdateCheckAt,
+      };
+      if (!settingsDirtyRef.current) {
+        next.autoUpdateEnabled = pluginSettings.autoUpdateEnabled ?? false;
+        next.autoUpdateIntervalHours = pluginSettings.autoUpdateIntervalHours ?? 24;
+      }
+      return next;
+    });
   }, [pluginSettings]);
 
   React.useEffect(() => {
@@ -193,6 +232,8 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
       draft.bunManualPath !== settings.bunManualPath
       || draft.npmRegistry !== settings.npmRegistry
       || draft.followAppProxy !== settings.followAppProxy
+      || (draft.autoUpdateEnabled ?? false) !== (settings.autoUpdateEnabled ?? false)
+      || (draft.autoUpdateIntervalHours ?? 24) !== (settings.autoUpdateIntervalHours ?? 24)
     ),
   );
   settingsDirtyRef.current = settingsDirty;
@@ -297,6 +338,41 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
     }
   };
 
+  const handleCheckUpdates = async () => {
+    try {
+      const summary = await onCheckUpdates();
+      const firstFailure = summary.items.find((item) => item.status === 'failed');
+      if (summary.availableCount > 0 && summary.failedCount > 0) {
+        message.warning(
+          t('plugins.runtime.notice.checkUpdatesPartial', {
+            available: summary.availableCount,
+            failed: summary.failedCount,
+          }),
+        );
+      } else if (summary.availableCount > 0) {
+        message.info(
+          t('plugins.runtime.notice.checkUpdatesAvailable', {
+            count: summary.availableCount,
+          }),
+        );
+      } else if (summary.failedCount > 0) {
+        message.error(
+          t('plugins.runtime.notice.checkUpdatesFailed', {
+            error: firstFailure?.message || t('common.unknown'),
+          }),
+        );
+      } else {
+        message.success(t('plugins.runtime.notice.checkUpdatesUpToDate'));
+      }
+    } catch (checkError) {
+      message.error(
+        t('plugins.runtime.notice.checkUpdatesFailed', {
+          error: formatPluginError(checkError),
+        }),
+      );
+    }
+  };
+
   const handleRestartHost = async () => {
     setHostBusy(true);
     try {
@@ -393,6 +469,26 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
     warn: t('plugins.runtime.logsFilter.warn'),
     error: t('plugins.runtime.logsFilter.error'),
   };
+
+  const updateIntervalOptions = React.useMemo(() => {
+    const current = draft.autoUpdateIntervalHours ?? 24;
+    return [...new Set([...UPDATE_INTERVAL_PRESETS, current])].sort((left, right) => left - right);
+  }, [draft.autoUpdateIntervalHours]);
+
+  const lastAutoUpdateCheckLabel = React.useMemo(() => {
+    const value = settings?.lastAutoUpdateCheckAt;
+    if (!value) {
+      return t('plugins.runtime.lastAutoUpdateNever');
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+    return new Intl.DateTimeFormat(i18n.language, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(date);
+  }, [i18n.language, settings?.lastAutoUpdateCheckAt, t]);
 
   const eventsLabel = (state: MiddlewareStateView) => {
     if (state.events == null) {
@@ -586,6 +682,46 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
           </div>
 
           <div className={styles.settingRow}>
+            <div className={styles.settingInfo}>
+              <span className={styles.settingTitle}>{t('plugins.runtime.autoUpdate')}</span>
+              <span className={styles.settingDesc}>{t('plugins.runtime.autoUpdateHint')}</span>
+            </div>
+            <div className={styles.settingControl}>
+              <Switch
+                size="small"
+                checked={draft.autoUpdateEnabled ?? false}
+                aria-label={t('plugins.runtime.autoUpdate')}
+                onChange={(checked) => updateDraft({ autoUpdateEnabled: checked })}
+              />
+            </div>
+          </div>
+
+          <div className={styles.settingRow}>
+            <div className={styles.settingInfoNarrow}>
+              <span className={styles.settingTitle}>{t('plugins.runtime.updateInterval')}</span>
+              <span className={styles.settingDesc}>
+                {t('plugins.runtime.updateIntervalHint')}
+              </span>
+            </div>
+            <div className={styles.settingField}>
+              <Select
+                value={draft.autoUpdateIntervalHours ?? 24}
+                disabled={!(draft.autoUpdateEnabled ?? false)}
+                className={styles.settingSelect}
+                aria-label={t('plugins.runtime.updateInterval')}
+                options={updateIntervalOptions.map((hours) => ({
+                  value: hours,
+                  label: t('plugins.runtime.updateIntervalHours', { hours }),
+                }))}
+                onChange={(hours) => updateDraft({ autoUpdateIntervalHours: hours })}
+              />
+              <span className={styles.settingNote}>
+                {t('plugins.runtime.lastAutoUpdateCheck')}: {lastAutoUpdateCheckLabel}
+              </span>
+            </div>
+          </div>
+
+          <div className={styles.settingRow}>
             <div className={styles.settingInfoNarrow}>
               <span className={styles.settingTitle}>{t('plugins.runtime.bunManualPath')}</span>
               <span className={styles.settingDesc}>
@@ -650,8 +786,21 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
         <div className={styles.formActions}>
           <button
             type="button"
+            className={styles.actionButton}
+            disabled={checkingUpdates || saving}
+            onClick={() => void handleCheckUpdates()}
+          >
+            <RefreshCw
+              size={14}
+              className={checkingUpdates ? styles.spin : undefined}
+              aria-hidden="true"
+            />
+            <span>{t('plugins.runtime.checkUpdatesNow')}</span>
+          </button>
+          <button
+            type="button"
             className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
-            disabled={!settingsDirty || saving}
+            disabled={!settingsDirty || saving || checkingUpdates}
             onClick={() => void handleSaveSettings()}
           >
             {saving ? (
