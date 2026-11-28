@@ -3056,7 +3056,7 @@ pub fn default_file_mappings() -> Vec<SSHFileMapping> {
             id: "claude-desktop-config".to_string(),
             name: "Claude Desktop 配置".to_string(),
             module: "claude_desktop".to_string(),
-            local_path: "%LOCALAPPDATA%/Claude/claude_desktop_config.json".to_string(),
+            local_path: "%APPDATA%/Claude/claude_desktop_config.json".to_string(),
             remote_path: "~/.claude/desktop/claude_desktop_config.json".to_string(),
             enabled: false,
             is_pattern: false,
@@ -3454,7 +3454,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_desktop_default_mapping_uses_local_app_data() {
+    fn claude_desktop_default_mapping_uses_roaming_app_data() {
         let mapping = default_file_mappings()
             .into_iter()
             .find(|mapping| mapping.id == "claude-desktop-config")
@@ -3462,7 +3462,7 @@ mod tests {
 
         assert_eq!(
             mapping.local_path,
-            "%LOCALAPPDATA%/Claude/claude_desktop_config.json"
+            "%APPDATA%/Claude/claude_desktop_config.json"
         );
         assert!(!mapping.enabled);
     }

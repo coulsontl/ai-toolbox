@@ -25,6 +25,8 @@
 | Claude Desktop | `claude_desktop_config.json` + `configLibrary/<PROFILE_ID>.json` + `configLibrary/_meta.json` | Win `%LOCALAPPDATA%\Claude`(+`Claude-3p`);mac `~/Library/Application Support/Claude`(+`Claude-3p`);Linux 不支持 |
 | Hermes | `config.yaml`(YAML) | Win `%LOCALAPPDATA%\hermes`;mac/Linux `~/.hermes`;环境变量 `HERMES_HOME` 可覆盖 |
 
+> **2026-11 路径修正**:上表是初版方案(照 cc-switch)的路径。后续按 Claude Desktop 本体行为修正为:1P 配置在 `%LOCALAPPDATA%\Claude-Data\claude_*`(3.x)> `%APPDATA%\Claude` > MSIX `LocalCache\Roaming\Claude`;3P 根目录在真实 `%LOCALAPPDATA%\Claude-3p` 或 MSIX `LocalCache\Local\Claude-3p`,按最后使用时间选择。详见 `tauri/src/coding/claude_desktop/AGENTS.md`。
+
 **Claude Desktop 3P 方案要点**:
 - 两个 `claude_desktop_config.json`(normal + 3p)都只写 `deploymentMode`(`"3p"` / 官方 `"1p"`),**保留文件其它字段**(含 `mcpServers`)。
 - 真正的推理配置写在 `configLibrary/<PROFILE_ID>.json`:

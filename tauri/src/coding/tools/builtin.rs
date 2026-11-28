@@ -383,7 +383,7 @@ pub const BUILTIN_TOOLS: &[BuiltinTool] = &[
         display_name: "Claude Desktop",
         relative_skills_dir: None,
         relative_detect_dir: None,
-        mcp_config_path: Some("%LOCALAPPDATA%/Claude/claude_desktop_config.json"),
+        mcp_config_path: Some("%APPDATA%/Claude/claude_desktop_config.json"),
         mcp_config_format: Some("json"),
         mcp_field: Some("mcpServers"),
     },

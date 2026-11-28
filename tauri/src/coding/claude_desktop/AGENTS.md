@@ -7,19 +7,31 @@
 ## Source of Truth
 
 - Claude Desktop 是"配置文件路径模块",不是"根目录模块":它不改任何 CLI 根目录,只改平台固定路径下的几个 JSON 文件。
-- 路径决议只依赖平台 + 环境变量(`LOCALAPPDATA` / `HOME`),不读取 DB、环境变量或 shell 配置推导根目录。
+- 路径决议只依赖平台 + 环境变量(`LOCALAPPDATA` / `APPDATA` / `HOME`),不读取 DB 或 shell 配置推导根目录。
 - Provider 与 common config 的主存储是 SQLite JSONB(表 `claude_desktop_provider`);磁盘文件是运行时事实,apply 时才改写。
 - 生效状态判定只读 `_meta.json` 的 `appliedId` 与 `configLibrary/<PROFILE_ID>.json` 的 `inferenceGatewayBaseUrl` / `inferenceModels`,不读 `deploymentMode`。
 
 ## 路径事实(平台矩阵)
 
-| 平台 | normal 数据目录 | threep 数据目录 | 说明 |
-|------|-----------------|-----------------|------|
-| Windows | `%LOCALAPPDATA%\Claude` | `%LOCALAPPDATA%\Claude-3p` | 二者缺失时回退 `~\AppData\Local`;兼容版本号目录 `Claude-3p-*` |
+| 平台 | normal 数据目录(1P) | threep 数据目录(3P) | 说明 |
+|------|---------------------|---------------------|------|
+| Windows | `%LOCALAPPDATA%\Claude-Data\claude_*` > `%APPDATA%\Claude` > MSIX `Packages\Claude_*\LocalCache\Roaming\Claude` | `%LOCALAPPDATA%\Claude-3p` > MSIX `Packages\Claude_*\LocalCache\Local\Claude-3p` | `Local State` 优先，其次按配置文件最近修改时间选“最后被使用的”;兼容 `Claude-3p-*`、`AnthropicPBC.Claude_*` |
 | macOS | `~/Library/Application Support/Claude` | `~/Library/Application Support/Claude-3p` | 标准 macOS paths |
 | Linux | 不支持 | 不支持 | `current_platform_paths` 返回错误 |
 
-4 个关键路径(均由 `config_writer::current_platform_paths` 解析):
+`current_platform_paths` 的 Windows 分支必须覆盖三种真实布局(详见 `resolve_windows_normal_dir` / `resolve_windows_threep_dir`):
+
+1. **经典安装**：1P `%APPDATA%\Claude`，3P `%LOCALAPPDATA%\Claude-3p`。
+2. **MSIX 包容器**：Windows 会把应用的 `%APPDATA%` / `%LOCALAPPDATA%` 重定向到 `Packages\<包族>\LocalCache`。因此 1P 可能在 `LocalCache\Roaming\Claude`，3P 可能在 `LocalCache\Local\Claude-3p`（Windows 10 / manifest 排除规则未生效时）。
+3. **Claude Desktop 3.x（2026-10 起）**：1P 数据迁到 `%LOCALAPPDATA%\Claude-Data\claude_<包族小写>`；3P 仍是 `%LOCALAPPDATA%\Claude-3p`。旧 `LocalCache\Roaming\Claude` 可能只剩 `.user-data-left.*` 标记文件。
+
+判断“哪个目录是活的”不要靠猜安装方式：先看候选目录有没有 `Local State`（Chromium 的“应用在此运行过”标记），有它的候选优先，再按 mtime 取最新；都没有 `Local State` 时才比较 `claude_desktop_config.json` / `ant-did` / `configLibrary/_meta.json`。`pick_last_used_dir` 的严格 `>` 保证同 mtime 时优先候选顺序。只有所有 3P 候选都不存在时，才根据已解析出的 1P 目录是否在 MSIX 包内决定默认 3P 路径（包内 → `LocalCache\Local\Claude-3p`，否则真实 `%LOCALAPPDATA%\Claude-3p`）。
+
+**不要**再假设 `%LOCALAPPDATA%\Claude` 是应用的配置目录：它只是 cc-switch 时代留下的 `deploymentMode` 存根。Claude Desktop 1.30096 的 app.asar 已确认 `deploymentMode` / `configLibrary` 只从 3P 根目录读取。
+
+**从未启动过的 MSIX 安装**不会产生任何 `LocalCache` 数据，此时无法判断虚拟化是否生效，解析会按经典路径（`%APPDATA%\Claude` + `%LOCALAPPDATA%\Claude-3p`）写入；Claude Desktop 首次运行、包内出现 `LocalCache\Roaming\Claude` / `LocalCache\Local\Claude-3p` 后，下一次解析会自动切到包内路径。
+
+四个关键路径(均由 `config_writer::current_platform_paths` 解析):
 - `normal_config = <normal>/claude_desktop_config.json`
 - `threep_config = <threep>/claude_desktop_config.json`
 - `profile_path = <threep>/configLibrary/<PROFILE_ID>.json`
@@ -83,7 +95,7 @@ sequenceDiagram
 
 - 依赖 `crate::db` 通用 CRUD(`DbTable::ClaudeDesktopProvider`,表已建好)与 `crate::coding::db_id`。
 - 只读 `crate::coding::claude_code::adapter` 用于 `import_claude_desktop_providers_from_claude` 的源数据转换。
-- **会话读取**:Claude Desktop 3P 会话落在 `<Claude-3p>/local-agent-mode-sessions/<proj>/<space>/` —— 元数据 `local_<uuid>.json`(title/cwd/model/cliSessionId/ms 时间戳)+ 同名单目录 `local_<uuid>/.claude/projects/<cwd编码>/*.jsonl`(标准 Claude Code 转录格式)。`session_manager::claude_desktop` 读元数据构建 `SessionMeta`、转录复用 `claude_code::load_messages`;`sessions_root` 由 `config_library_path.parent()` 推导。
+- **会话读取**:Claude Desktop 3P 会话落在 `<Claude-3p>/local-agent-mode-sessions/<proj>/<space>/` —— 元数据 `local_<uuid>.json`(title/cwd/model/cliSessionId/ms 时间戳)+ 同名单目录 `local_<uuid>/.claude/projects/<cwd编码>/*.jsonl`(标准 Claude Code 转录格式)。`session_manager::claude_desktop` 读元数据构建 `SessionMeta`、转录复用 `claude_code::load_messages`;`sessions_root` 由 `config_library_path.parent()` 推导。标准(1P)会话由 `session_import::desktop::official_session_roots` 扫描 `config_writer::standard_data_dirs()` 的每个候选目录(含 `Claude-Data\claude_*` 与 MSIX `LocalCache\Roaming\Claude`)。
 - 未来被 `web/features/coding/claudedesktop/` 依赖。
 
 ## 最小验证

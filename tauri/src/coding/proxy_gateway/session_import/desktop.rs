@@ -8,17 +8,10 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub(super) fn official_session_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if cfg!(target_os = "windows") {
-        for variable in ["LOCALAPPDATA", "APPDATA"] {
-            if let Some(base) = std::env::var_os(variable) {
-                roots.push(PathBuf::from(base).join("Claude/local-agent-mode-sessions"));
-            }
-        }
-    } else if let Some(base) = dirs::config_dir() {
-        roots.push(base.join("Claude/local-agent-mode-sessions"));
-    }
-    roots
+    crate::coding::claude_desktop::config_writer::standard_data_dirs()
+        .into_iter()
+        .map(|dir| dir.join("local-agent-mode-sessions"))
+        .collect()
 }
 
 pub(super) fn select_sources(files: Vec<PathBuf>) -> Vec<PathBuf> {

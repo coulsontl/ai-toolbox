@@ -1246,17 +1246,50 @@ fn backup_filter_option_path(tool: &str, relative_path: &str) -> Option<String> 
             "~/.codebuddy.json".to_string()
         }
         "codebuddy" => format!("~/.codebuddy/{relative_path}"),
-        "claude_desktop" if relative_path == "claude_desktop_config.json" => {
-            "%LOCALAPPDATA%/Claude/claude_desktop_config.json".to_string()
+        "claude_desktop" => {
+            let Some((normal_config_path, config_library_path)) =
+                get_claude_desktop_settings_paths()
+            else {
+                return Some(format!("%LOCALAPPDATA%/Claude-3p/{relative_path}"));
+            };
+            if relative_path == "claude_desktop_config.json" {
+                display_portable_backup_path(&normal_config_path)
+            } else {
+                let path = relative_path
+                    .strip_prefix("configLibrary/")
+                    .map(|rest| config_library_path.join(rest))
+                    .unwrap_or_else(|| config_library_path.join(relative_path));
+                display_portable_backup_path(&path)
+            }
         }
-        "claude_desktop" if relative_path.starts_with("configLibrary/") => {
-            format!("%LOCALAPPDATA%/Claude-3p/{relative_path}")
-        }
-        "claude_desktop" => format!("%LOCALAPPDATA%/Claude-3p/{relative_path}"),
         _ => relative_path.to_string(),
     };
 
     Some(file_path)
+}
+
+/// Render an absolute config path with the portable prefixes the other tools
+/// show (`%LOCALAPPDATA%/`, `%APPDATA%/`, `~/`), so the backup filter UI does
+/// not expose the user's absolute profile path.
+fn display_portable_backup_path(path: &Path) -> String {
+    for variable in ["LOCALAPPDATA", "APPDATA"] {
+        let Some(root) = std::env::var_os(variable).map(PathBuf::from) else {
+            continue;
+        };
+        if let Ok(rest) = path.strip_prefix(&root) {
+            return format!("%{variable}%/{}", portable_path_separators(rest));
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return format!("~/{}", portable_path_separators(rest));
+        }
+    }
+    portable_path_separators(path)
+}
+
+fn portable_path_separators(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn push_backup_filter_option(
@@ -3107,6 +3140,23 @@ fn normalize_backup_filter_rule_path(tool: &str, file_path: &str) -> String {
     let path = normalized_path
         .strip_prefix(&external_config_prefix)
         .unwrap_or(normalized_path);
+
+    // Claude Desktop's roots vary by install kind (`%APPDATA%\Claude`,
+    // `%LOCALAPPDATA%\Claude-Data\<family>`, an MSIX `LocalCache`), so match the
+    // stable suffixes instead of enumerating every prefix.
+    if tool == "claude_desktop" {
+        // Check the already-relative form first: a nested `configLibrary`
+        // segment would otherwise be cut at the wrong occurrence.
+        if path.starts_with("configLibrary/") {
+            return path.to_string();
+        }
+        if let Some((_, relative)) = path.split_once("/configLibrary/") {
+            return format!("configLibrary/{relative}");
+        }
+        if path == "claude_desktop_config.json" || path.ends_with("/claude_desktop_config.json") {
+            return "claude_desktop_config.json".to_string();
+        }
+    }
 
     let tool_prefixes: &[&str] = match tool {
         "opencode" => &["~/.config/opencode/", "~/.local/share/opencode/"],
@@ -5682,6 +5732,68 @@ mod tests {
                 backup_relative_path
             ));
         }
+    }
+
+    #[test]
+    fn should_exclude_matches_claude_desktop_relocated_roots() {
+        // Claude Desktop 3.x and MSIX installs move the same files under
+        // `%APPDATA%`, `Claude-Data\claude_*` or a package `LocalCache`.
+        let cases = [
+            (
+                "%APPDATA%/Claude/claude_desktop_config.json",
+                "claude_desktop_config.json",
+            ),
+            (
+                "%LOCALAPPDATA%/Claude-Data/claude_pzs8sxrjxfjjc/claude_desktop_config.json",
+                "claude_desktop_config.json",
+            ),
+            (
+                "%LOCALAPPDATA%/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Roaming/Claude/claude_desktop_config.json",
+                "claude_desktop_config.json",
+            ),
+            (
+                "%LOCALAPPDATA%/Packages/Claude_pzs8sxrjxfjjc/LocalCache/Local/Claude-3p/configLibrary/_meta.json",
+                "configLibrary/_meta.json",
+            ),
+        ];
+
+        for (rule_path, backup_relative_path) in cases {
+            let rules = vec![BackupFileFilterRule {
+                tool: "claude_desktop".to_string(),
+                file_path: rule_path.to_string(),
+            }];
+            assert!(
+                should_exclude_from_backup(&rules, "claude_desktop", backup_relative_path),
+                "rule {rule_path} should match {backup_relative_path}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_desktop_normalization_keeps_nested_config_library_paths() {
+        let nested_rule = vec![BackupFileFilterRule {
+            tool: "claude_desktop".to_string(),
+            file_path:
+                "%LOCALAPPDATA%/Claude-3p/configLibrary/backups/configLibrary/default.json"
+                    .to_string(),
+        }];
+        assert!(should_exclude_from_backup(
+            &nested_rule,
+            "claude_desktop",
+            "configLibrary/backups/configLibrary/default.json"
+        ));
+
+        // A library file that happens to share the root config's name must not
+        // be collapsed into the root-config rule.
+        let root_rule = vec![BackupFileFilterRule {
+            tool: "claude_desktop".to_string(),
+            file_path: "%APPDATA%/Claude/claude_desktop_config.json".to_string(),
+        }];
+        assert!(!should_exclude_from_backup(
+            &root_rule,
+            "claude_desktop",
+            "configLibrary/profiles/claude_desktop_config.json"
+        ));
     }
 
     #[test]

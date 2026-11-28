@@ -8,6 +8,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "windows", test))]
+use std::time::SystemTime;
 
 use serde_json::{json, Map, Value};
 
@@ -69,11 +71,8 @@ pub fn current_platform_paths() -> Result<ClaudeDesktopPaths, String> {
     #[cfg(windows)]
     {
         let local_app_data = windows_local_app_data_dir();
-        let normal_dir = pick_windows_claude_dir(&local_app_data, false)
-            .unwrap_or_else(|| local_app_data.join("Claude"));
-        let threep_dir = pick_windows_claude_dir(&local_app_data, true)
-            .unwrap_or_else(|| local_app_data.join("Claude-3p"));
-        return Ok(paths_from_dirs(normal_dir, threep_dir));
+        let roaming_app_data = windows_roaming_app_data_dir();
+        return Ok(windows_paths_from_roots(&local_app_data, &roaming_app_data));
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
@@ -93,40 +92,233 @@ fn resolve_home_dir() -> Result<PathBuf, String> {
 fn windows_local_app_data_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var_os("USERPROFILE")
-                .map(PathBuf::from)
-                .unwrap_or_default();
-            home.join("AppData").join("Local")
-        })
+        .unwrap_or_else(|| windows_user_profile_dir().join("AppData").join("Local"))
 }
 
-/// Resolve the Claude (normal) / Claude-3p (threep) data dir under LOCALAPPDATA,
-/// tolerating versioned directory names (e.g. "Claude-3p-1.0.187").
 #[cfg(windows)]
-fn pick_windows_claude_dir(local_app_data: &Path, threep: bool) -> Option<PathBuf> {
-    let exact_name = if threep { "Claude-3p" } else { "Claude" };
-    let exact = local_app_data.join(exact_name);
-    if exact.exists() {
-        return Some(exact);
+fn windows_roaming_app_data_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| windows_user_profile_dir().join("AppData").join("Roaming"))
+}
+
+#[cfg(windows)]
+fn windows_user_profile_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+/// Claude Desktop keeps its standard (1P) and third-party (3P) user data in
+/// separate directories. Which physical directory is live depends on the
+/// install kind: a classic install uses `%APPDATA%\Claude` +
+/// `%LOCALAPPDATA%\Claude-3p`, an MSIX package redirects `%APPDATA%` and
+/// `%LOCALAPPDATA%` into `Packages\<family>\LocalCache`, and Desktop 3.x moved
+/// the standard data to `%LOCALAPPDATA%\Claude-Data\claude_<family>`.
+///
+/// The live copy is the one Claude Desktop wrote last, so pick the candidate
+/// with the newest Chromium/config marker rather than guessing the install kind.
+#[cfg(any(target_os = "windows", test))]
+fn windows_paths_from_roots(local_app_data: &Path, roaming_app_data: &Path) -> ClaudeDesktopPaths {
+    let normal_dir = resolve_windows_normal_dir(local_app_data, roaming_app_data);
+    let threep_dir = resolve_windows_threep_dir(local_app_data, roaming_app_data);
+    paths_from_dirs(normal_dir, threep_dir)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn resolve_windows_normal_dir(local_app_data: &Path, roaming_app_data: &Path) -> PathBuf {
+    let candidates = windows_normal_dir_candidates(local_app_data, roaming_app_data);
+    pick_last_used_dir(&candidates).unwrap_or_else(|| roaming_app_data.join("Claude"))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn resolve_windows_threep_dir(local_app_data: &Path, roaming_app_data: &Path) -> PathBuf {
+    let candidates = windows_threep_dir_candidates(local_app_data);
+    if let Some(dir) = pick_last_used_dir(&candidates) {
+        return dir;
     }
 
-    let mut candidates: Vec<PathBuf> = std::fs::read_dir(local_app_data)
-        .ok()?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .filter(|path| {
-            let Some(name) = path.file_name().and_then(|v| v.to_str()) else {
-                return false;
-            };
-            let starts = name.starts_with("Claude");
-            let is_threep = name.contains("-3p");
-            starts && is_threep == threep
+    // No 3P data yet. If the standard data already lives inside the MSIX
+    // package, Windows redirects the app's `%LOCALAPPDATA%\Claude-3p` there,
+    // so create the profile where the packaged app will actually read it.
+    // A packaged install that has never run exposes no package data, so it
+    // still falls back to the classic dirs; once the app runs once, its
+    // `LocalCache` appears and the next resolve picks it up.
+    let normal_dir = resolve_windows_normal_dir(local_app_data, roaming_app_data);
+    if let Some(local_cache) = msix_local_cache_of(&normal_dir, local_app_data) {
+        return local_cache.join("Local").join("Claude-3p");
+    }
+
+    local_app_data.join("Claude-3p")
+}
+
+/// Candidate standard-data directories, ordered from Desktop 3.x back to the
+/// classic layout. `pick_last_used_dir` ranks them by their newest marker.
+#[cfg(any(target_os = "windows", test))]
+fn windows_normal_dir_candidates(local_app_data: &Path, roaming_app_data: &Path) -> Vec<PathBuf> {
+    let mut candidates = windows_claude_data_dirs(local_app_data);
+    candidates.push(roaming_app_data.join("Claude"));
+    // Some older builds kept the standard data under LOCALAPPDATA.
+    candidates.push(local_app_data.join("Claude"));
+    for local_cache in windows_msix_local_cache_dirs(local_app_data) {
+        candidates.push(local_cache.join("Roaming").join("Claude"));
+    }
+    candidates
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_threep_dir_candidates(local_app_data: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![local_app_data.join("Claude-3p")];
+    candidates.extend(windows_versioned_threep_dirs(local_app_data));
+    for local_cache in windows_msix_local_cache_dirs(local_app_data) {
+        candidates.push(local_cache.join("Local").join("Claude-3p"));
+        candidates.push(local_cache.join("Roaming").join("Claude-3p"));
+    }
+    candidates
+}
+
+/// `%LOCALAPPDATA%\Claude-Data\claude_<family>` (Desktop 3.x). The folder name
+/// is the lowercased MSIX package family; fall back to `Claude-Data` itself
+/// when a build wrote directly there.
+#[cfg(any(target_os = "windows", test))]
+fn windows_claude_data_dirs(local_app_data: &Path) -> Vec<PathBuf> {
+    let root = local_app_data.join("Claude-Data");
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&root)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(is_claude_package_dir_name)
+                })
+                .collect()
         })
-        .collect();
-    candidates.sort();
-    candidates.into_iter().next()
+        .unwrap_or_default();
+    dirs.sort();
+    if dirs.is_empty() && root.is_dir() {
+        dirs.push(root);
+    }
+    dirs
+}
+
+/// `LocalCache` directories of Claude Desktop's MSIX packages, matching both
+/// the download package (`Claude_<publisher>`) and the Store one
+/// (`AnthropicPBC.Claude_<publisher>`).
+#[cfg(any(target_os = "windows", test))]
+fn windows_msix_local_cache_dirs(local_app_data: &Path) -> Vec<PathBuf> {
+    let packages = local_app_data.join("Packages");
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&packages)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(is_claude_package_dir_name)
+                })
+                .map(|path| path.join("LocalCache"))
+                .filter(|path| path.is_dir())
+                .collect()
+        })
+        .unwrap_or_default();
+    dirs.sort();
+    dirs
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_claude_package_dir_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("claude_") || lower.starts_with("anthropicpbc.claude_")
+}
+
+/// Versioned siblings such as `Claude-3p-1.0.187`, kept for older installs.
+#[cfg(any(target_os = "windows", test))]
+fn windows_versioned_threep_dirs(local_app_data: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = fs::read_dir(local_app_data)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir())
+                .filter(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.to_ascii_lowercase().starts_with("claude-3p-"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    dirs.sort();
+    dirs
+}
+
+/// Return the package `LocalCache` directory when `path` is inside an MSIX
+/// package container (`%LOCALAPPDATA%\Packages\<family>\...`).
+#[cfg(any(target_os = "windows", test))]
+fn msix_local_cache_of(path: &Path, local_app_data: &Path) -> Option<PathBuf> {
+    let packages = local_app_data.join("Packages");
+    let rest = path.strip_prefix(&packages).ok()?;
+    let family = rest.components().next()?;
+    Some(packages.join(family.as_os_str()).join("LocalCache"))
+}
+
+/// Pick the candidate Claude Desktop wrote to last. `Local State` outranks
+/// config files because another tool can leave a recent
+/// `claude_desktop_config.json` in a folder the app never ran in (the legacy
+/// `%LOCALAPPDATA%\Claude` stub is exactly that). When no candidate has a
+/// marker, keep the first existing one (the caller's priority order).
+#[cfg(any(target_os = "windows", test))]
+fn pick_last_used_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
+    let mut first_existing: Option<PathBuf> = None;
+    let mut newest: Option<(PathBuf, (u8, SystemTime))> = None;
+
+    for candidate in candidates {
+        if !candidate.is_dir() {
+            continue;
+        }
+        if first_existing.is_none() {
+            first_existing = Some(candidate.clone());
+        }
+        let Some(rank) = dir_last_used_rank(candidate) else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(_, current)| rank > *current) {
+            newest = Some((candidate.clone(), rank));
+        }
+    }
+
+    newest.map(|(dir, _)| dir).or(first_existing)
+}
+
+/// `Local State` is Chromium's "the app ran here" marker; config/library files
+/// still count, but rank below it so a stub folder cannot win.
+#[cfg(any(target_os = "windows", test))]
+fn dir_last_used_rank(dir: &Path) -> Option<(u8, SystemTime)> {
+    if let Some(modified) = marker_mtime(&dir.join("Local State")) {
+        return Some((2, modified));
+    }
+    [
+        dir.join("ant-did"),
+        dir.join(CONFIG_FILE),
+        dir.join(CONFIG_LIBRARY_DIR).join("_meta.json"),
+    ]
+    .iter()
+    .filter_map(|path| marker_mtime(path))
+    .max()
+    .map(|modified| (1, modified))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn marker_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .and_then(|metadata| metadata.modified().ok())
 }
 
 // Compiled on macOS/Windows (production use) and under `cfg(test)` (cross-platform
@@ -184,6 +376,36 @@ pub fn get_claude_desktop_path_info() -> ClaudeDesktopPathInfo {
             meta_path: None,
             message: Some(message),
         },
+    }
+}
+
+/// Directories that may hold Claude Desktop's standard (1P) user data on the
+/// current platform. Session import scans every candidate because old installs
+/// can leave their data in a layout the current app no longer writes.
+pub fn standard_data_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(home) = resolve_home_dir() else {
+            return Vec::new();
+        };
+        vec![home
+            .join("Library")
+            .join("Application Support")
+            .join("Claude")]
+    }
+
+    #[cfg(windows)]
+    {
+        let local_app_data = windows_local_app_data_dir();
+        let roaming_app_data = windows_roaming_app_data_dir();
+        windows_normal_dir_candidates(&local_app_data, &roaming_app_data)
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        dirs::config_dir()
+            .map(|dir| vec![dir.join("Claude")])
+            .unwrap_or_default()
     }
 }
 
@@ -887,6 +1109,246 @@ mod tests {
             }
         });
         (settings, None)
+    }
+
+    fn windows_roots(temp: &Path) -> (PathBuf, PathBuf) {
+        (temp.join("Local"), temp.join("Roaming"))
+    }
+
+    fn write_marker(path: &Path, age_secs: u64) {
+        fs::create_dir_all(path.parent().expect("marker parent")).expect("create marker dir");
+        let file = fs::File::create(path).expect("create marker");
+        file.set_modified(
+            SystemTime::now()
+                .checked_sub(std::time::Duration::from_secs(age_secs))
+                .expect("marker mtime"),
+        )
+        .expect("set marker mtime");
+    }
+
+    #[test]
+    fn windows_classic_layout_uses_roaming_and_local_threep() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        write_marker(&roaming.join("Claude").join("Local State"), 10);
+        write_marker(&local.join("Claude-3p").join("Local State"), 10);
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            roaming.join("Claude").join(CONFIG_FILE)
+        );
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_msix_layout_uses_package_local_cache() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        let local_cache = local
+            .join("Packages")
+            .join("Claude_pzs8sxrjxfjjc")
+            .join("LocalCache");
+        write_marker(
+            &local_cache
+                .join("Roaming")
+                .join("Claude")
+                .join("Local State"),
+            10,
+        );
+        write_marker(
+            &local_cache
+                .join("Local")
+                .join("Claude-3p")
+                .join("Local State"),
+            10,
+        );
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            local_cache.join("Roaming").join("Claude").join(CONFIG_FILE)
+        );
+        assert_eq!(
+            paths.threep_config_path,
+            local_cache
+                .join("Local")
+                .join("Claude-3p")
+                .join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_claude_data_wins_over_stale_roaming() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        let claude_data = local.join("Claude-Data").join("claude_pzs8sxrjxfjjc");
+        write_marker(&claude_data.join("Local State"), 10);
+        write_marker(&roaming.join("Claude").join("Local State"), 3_600);
+        write_marker(&local.join("Claude-3p").join("Local State"), 10);
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(paths.normal_config_path, claude_data.join(CONFIG_FILE));
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_legacy_stub_config_does_not_beat_real_app_data() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        write_marker(&roaming.join("Claude").join("Local State"), 3_600);
+        // The legacy `%LOCALAPPDATA%\Claude` stub only holds a recent config.
+        write_marker(&local.join("Claude").join(CONFIG_FILE), 10);
+        write_marker(&local.join("Claude-3p").join("Local State"), 10);
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            roaming.join("Claude").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_prefers_recent_threep_copy_over_package() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        let local_cache = local
+            .join("Packages")
+            .join("Claude_pzs8sxrjxfjjc")
+            .join("LocalCache");
+        write_marker(
+            &local_cache
+                .join("Local")
+                .join("Claude-3p")
+                .join("Local State"),
+            3_600,
+        );
+        write_marker(&local.join("Claude-3p").join("Local State"), 10);
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_packaged_install_with_existing_local_cache_creates_threep_in_package() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        let local_cache = local
+            .join("Packages")
+            .join("AnthropicPBC.Claude_fnn82j28hfe8t")
+            .join("LocalCache");
+        write_marker(
+            &local_cache.join("Roaming").join("Claude").join(CONFIG_FILE),
+            10,
+        );
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            local_cache.join("Roaming").join("Claude").join(CONFIG_FILE)
+        );
+        assert_eq!(
+            paths.threep_config_path,
+            local_cache
+                .join("Local")
+                .join("Claude-3p")
+                .join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_fresh_install_defaults_to_standard_dirs() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            roaming.join("Claude").join(CONFIG_FILE)
+        );
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_versioned_threep_dir_is_a_candidate() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        write_marker(&roaming.join("Claude").join("Local State"), 10);
+        write_marker(&local.join("Claude-3p-1.0.187").join("Local State"), 10);
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p-1.0.187").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_markerless_dirs_keep_candidate_order() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        fs::create_dir_all(roaming.join("Claude")).expect("roaming Claude");
+        fs::create_dir_all(local.join("Claude")).expect("local Claude stub");
+        fs::create_dir_all(local.join("Claude-3p")).expect("real 3p");
+        fs::create_dir_all(local.join("Claude-3p-1.0.187")).expect("versioned 3p");
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            roaming.join("Claude").join(CONFIG_FILE)
+        );
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p").join(CONFIG_FILE)
+        );
+    }
+
+    #[test]
+    fn windows_ignores_non_claude_package_dirs() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let (local, roaming) = windows_roots(temp.path());
+        write_marker(
+            &local
+                .join("Packages")
+                .join("OtherPublisher.App_x")
+                .join("LocalCache")
+                .join("Roaming")
+                .join("Claude")
+                .join("Local State"),
+            10,
+        );
+
+        let paths = windows_paths_from_roots(&local, &roaming);
+
+        assert_eq!(
+            paths.normal_config_path,
+            roaming.join("Claude").join(CONFIG_FILE)
+        );
+        assert_eq!(
+            paths.threep_config_path,
+            local.join("Claude-3p").join(CONFIG_FILE)
+        );
     }
 
     #[test]
