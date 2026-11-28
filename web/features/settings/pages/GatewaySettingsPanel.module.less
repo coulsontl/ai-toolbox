@@ -165,6 +165,15 @@
   padding: 10px;
 }
 
+/* Tabs that stack more than one Section card need their own gap: the split
+   layout only spaces out direct children. */
+.sectionStack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .fieldStack {
   display: flex;
   flex-direction: column;
@@ -186,10 +195,13 @@
   line-height: 1.25;
 }
 
-.fieldPairGrid {
+/* Three short numeric fields per row; keeps timeout / retry / health / log
+   groups compact instead of leaving half-empty rows. */
+.fieldTripleGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* Breathing room between the three fields instead of shared cell borders. */
+  gap: 6px 14px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
   overflow: hidden;
@@ -203,12 +215,21 @@
   }
 
   .fieldRow {
+    position: relative;
     min-height: 34px;
     grid-template-columns: 1fr auto;
     padding: 4px 8px;
 
-    &:nth-child(odd):not(:last-child) {
-      border-right: 1px solid var(--color-border);
+    /* Short divider centred in the column gap so the fields stay visually
+       grouped without touching each other. */
+    &:not(:nth-child(3n)):not(:last-child)::after {
+      position: absolute;
+      top: 8px;
+      right: -7px;
+      bottom: 8px;
+      width: 1px;
+      background: var(--color-border);
+      content: '';
     }
   }
 
@@ -414,6 +435,54 @@
   gap: 6px;
 }
 
+/* Port input with an attached "check" action: keeps this input at the same
+   130px width as the other listen inputs so their right edges line up. */
+.inputWithAction {
+  position: relative;
+  display: inline-flex;
+  width: 130px;
+  max-width: 100%;
+}
+
+.inputWithAction .numberInput {
+  width: 100%;
+  padding-right: 46px;
+}
+
+.inputActionButton {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  transform: translateY(-50%);
+  padding: 1px 4px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease;
+
+  &:hover:not(:disabled) {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary, var(--color-primary));
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
 .switchControl {
   display: flex;
   max-width: 100%;
@@ -567,6 +636,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
+  margin-top: 12px;
   padding: 8px 12px;
   border-top: 1px solid var(--color-border);
   color: var(--color-text-tertiary);
@@ -596,7 +666,7 @@
   }
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 960px) {
   .perCliGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -608,7 +678,7 @@
     gap: 6px;
   }
 
-  .fieldPairGrid {
+  .fieldTripleGrid {
     grid-template-columns: 1fr;
 
     .fieldRow {
@@ -624,6 +694,15 @@
         border-bottom: none;
       }
     }
+  }
+
+  /* Stacked rows use the same border-only separation as the pair grid. */
+  .fieldTripleGrid {
+    gap: 0;
+  }
+
+  .fieldTripleGrid .fieldRow:not(:nth-child(3n)):not(:last-child)::after {
+    display: none;
   }
 
   .logParts {

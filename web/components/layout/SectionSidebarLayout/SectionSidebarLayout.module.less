@@ -100,6 +100,36 @@
   margin-bottom: 8px;
 }
 
+/* Matches the settings rail toggle: a 30px square icon button instead of the
+   antd text button so every left rail shares one collapse affordance. */
+.collapseButton {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary, var(--color-primary));
+    outline-offset: 2px;
+  }
+}
+
 .content {
   flex: 1;
   min-width: 0;

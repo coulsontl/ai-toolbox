@@ -1479,6 +1479,7 @@ const GeneralSettingsPage: React.FC<GeneralSettingsPageProps> = ({
         }}
         variant="page"
         collapsible
+        title={t('settings.title')}
         ariaLabel={t('settings.title')}
       >
         {sectionContent[activeSection]}

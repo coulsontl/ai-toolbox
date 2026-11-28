@@ -43,17 +43,10 @@
   justify-content: center;
 }
 
-.brandIcon {
-  display: inline-flex;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--pl-accent-border);
-  border-radius: 7px;
-  background: var(--pl-accent-bg);
-  color: var(--pl-accent-text);
+/* The header toggle is a primary affordance like the nav icons; only the
+   footer refresh button stays on the secondary colour. */
+.header .iconButton {
+  color: var(--pl-text-primary);
 }
 
 .brandTitle {
@@ -137,6 +130,9 @@
   flex: 0 0 auto;
   align-self: center;
   padding: 0;
+  /* A 999px pill collapses into a narrow capsule; use the control radius so the
+     icon-only state reads as a square button like the rest of the rail. */
+  border-radius: var(--pl-radius-control);
 }
 
 .nav {

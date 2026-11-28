@@ -842,7 +842,7 @@
       "backup": "数据备份"
     },
     "nav": {
-      "general": "通用",
+      "general": "通用设置",
       "modules": "模块显示",
       "agent": "Agent 集成",
       "network": "网络代理",
@@ -859,7 +859,8 @@
       "subtitle": "本机 HTTP 入口，CLI 请求先进入 AI Toolbox，再按模型和渠道健康度路由到上游。",
       "loading": "正在加载网关设置...",
       "sections": {
-        "listen": "监听",
+        "listen": "监听设置",
+        "listenPrivacy": "监听与脱敏",
         "cli": "接管状态",
         "logs": "日志与统计",
         "resilience": "转发与容错"

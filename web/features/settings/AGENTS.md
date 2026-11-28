@@ -21,7 +21,7 @@
 - WSL 和 SSH 前端看起来相似，但产品语义不同：WSL 有自动同步和 WSL Direct 跳过逻辑；SSH 当前以手动同步为主。
 - 默认 mappings 的初始化放在 hook 里做一次性补全，避免后端返回空映射后页面无法操作。
 - WSL/SSH 模块 tab 的可见性依赖 `visibleTabs`，这样同步 UI 和主功能页的启用范围保持一致。
-- 应用设置页（`/settings`）与网关设置 Tab 共用 `web/components/layout/SettingsSplitLayout` 的左右分类外壳：应用页用 `variant="page"` 并依赖路由 `contentPadding: 'none'` 自己滚动右侧；网关设置用 `variant="embedded"`，左侧导航按 `--gateway-header-height` 粘性定位并撑到视口底部，避免与 `GatewayPage` 顶栏形成双滚动条，也避免短页面留下孤立的侧栏色块。导航可收起为图标栏（窄屏自动恢复横向胶囊条），新增分类只扩展两侧的 `items` 与右侧内容，不要各写一份侧栏样式。
+- 应用设置页（`/settings`）与网关设置 Tab 共用 `web/components/layout/SettingsSplitLayout` 的左右分类外壳：应用页用 `variant="page"` 并依赖路由 `contentPadding: 'none'` 自己滚动右侧；网关设置用 `variant="embedded"`，左侧导航按 `--gateway-header-height` 粘性定位并撑到视口底部，避免与 `GatewayPage` 顶栏形成双滚动条，也避免短页面留下孤立的侧栏色块。导航可收起为图标栏（窄屏自动恢复横向胶囊条），收起按钮固定在该栏顶部 header（与插件中心 `PluginSidebar` 一致，不再放底部），header 还显示调用方传入的纯文字 `title`（不放品牌图标，与插件中心一致）；网关侧栏标题用 `gateway.page.tabs.settings`（「设置」），避免与 `GatewayPage` 顶栏的「网关」重复；选中态同样复用插件中心的柔和 accent 底 + 主色蓝字（暗色模式用半透明 accent 底），不要再改回实心主色底 + 白字。新增分类只扩展两侧的 `items` 与右侧内容，不要各写一份侧栏样式。
 - `/settings` 的分类状态写入 `?section=`（`general | modules | agent | network | data | about`），并保留旧的 `?section=gateway` → `/gateway/settings` 重定向。`BackupSettingsModal`、`RemoteBackupRestoreModal`、`UpdateProgressModal` 必须挂在 `SettingsSplitLayout` 外侧，切换分类不得卸载或打断备份/恢复/更新。网关设置切换分类前必须先 `flushSave`，把 200ms debounce 内未落盘的改动立即提交。
 
 ## 关键流程
@@ -76,7 +76,7 @@ sequenceDiagram
 - 防休眠开关显示持久化偏好；系统应用失败时保留已保存的偏好，单独显示可访问的行内错误，不能让 rejected Promise 静默消失，也不能把尚未保存的值显示成已保存。启动恢复失败必须记录后端日志；系统资源的线程归属遵守根文档的 Async Runtime Safety 规则。
 - Gateway 设置页会按 `appProxyConfigKeys` 判断每 CLI 的 `app_configs` 是否为空。后续给 `AppProxyConfig` 增加字段时必须同步更新这个 key 集合，否则设置页清空超时/重试字段时可能误删相邻功能保存的配置。
 - Gateway 设置页的每 CLI 超时/重试卡片（`CLI_OPTIONS`）**只列能真正被接管的 CLI**，不要按 `GatewayCliKey::supported_mvp()` 或 `GATEWAY_USAGE_TOOLS` 铺开。这些字段是「网关代理某 CLI 流量时」的覆盖值，接管不了的 CLI 填了也不会被读取：Antigravity 没有接管实现（`cli_proxy::is_supported_cli` 不含它），WorkBuddy / CodeBuddy 后端可接管但前端没有 engage 入口（`GatewayFailoverButton` 只挂在 claude / claude_desktop / codex / grok / kimi / gemini 六个页面）。这三张卡片曾长期显示恒定的「暂不支持」/「无可代理渠道」，2026-11-01 按要求删除。`app_configs` 里已存的对应条目不会因此丢失——保存走的是整份 `draftSettings`，读回来的全量对象原样回写。将来给某个 CLI 补上 engage 入口时，再把它加回 `CLI_OPTIONS`。
-- Gateway 的“数据脱敏”分区委托 gateway 模块组件处理，使用独立 privacy 配置命令；不能放进此页普通 settings 的全量自动保存 payload。开关和规则分别更新，本地预览不启用实际流量处理，详细规则见 `web/features/coding/gateway/AGENTS.md`。
+- Gateway 的“数据脱敏”分区委托 gateway 模块组件处理，使用独立 privacy 配置命令；不能放进此页普通 settings 的全量自动保存 payload。它现在与监听字段共用侧栏的「监听与脱敏」tab（`settings.gateway.sections.listenPrivacy`），右侧仍渲染为独立卡片，只是删掉了单独的侧栏项；切换 tab 时 `flushSave` 只提交监听草稿，脱敏开关保持即时保存。开关和规则分别更新，本地预览不启用实际流量处理，详细规则见 `web/features/coding/gateway/AGENTS.md`。
 - Gateway 设置页的 `ProxyGatewaySettings` 运行态开关必须和后端字段同步暴露；例如 `lossy_rejection_enabled` 是用户控制“有损转换是否直接 400”的开关，默认关闭，UI 放在“转发与容错 / 请求整流”里 `Thinking budget 修正` 下方。
 - Codex WebSocket 总开关位于“转发与容错 / 传输方式”，默认关闭，沿用普通网关 settings 的自动保存；保存期间禁用操作，后端保存响应作为持久化状态。说明需保留“关闭后新连接走 HTTP/SSE、已有连接空闲后关闭；开启后新建 Codex 会话或重启客户端重试”的边界，不能把开关开启描述成所有请求强制 WS，也不能通过切换开关改写 CLI 接管配置。
 - Gateway 的 Claude Thinking 整流和 OpenAI Responses `encrypted_content` 恢复是两个独立运行态开关：前者只控制 `thinking_rectifier_enabled`，后者只控制 `responses_encrypted_content_rectifier_enabled`。新增恢复策略时不能借用名称或说明仅覆盖其他协议的既有开关。

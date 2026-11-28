@@ -842,7 +842,7 @@
       "backup": "Data Backup"
     },
     "nav": {
-      "general": "General",
+      "general": "General Settings",
       "modules": "Modules",
       "agent": "Agent Integration",
       "network": "Network Proxy",
@@ -859,7 +859,8 @@
       "subtitle": "Local HTTP entrypoint. CLI requests enter AI Toolbox first, then route upstream by model and channel health.",
       "loading": "Loading gateway settings...",
       "sections": {
-        "listen": "Listener",
+        "listen": "Listener settings",
+        "listenPrivacy": "Listener & redaction",
         "cli": "Takeover state",
         "logs": "Logs & metrics",
         "resilience": "Forwarding & resilience"

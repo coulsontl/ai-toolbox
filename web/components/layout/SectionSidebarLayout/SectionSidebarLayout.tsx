@@ -1,6 +1,7 @@
 import React from 'react';
-import { Button, Menu, Typography } from 'antd';
-import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
+import { Menu, Tooltip, Typography } from 'antd';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import type { MenuProps } from 'antd';
 import styles from './SectionSidebarLayout.module.less';
 
@@ -52,6 +53,7 @@ const SectionSidebarLayout: React.FC<SectionSidebarLayoutProps> = ({
   markerAttr = DEFAULT_MARKER_ATTR,
 }) => {
   const { Text } = Typography;
+  const { t } = useTranslation();
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const scrollRetryRafRef = React.useRef<number | null>(null);
   const scrollRetryTimeoutIdsRef = React.useRef<number[]>([]);
@@ -244,12 +246,22 @@ const SectionSidebarLayout: React.FC<SectionSidebarLayoutProps> = ({
           <div className="sidebarHeaderWrapper">
             <div className={styles.sidebarHeader}>
               {!internalSidebarCollapsed ? <Text strong>{sidebarTitle}</Text> : <span />}
-              <Button
-                type="text"
-                size="small"
-                icon={internalSidebarCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
-                onClick={() => setInternalSidebarCollapsed((value) => !value)}
-              />
+              <Tooltip
+                title={internalSidebarCollapsed ? t('settings.nav.expand') : t('settings.nav.collapse')}
+                placement="right"
+              >
+                <button
+                  type="button"
+                  className={styles.collapseButton}
+                  aria-label={internalSidebarCollapsed ? t('settings.nav.expand') : t('settings.nav.collapse')}
+                  aria-expanded={!internalSidebarCollapsed}
+                  onClick={() => setInternalSidebarCollapsed((value) => !value)}
+                >
+                  {internalSidebarCollapsed
+                    ? <PanelLeftOpen size={16} />
+                    : <PanelLeftClose size={16} />}
+                </button>
+              </Tooltip>
             </div>
           </div>
 

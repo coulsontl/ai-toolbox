@@ -39,7 +39,6 @@ type GatewaySettingsSection =
   | 'resilience'
   | 'cli'
   | 'aggregate'
-  | 'privacy'
   | 'logs';
 type SupportedGatewayCliKey = Extract<
   GatewayCliKey,
@@ -161,7 +160,8 @@ const appProxyConfigKeys: Array<keyof AppProxyConfig> = [
 interface SwitchControlProps {
   checked: boolean;
   disabled?: boolean;
-  label: string;
+  /** Optional text after the switch; compact grids show the switch alone. */
+  label?: string;
   ariaLabel?: string;
   onChange: (checked: boolean) => void;
 }
@@ -169,7 +169,7 @@ interface SwitchControlProps {
 const SwitchControl: React.FC<SwitchControlProps> = ({ checked, disabled, label, ariaLabel, onChange }) => (
   <div className={styles.switchControl}>
     <Switch size="small" checked={checked} disabled={disabled} aria-label={ariaLabel} onChange={onChange} />
-    <span className={styles.switchLabel}>{label}</span>
+    {label ? <span className={styles.switchLabel}>{label}</span> : null}
   </div>
 );
 
@@ -544,7 +544,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
   const sectionItems = [
     {
       key: 'listen',
-      label: t('settings.gateway.sections.listen'),
+      label: t('settings.gateway.sections.listenPrivacy'),
       icon: <Network size={16} aria-hidden="true" />,
     },
     {
@@ -561,11 +561,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
       key: 'aggregate',
       label: t('gateway.aggregate.title'),
       icon: <Route size={16} aria-hidden="true" />,
-    },
-    {
-      key: 'privacy',
-      label: t('gateway.privacy.title'),
-      icon: <ShieldCheck size={16} aria-hidden="true" />,
     },
     {
       key: 'logs',
@@ -621,62 +616,68 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
         banner={sectionBanner}
         variant="embedded"
         collapsible
+        title={t('gateway.page.tabs.settings')}
         ariaLabel={t('settings.gateway.title')}
       >
         <div onBlur={handleContentBlur}>
           {activeSection === 'listen' ? (
-          <Section icon={<Network size={15} aria-hidden="true" />} title={t('settings.gateway.sections.listen')}>
-            <div className={styles.fieldStack}>
-              <FieldRow label={t('settings.gateway.fields.host')} description={t('settings.gateway.hints.host')}>
-                <input
-                  className={styles.textInput}
-                  value={draftSettings.listen_host}
-                  onChange={(event) => updateDraftSetting('listen_host', event.currentTarget.value)}
-                />
-              </FieldRow>
-              <FieldRow label={t('settings.gateway.fields.port')} description={t('settings.gateway.hints.port')}>
-                <div className={styles.inlineControlGroup}>
-                  <input
-                    className={styles.numberInput}
-                    type="number"
-                    min={1024}
-                    value={draftSettings.listen_port}
-                    onChange={(event) =>
-                      updateDraftSetting(
-                        'listen_port',
-                        toInteger(event.currentTarget.value, draftSettings.listen_port, 0),
-                      )
-                    }
-                  />
-                  <button
-                    type="button"
-                    className={styles.textButton}
-                    disabled={checkingPort}
-                    onClick={() => void handleCheckPort()}
-                  >
-                    {t('common.check')}
-                  </button>
-                </div>
-              </FieldRow>
-              <FieldRow label={t('settings.gateway.fields.autoSelectPort')} wide>
-                <SwitchControl
-                  checked={draftSettings.port_auto_select}
-                  label={draftSettings.port_auto_select ? t('common.enabled') : t('common.disabled')}
-                  onChange={(checked) => updateDraftAndSave('port_auto_select', checked)}
-                />
-              </FieldRow>
-              {isWindows && (
-                <FieldRow label={t('settings.gateway.fields.wslHost')} description={t('settings.gateway.hints.wslHost')}>
+          <div className={styles.sectionStack}>
+            <Section icon={<Network size={15} aria-hidden="true" />} title={t('settings.gateway.sections.listen')}>
+              <div className={styles.fieldStack}>
+                <FieldRow label={t('settings.gateway.fields.host')} description={t('settings.gateway.hints.host')}>
                   <input
                     className={styles.textInput}
-                    value={draftSettings.wsl_host}
-                    placeholder="192.168.x.x"
-                    onChange={(event) => updateDraftSetting('wsl_host', event.currentTarget.value)}
+                    value={draftSettings.listen_host}
+                    onChange={(event) => updateDraftSetting('listen_host', event.currentTarget.value)}
                   />
                 </FieldRow>
-              )}
-            </div>
-          </Section>
+                <FieldRow label={t('settings.gateway.fields.port')} description={t('settings.gateway.hints.port')}>
+                  <div className={styles.inputWithAction}>
+                    <input
+                      className={styles.numberInput}
+                      type="number"
+                      min={1024}
+                      value={draftSettings.listen_port}
+                      onChange={(event) =>
+                        updateDraftSetting(
+                          'listen_port',
+                          toInteger(event.currentTarget.value, draftSettings.listen_port, 0),
+                        )
+                      }
+                    />
+                    <button
+                      type="button"
+                      className={styles.inputActionButton}
+                      disabled={checkingPort}
+                      onClick={() => void handleCheckPort()}
+                    >
+                      {t('common.check')}
+                    </button>
+                  </div>
+                </FieldRow>
+                <FieldRow label={t('settings.gateway.fields.autoSelectPort')} wide>
+                  <SwitchControl
+                    checked={draftSettings.port_auto_select}
+                    label={draftSettings.port_auto_select ? t('common.enabled') : t('common.disabled')}
+                    onChange={(checked) => updateDraftAndSave('port_auto_select', checked)}
+                  />
+                </FieldRow>
+                {isWindows && (
+                  <FieldRow label={t('settings.gateway.fields.wslHost')} description={t('settings.gateway.hints.wslHost')}>
+                    <input
+                      className={styles.textInput}
+                      value={draftSettings.wsl_host}
+                      placeholder="192.168.x.x"
+                      onChange={(event) => updateDraftSetting('wsl_host', event.currentTarget.value)}
+                    />
+                  </FieldRow>
+                )}
+              </div>
+            </Section>
+            <Section icon={<ShieldCheck size={15} aria-hidden="true" />} title={t('gateway.privacy.title')}>
+              <GatewayPrivacySettings running={status?.running ?? false} />
+            </Section>
+          </div>
           ) : null}
 
           {activeSection === 'resilience' ? (
@@ -684,97 +685,92 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
             <div className={styles.fieldStack}>
               <div className={styles.subGroup}>
                 <div className={styles.subGroupLabel}>{t('settings.gateway.subGroups.transport')}</div>
-                <FieldRow
-                  label={t('settings.gateway.fields.codexWebsocket')}
-                  description={t('settings.gateway.hints.codexWebsocketDefault')}
-                  help={t('settings.gateway.hints.codexWebsocket')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.codex_websocket_enabled}
-                    disabled={busyAction !== null}
-                    ariaLabel={t('settings.gateway.fields.codexWebsocket')}
-                    label={draftSettings.codex_websocket_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('codex_websocket_enabled', checked)}
-                  />
-                </FieldRow>
-                <FieldRow
-                  label={t('settings.gateway.fields.codexCompactionNativePassthrough')}
-                  description={t('settings.gateway.hints.codexCompactionNativePassthroughDefault')}
-                  help={t('settings.gateway.hints.codexCompactionNativePassthrough')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.codex_compaction_native_passthrough_enabled}
-                    disabled={busyAction !== null}
-                    ariaLabel={t('settings.gateway.fields.codexCompactionNativePassthrough')}
-                    label={draftSettings.codex_compaction_native_passthrough_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('codex_compaction_native_passthrough_enabled', checked)}
-                  />
-                </FieldRow>
+                <div className={styles.fieldTripleGrid}>
+                  <FieldRow
+                    label={t('settings.gateway.fields.codexWebsocket')}
+                    description={t('settings.gateway.hints.codexWebsocketDefault')}
+                    help={t('settings.gateway.hints.codexWebsocket')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.codex_websocket_enabled}
+                      disabled={busyAction !== null}
+                      ariaLabel={t('settings.gateway.fields.codexWebsocket')}
+                      onChange={(checked) => updateDraftAndSave('codex_websocket_enabled', checked)}
+                    />
+                  </FieldRow>
+                  <FieldRow
+                    label={t('settings.gateway.fields.codexCompactionNativePassthrough')}
+                    description={t('settings.gateway.hints.codexCompactionNativePassthroughDefault')}
+                    help={t('settings.gateway.hints.codexCompactionNativePassthrough')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.codex_compaction_native_passthrough_enabled}
+                      disabled={busyAction !== null}
+                      ariaLabel={t('settings.gateway.fields.codexCompactionNativePassthrough')}
+                      onChange={(checked) => updateDraftAndSave('codex_compaction_native_passthrough_enabled', checked)}
+                    />
+                  </FieldRow>
+                </div>
               </div>
               <div className={styles.subGroup}>
                 <div className={styles.subGroupLabel}>{t('settings.gateway.subGroups.rectifier')}</div>
-                <FieldRow
-                  label={t('settings.gateway.fields.thinkingRectifier')}
-                  help={t('settings.gateway.hints.thinkingRectifier')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.thinking_rectifier_enabled}
-                    label={draftSettings.thinking_rectifier_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('thinking_rectifier_enabled', checked)}
-                  />
-                </FieldRow>
-                <FieldRow
-                  label={t('settings.gateway.fields.responsesEncryptedContentRectifier')}
-                  help={t('settings.gateway.hints.responsesEncryptedContentRectifier')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.responses_encrypted_content_rectifier_enabled}
-                    label={draftSettings.responses_encrypted_content_rectifier_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('responses_encrypted_content_rectifier_enabled', checked)}
-                  />
-                </FieldRow>
-                <FieldRow
-                  label={t('settings.gateway.fields.thinkingBudgetRectifier')}
-                  help={t('settings.gateway.hints.thinkingBudgetRectifier')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.thinking_budget_rectifier_enabled}
-                    label={draftSettings.thinking_budget_rectifier_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('thinking_budget_rectifier_enabled', checked)}
-                  />
-                </FieldRow>
-                <FieldRow
-                  label={t('settings.gateway.fields.lossyRejection')}
-                  help={t('settings.gateway.hints.lossyRejection')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.lossy_rejection_enabled}
-                    label={draftSettings.lossy_rejection_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('lossy_rejection_enabled', checked)}
-                  />
-                </FieldRow>
-                <FieldRow
-                  label={t('settings.gateway.fields.cacheInjection')}
-                  help={t('settings.gateway.hints.cacheInjection')}
-                  wide
-                >
-                  <SwitchControl
-                    checked={draftSettings.cache_injection_enabled}
-                    label={draftSettings.cache_injection_enabled ? t('common.enabled') : t('common.disabled')}
-                    onChange={(checked) => updateDraftAndSave('cache_injection_enabled', checked)}
-                  />
-                </FieldRow>
+                <div className={styles.fieldTripleGrid}>
+                  <FieldRow
+                    label={t('settings.gateway.fields.thinkingRectifier')}
+                    help={t('settings.gateway.hints.thinkingRectifier')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.thinking_rectifier_enabled}
+                      ariaLabel={t('settings.gateway.fields.thinkingRectifier')}
+                      onChange={(checked) => updateDraftAndSave('thinking_rectifier_enabled', checked)}
+                    />
+                  </FieldRow>
+                  <FieldRow
+                    label={t('settings.gateway.fields.responsesEncryptedContentRectifier')}
+                    help={t('settings.gateway.hints.responsesEncryptedContentRectifier')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.responses_encrypted_content_rectifier_enabled}
+                      ariaLabel={t('settings.gateway.fields.responsesEncryptedContentRectifier')}
+                      onChange={(checked) => updateDraftAndSave('responses_encrypted_content_rectifier_enabled', checked)}
+                    />
+                  </FieldRow>
+                  <FieldRow
+                    label={t('settings.gateway.fields.thinkingBudgetRectifier')}
+                    help={t('settings.gateway.hints.thinkingBudgetRectifier')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.thinking_budget_rectifier_enabled}
+                      ariaLabel={t('settings.gateway.fields.thinkingBudgetRectifier')}
+                      onChange={(checked) => updateDraftAndSave('thinking_budget_rectifier_enabled', checked)}
+                    />
+                  </FieldRow>
+                  <FieldRow
+                    label={t('settings.gateway.fields.lossyRejection')}
+                    help={t('settings.gateway.hints.lossyRejection')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.lossy_rejection_enabled}
+                      ariaLabel={t('settings.gateway.fields.lossyRejection')}
+                      onChange={(checked) => updateDraftAndSave('lossy_rejection_enabled', checked)}
+                    />
+                  </FieldRow>
+                  <FieldRow
+                    label={t('settings.gateway.fields.cacheInjection')}
+                    help={t('settings.gateway.hints.cacheInjection')}
+                  >
+                    <SwitchControl
+                      checked={draftSettings.cache_injection_enabled}
+                      ariaLabel={t('settings.gateway.fields.cacheInjection')}
+                      onChange={(checked) => updateDraftAndSave('cache_injection_enabled', checked)}
+                    />
+                  </FieldRow>
+                </div>
               </div>
 
               <div className={styles.subGroup}>
                 <div className={styles.subGroupLabel}>{t('settings.gateway.subGroups.timeout')}</div>
-                <div className={styles.fieldPairGrid}>
+                <div className={styles.fieldTripleGrid}>
                   <FieldRow
                     label={t('settings.gateway.fields.firstByteTimeout')}
                     help={t('settings.gateway.fieldHelp.firstByteTimeout')}
@@ -809,8 +805,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                       }
                     />
                   </FieldRow>
-                </div>
-                <div className={styles.fieldPairGrid}>
                   <FieldRow
                     label={t('settings.gateway.fields.nonStreamingTimeout')}
                     help={t('settings.gateway.fieldHelp.nonStreamingTimeout')}
@@ -833,7 +827,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
 
               <div className={styles.subGroup}>
                 <div className={styles.subGroupLabel}>{t('settings.gateway.subGroups.retry')}</div>
-                <div className={styles.fieldPairGrid}>
+                <div className={styles.fieldTripleGrid}>
                   <FieldRow
                     label={t('settings.gateway.fields.perProviderRetry')}
                     help={t('settings.gateway.fieldHelp.perProviderRetry')}
@@ -947,7 +941,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                     {t('settings.gateway.subGroups.healthHint')}
                   </span>
                 </div>
-                <div className={styles.fieldPairGrid}>
+                <div className={styles.fieldTripleGrid}>
                   <FieldRow
                     label={t('settings.gateway.fields.failureThreshold')}
                     help={t('settings.gateway.fieldHelp.failureThreshold')}
@@ -982,8 +976,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                       }
                     />
                   </FieldRow>
-                </div>
-                <div className={styles.fieldPairGrid}>
                   <FieldRow
                     label={t('settings.gateway.fields.baseCooldown')}
                     help={t('settings.gateway.fieldHelp.baseCooldown')}
@@ -1018,8 +1010,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                       }
                     />
                   </FieldRow>
-                </div>
-                <div className={styles.fieldPairGrid}>
                   <FieldRow
                     label={t('settings.gateway.fields.probeSuccess')}
                     help={t('settings.gateway.fieldHelp.probeSuccess')}
@@ -1181,12 +1171,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
           </Section>
           ) : null}
 
-          {activeSection === 'privacy' ? (
-          <Section icon={<ShieldCheck size={15} aria-hidden="true" />} title={t('gateway.privacy.title')}>
-            <GatewayPrivacySettings running={status?.running ?? false} />
-          </Section>
-          ) : null}
-
           {activeSection === 'logs' ? (
           <Section icon={<FileText size={15} aria-hidden="true" />} title={t('settings.gateway.sections.logs')}>
             <div className={styles.fieldStack}>
@@ -1256,7 +1240,7 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                   <span>{t('settings.gateway.logParts.response')}</span>
                 </label>
               </div>
-              <div className={styles.fieldPairGrid}>
+              <div className={styles.fieldTripleGrid}>
                 <FieldRow label={t('settings.gateway.fields.retentionDays')}>
                   <input
                     className={styles.numberInput}
@@ -1285,8 +1269,6 @@ const GatewaySettingsPanel: React.FC<GatewaySettingsPanelProps> = ({
                     }
                   />
                 </FieldRow>
-              </div>
-              <div className={styles.fieldPairGrid}>
                 <FieldRow label={t('settings.gateway.fields.maxBodySize')}>
                   <input
                     className={styles.numberInput}

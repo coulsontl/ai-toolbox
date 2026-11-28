@@ -396,6 +396,9 @@
   }
 }
 
+/* Lives inside the heading line so the status row below can use the full card
+   width instead of being narrowed by a reserved actions column for its whole
+   height. */
 .rowActions {
   display: flex;
   flex: 0 0 auto;
@@ -661,7 +664,7 @@
 
   .rowActions {
     width: 100%;
-    margin-left: 48px;
+    margin-left: 0;
   }
 }
 

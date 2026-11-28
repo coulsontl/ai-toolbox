@@ -629,6 +629,97 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                       {kindIcon(category)}
                       <span>{kindLabel(category)}</span>
                     </span>
+                    <div className={styles.rowActions}>
+                      {updateItem ? (
+                        <button
+                          type="button"
+                          className={`${styles.textButton} ${styles.textButtonAccent}`}
+                          disabled={updating || updatingAll}
+                          onClick={() => void handleUpdate(plugin)}
+                        >
+                          {updating ? (
+                            <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+                          ) : (
+                            <Download size={14} aria-hidden="true" />
+                          )}
+                          <span>{t('plugins.installed.actions.update')}</span>
+                        </button>
+                      ) : null}
+                      {canManageAccounts ? (
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          onClick={() => onManageAccounts(
+                            plugin.providers.length === 1 ? plugin.providers[0] : undefined,
+                          )}
+                        >
+                          <Users size={14} aria-hidden="true" />
+                          <span>{t('plugins.installed.actions.manageAccounts')}</span>
+                        </button>
+                      ) : null}
+                      {openablePages.length === 1 ? (
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          onClick={() => onOpenPage(plugin.id, openablePages[0].id)}
+                        >
+                          <SquareArrowOutUpRight size={14} aria-hidden="true" />
+                          <span>{t('plugins.installed.actions.openPage')}</span>
+                        </button>
+                      ) : openablePages.length > 1 ? (
+                        <Dropdown
+                          trigger={['click']}
+                          menu={{
+                            items: openablePages.map((page) => ({
+                              key: page.id,
+                              label: getPluginPageTitle(page, i18n.language),
+                            })),
+                            onClick: ({ key }) => onOpenPage(plugin.id, key),
+                          }}
+                        >
+                          <button type="button" className={styles.textButton}>
+                            <SquareArrowOutUpRight size={14} aria-hidden="true" />
+                            <span>{t('plugins.installed.actions.openPage')}</span>
+                          </button>
+                        </Dropdown>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={styles.textButton}
+                        onClick={() => onEditOptions(plugin)}
+                      >
+                        <Settings2 size={14} aria-hidden="true" />
+                        <span>{t('plugins.installed.actions.options')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.textButton}
+                        disabled={busy}
+                        onClick={() => void handleToggle(plugin, !plugin.enabled)}
+                      >
+                        {busy ? (
+                          <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+                        ) : plugin.enabled ? (
+                          <PowerOff size={14} aria-hidden="true" />
+                        ) : (
+                          <Power size={14} aria-hidden="true" />
+                        )}
+                        <span>
+                          {plugin.enabled
+                            ? t('plugins.installed.actions.disable')
+                            : t('plugins.installed.actions.enable')}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`${styles.textButton} ${styles.textButtonDanger}`}
+                        disabled={busy}
+                        onClick={() => openUninstallConfirm(plugin)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                        <span>{t('plugins.installed.actions.uninstall')}</span>
+                      </button>
+                    </div>
                   </div>
                   {hasStatusRow ? (
                     <div className={styles.rowStatus}>
@@ -698,97 +789,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                       <p>{plugin.lastError}</p>
                     </details>
                   ) : null}
-                </div>
-                <div className={styles.rowActions}>
-                  {updateItem ? (
-                    <button
-                      type="button"
-                      className={`${styles.textButton} ${styles.textButtonAccent}`}
-                      disabled={updating || updatingAll}
-                      onClick={() => void handleUpdate(plugin)}
-                    >
-                      {updating ? (
-                        <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-                      ) : (
-                        <Download size={14} aria-hidden="true" />
-                      )}
-                      <span>{t('plugins.installed.actions.update')}</span>
-                    </button>
-                  ) : null}
-                  {canManageAccounts ? (
-                    <button
-                      type="button"
-                      className={styles.textButton}
-                      onClick={() => onManageAccounts(
-                        plugin.providers.length === 1 ? plugin.providers[0] : undefined,
-                      )}
-                    >
-                      <Users size={14} aria-hidden="true" />
-                      <span>{t('plugins.installed.actions.manageAccounts')}</span>
-                    </button>
-                  ) : null}
-                  {openablePages.length === 1 ? (
-                    <button
-                      type="button"
-                      className={styles.textButton}
-                      onClick={() => onOpenPage(plugin.id, openablePages[0].id)}
-                    >
-                      <SquareArrowOutUpRight size={14} aria-hidden="true" />
-                      <span>{t('plugins.installed.actions.openPage')}</span>
-                    </button>
-                  ) : openablePages.length > 1 ? (
-                    <Dropdown
-                      trigger={['click']}
-                      menu={{
-                        items: openablePages.map((page) => ({
-                          key: page.id,
-                          label: getPluginPageTitle(page, i18n.language),
-                        })),
-                        onClick: ({ key }) => onOpenPage(plugin.id, key),
-                      }}
-                    >
-                      <button type="button" className={styles.textButton}>
-                        <SquareArrowOutUpRight size={14} aria-hidden="true" />
-                        <span>{t('plugins.installed.actions.openPage')}</span>
-                      </button>
-                    </Dropdown>
-                  ) : null}
-                  <button
-                    type="button"
-                    className={styles.textButton}
-                    onClick={() => onEditOptions(plugin)}
-                  >
-                    <Settings2 size={14} aria-hidden="true" />
-                    <span>{t('plugins.installed.actions.options')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.textButton}
-                    disabled={busy}
-                    onClick={() => void handleToggle(plugin, !plugin.enabled)}
-                  >
-                    {busy ? (
-                      <Loader2 size={14} className={styles.spin} aria-hidden="true" />
-                    ) : plugin.enabled ? (
-                      <PowerOff size={14} aria-hidden="true" />
-                    ) : (
-                      <Power size={14} aria-hidden="true" />
-                    )}
-                    <span>
-                      {plugin.enabled
-                        ? t('plugins.installed.actions.disable')
-                        : t('plugins.installed.actions.enable')}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.textButton} ${styles.textButtonDanger}`}
-                    disabled={busy}
-                    onClick={() => openUninstallConfirm(plugin)}
-                  >
-                    <Trash2 size={14} aria-hidden="true" />
-                    <span>{t('plugins.installed.actions.uninstall')}</span>
-                  </button>
                 </div>
               </article>
             );

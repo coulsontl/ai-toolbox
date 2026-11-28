@@ -1,7 +1,6 @@
 import React from 'react';
 import { Tooltip } from 'antd';
 import {
-  Blocks,
   Loader2,
   PackageCheck,
   PanelLeftClose,
@@ -83,12 +82,7 @@ const PluginSidebar: React.FC<PluginSidebarProps> = ({
     >
       <div className={styles.header}>
         {!collapsed ? (
-          <>
-            <span className={styles.brandIcon} aria-hidden="true">
-              <Blocks size={16} />
-            </span>
-            <span className={styles.brandTitle}>{t('plugins.page.title')}</span>
-          </>
+          <span className={styles.brandTitle}>{t('plugins.page.title')}</span>
         ) : null}
         <Tooltip
           title={collapsed ? t('plugins.sidebar.expand') : t('plugins.sidebar.collapse')}

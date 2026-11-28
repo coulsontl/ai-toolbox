@@ -16,55 +16,123 @@
   align-items: flex-start;
 }
 
-.nav {
+/* Rail chrome mirrors the plugin center sidebar: a header with the brand mark
+   and the collapse toggle on top, then the tab list below. */
+.sidebar {
   display: flex;
   flex: 0 0 196px;
   width: 196px;
   min-height: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
   box-sizing: border-box;
   padding: 12px 10px;
-  overflow-y: auto;
   background: var(--color-bg-elevated);
   transition: flex-basis 0.16s ease, width 0.16s ease;
 }
 
-.embedded .nav {
+.embedded .sidebar {
   position: sticky;
   top: calc(var(--gateway-header-height, 64px) + 12px);
   align-self: flex-start;
   /* Reach the bottom of the viewport at rest: content padding + page gap. */
   height: calc(100vh - var(--content-top-offset) - var(--gateway-header-height, 64px) - 64px);
   min-height: 260px;
+  /* Embedded rails float over the page, so give them the card radius. */
+  border-radius: 12px;
 }
 
-.navCollapsed {
+.sidebarCollapsed {
   flex: 0 0 56px;
   width: 56px;
   padding: 12px 8px;
 }
 
-.navCollapsed .navItem {
-  gap: 0;
-  justify-content: center;
-  padding: 0;
+.navHeader {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
 }
 
-.navCollapsed .navLabel {
-  display: none;
+.sidebarCollapsed .navHeader {
+  justify-content: center;
+}
+
+.brandTitle {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navCollapse {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+
+  &:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ant-color-primary, var(--color-primary));
+    outline-offset: 2px;
+  }
+}
+
+.sidebarCollapsed .navCollapse {
+  margin-left: 0;
+}
+
+.nav {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.sidebarCollapsed .nav {
+  width: 100%;
+  align-items: center;
 }
 
 .navItem {
   display: flex;
   width: 100%;
-  height: 36px;
+  min-width: 0;
+  min-height: 36px;
   flex: 0 0 auto;
   align-items: center;
   gap: 10px;
   box-sizing: border-box;
   padding: 0 12px;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--color-text-secondary);
@@ -89,13 +157,31 @@
   }
 }
 
+.sidebarCollapsed .navItem {
+  width: 40px;
+  justify-content: center;
+  padding: 0;
+}
+
+/* Selected state is the plugin center treatment: soft accent tint with the
+   primary blue text instead of a solid primary fill. */
 .navItemActive {
-  background: var(--ant-color-primary, var(--color-primary));
-  color: #ffffff;
+  background: var(--color-bg-selected);
+  color: var(--ant-color-primary-active, #096dd9);
 
   &:hover {
-    background: var(--ant-color-primary, var(--color-primary));
-    color: #ffffff;
+    background: color-mix(in srgb, var(--ant-color-primary, var(--color-primary)) 16%, var(--color-bg-container));
+    color: var(--ant-color-primary-active, #096dd9);
+  }
+}
+
+:global([data-theme='dark']) .navItemActive {
+  background: color-mix(in srgb, var(--ant-color-primary, var(--color-primary)) 18%, transparent);
+  color: var(--ant-color-primary-hover, var(--ant-color-primary, #3c9ae8));
+
+  &:hover {
+    background: color-mix(in srgb, var(--ant-color-primary, var(--color-primary)) 26%, transparent);
+    color: var(--ant-color-primary-hover, var(--ant-color-primary, #3c9ae8));
   }
 }
 
@@ -118,33 +204,8 @@
   white-space: nowrap;
 }
 
-.navCollapse {
-  display: inline-flex;
-  width: 100%;
-  height: 36px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  margin-top: auto;
-  padding: 0;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition:
-    background 0.16s ease,
-    color 0.16s ease;
-
-  &:hover {
-    background: var(--color-bg-hover);
-    color: var(--color-text-primary);
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--ant-color-primary, var(--color-primary));
-    outline-offset: 2px;
-  }
+.sidebarCollapsed .navLabel {
+  display: none;
 }
 
 .content {
@@ -196,46 +257,61 @@
     align-items: stretch;
   }
 
-  .nav,
-  .embedded .nav {
+  /* Narrow windows drop the header and keep the horizontal tab strip. */
+  .navHeader {
+    display: none;
+  }
+
+  .sidebar,
+  .embedded .sidebar {
     position: static;
     width: 100%;
     height: auto;
     min-height: 0;
     max-height: none;
     flex: 0 0 auto;
-    flex-direction: row;
-    gap: 6px;
+    gap: 0;
     padding: 8px 12px;
-    overflow-x: auto;
-    overflow-y: hidden;
     border-bottom: 1px solid var(--color-border);
+    border-radius: 0;
   }
 
-  .navCollapsed {
+  .sidebarCollapsed,
+  .embedded .sidebarCollapsed {
     width: 100%;
     flex: 0 0 auto;
     padding: 8px 12px;
   }
 
-  .navCollapsed .navItem {
+  .nav {
+    width: 100%;
+    flex: 0 0 auto;
+    flex-direction: row;
+    gap: 6px;
+    padding: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .sidebarCollapsed .nav {
+    width: 100%;
+    align-items: center;
+  }
+
+  .sidebarCollapsed .navItem {
     justify-content: flex-start;
     gap: 10px;
     padding: 0 12px;
-  }
-
-  .navCollapsed .navLabel {
-    display: inline;
-  }
-
-  .navCollapse {
-    display: none;
   }
 
   .navItem {
     width: auto;
     flex: 0 0 auto;
     padding: 0 12px;
+  }
+
+  .sidebarCollapsed .navLabel {
+    display: inline;
   }
 
   .page .content {

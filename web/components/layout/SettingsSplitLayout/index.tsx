@@ -1,4 +1,5 @@
 import React from 'react';
+import { Tooltip } from 'antd';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import styles from './SettingsSplitLayout.module.less';
@@ -22,6 +23,8 @@ interface SettingsSplitLayoutProps {
   variant?: 'page' | 'embedded';
   /** Shows a toggle that collapses the rail to icon-only width. */
   collapsible?: boolean;
+  /** Rail title shown at the top, next to the collapse toggle. */
+  title?: string;
   ariaLabel?: string;
   children: React.ReactNode;
 }
@@ -36,6 +39,7 @@ const SettingsSplitLayout: React.FC<SettingsSplitLayoutProps> = ({
   banner,
   variant = 'page',
   collapsible = false,
+  title,
   ariaLabel,
   children,
 }) => {
@@ -100,52 +104,69 @@ const SettingsSplitLayout: React.FC<SettingsSplitLayoutProps> = ({
         variant === 'page' ? styles.page : styles.embedded,
       )}
     >
-      <nav
-        ref={navRef}
-        className={joinClassNames(styles.nav, collapsed && styles.navCollapsed)}
-        role="tablist"
-        aria-orientation="vertical"
-        aria-label={ariaLabel}
-        onKeyDown={handleKeyDown}
-      >
-        {items.map((item) => {
-          const isActive = item.key === activeKey;
-          return (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              id={`${idPrefix}-tab-${item.key}`}
-              aria-selected={isActive}
-              aria-controls={`${idPrefix}-panel`}
-              aria-label={item.label}
-              tabIndex={isActive ? 0 : -1}
-              data-settings-tab-key={item.key}
-              title={collapsed ? item.label : undefined}
-              className={joinClassNames(styles.navItem, isActive && styles.navItemActive)}
-              onClick={() => onChange(item.key)}
-            >
-              <span className={styles.navIcon} aria-hidden="true">
-                {item.icon}
-              </span>
-              <span className={styles.navLabel}>{item.label}</span>
-            </button>
-          );
-        })}
-
-        {collapsible ? (
-          <button
-            type="button"
-            className={styles.navCollapse}
-            title={collapsed ? t('settings.nav.expand') : t('settings.nav.collapse')}
-            aria-label={collapsed ? t('settings.nav.expand') : t('settings.nav.collapse')}
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed((previous) => !previous)}
-          >
-            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-          </button>
+      <aside className={joinClassNames(styles.sidebar, collapsed && styles.sidebarCollapsed)}>
+        {title || collapsible ? (
+          <div className={styles.navHeader}>
+            {!collapsed && title ? (
+              <span className={styles.brandTitle}>{title}</span>
+            ) : null}
+            {collapsible ? (
+              <Tooltip
+                title={collapsed ? t('settings.nav.expand') : t('settings.nav.collapse')}
+                placement="right"
+              >
+                <button
+                  type="button"
+                  className={styles.navCollapse}
+                  aria-label={collapsed ? t('settings.nav.expand') : t('settings.nav.collapse')}
+                  aria-expanded={!collapsed}
+                  onClick={() => setCollapsed((previous) => !previous)}
+                >
+                  {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+                </button>
+              </Tooltip>
+            ) : null}
+          </div>
         ) : null}
-      </nav>
+
+        <nav
+          ref={navRef}
+          className={styles.nav}
+          role="tablist"
+          aria-orientation="vertical"
+          aria-label={ariaLabel}
+          onKeyDown={handleKeyDown}
+        >
+          {items.map((item) => {
+            const isActive = item.key === activeKey;
+            return (
+              <Tooltip
+                key={item.key}
+                title={collapsed ? item.label : undefined}
+                placement="right"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  id={`${idPrefix}-tab-${item.key}`}
+                  aria-selected={isActive}
+                  aria-controls={`${idPrefix}-panel`}
+                  aria-label={item.label}
+                  tabIndex={isActive ? 0 : -1}
+                  data-settings-tab-key={item.key}
+                  className={joinClassNames(styles.navItem, isActive && styles.navItemActive)}
+                  onClick={() => onChange(item.key)}
+                >
+                  <span className={styles.navIcon} aria-hidden="true">
+                    {item.icon}
+                  </span>
+                  <span className={styles.navLabel}>{item.label}</span>
+                </button>
+              </Tooltip>
+            );
+          })}
+        </nav>
+      </aside>
 
       <div
         ref={contentRef}
