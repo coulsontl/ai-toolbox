@@ -234,6 +234,45 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Restrained warning pill: declared-but-unwired capabilities only. */
+.unsupportedTag {
+  display: inline-flex;
+  min-height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 1px solid var(--pl-warning-border);
+  border-radius: var(--pl-radius-tag);
+  background: var(--pl-warning-bg);
+  color: var(--pl-warning);
+  cursor: help;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+
+  &:focus-visible {
+    outline: 2px solid var(--pl-accent-border);
+    outline-offset: 2px;
+  }
+}
+
+/* Tooltip content portals to body, outside the --pl-* scope: inherit the
+   spotlight chrome instead of hardcoding light/dark colours. */
+.unsupportedTooltip {
+  display: flex;
+  max-width: 260px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.unsupportedFeatureList {
+  margin: 0;
+  padding-left: 16px;
+}
+
 .updateBadge {
   display: inline-flex;
   min-height: 18px;
@@ -374,6 +413,157 @@
   max-width: 100%;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Tool count pill on a plugin row; neutral by design, details live in the tooltip. */
+.toolCountTag {
+  display: inline-flex;
+  min-height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-tag);
+  background: var(--pl-surface-raised);
+  color: var(--pl-text-secondary);
+  cursor: help;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+
+  &:focus-visible {
+    outline: 2px solid var(--pl-accent-border);
+    outline-offset: 2px;
+  }
+}
+
+/* Compact MCP strip above the list; rendered only when tools exist. */
+.toolsBar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--pl-border);
+  border-radius: var(--pl-radius-card);
+  background: var(--pl-surface);
+  box-shadow: var(--pl-shadow-card);
+}
+
+.toolsBarMain {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.toolsBarTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pl-text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.toolsSyncedTag {
+  display: inline-flex;
+  min-height: 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--pl-success-border);
+  border-radius: var(--pl-radius-tag);
+  background: var(--pl-success-bg);
+  color: var(--pl-success);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.toolsEndpoint {
+  overflow: hidden;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 6px;
+  border-radius: var(--pl-radius-tag);
+  background: var(--pl-surface-raised);
+  color: var(--pl-text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  user-select: all;
+  white-space: nowrap;
+}
+
+.toolsGatewayHint {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: var(--pl-warning);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.toolsBarActions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Tooltips portal to body, outside the --pl-* scope: use inherited tooltip chrome. */
+.toolsTooltip {
+  display: flex;
+  max-width: 320px;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.toolsTooltipList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.toolsTooltipItem {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.toolsTooltipName {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.toolsTooltipDesc {
+  display: -webkit-box;
+  overflow: hidden;
+  opacity: 0.72;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.toolsTooltipMore {
+  opacity: 0.72;
 }
 
 .errorDetails {
@@ -660,6 +850,11 @@
 
   .searchInput {
     width: 100%;
+  }
+
+  .toolsBarActions {
+    width: 100%;
+    margin-left: 0;
   }
 
   .rowActions {

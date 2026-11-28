@@ -22,6 +22,42 @@ export interface PluginPageManifest {
   serviceOption?: string | null;
 }
 
+/** One header-menu action a plugin package declares. */
+export interface PluginActionManifest {
+  id: string;
+  /** Host surface the action attaches to; `provider` is the stable menu. */
+  menu: string;
+  title: string;
+  titles?: Record<string, string>;
+}
+
+/** One inline panel a plugin package declares. */
+export interface PluginPanelManifest {
+  id: string;
+  /** Host slot the panel mounts into; `provider` and `settings` are stable. */
+  slot: string;
+  title: string;
+  titles?: Record<string, string>;
+  entryFile: string;
+}
+
+/**
+ * What a plugin package declares beyond its provider entry. The host resolves
+ * these from the package manifest; `unsupportedFeatures` lists declarations
+ * this build does not consume yet, so the UI can say so instead of silently
+ * pretending the whole package works.
+ */
+export interface PluginContributions {
+  hasHooks?: boolean;
+  hooksEntry?: string;
+  hasPanels?: boolean;
+  hasActions?: boolean;
+  hasReplaces?: boolean;
+  hasAgent?: boolean;
+  hasPrivacyModels?: boolean;
+  unsupportedFeatures?: string[];
+}
+
 export interface InstalledPluginRecord {
   id: string;
   spec: string;
@@ -45,8 +81,14 @@ export interface InstalledPluginRecord {
   lastError?: string | null;
   /** Pages the plugin's package declares; absent for older records. */
   pages?: PluginPageManifest[];
+  /** Header actions the plugin's package declares; absent for older records. */
+  actions?: PluginActionManifest[];
+  /** Inline panels the plugin's package declares; absent for older records. */
+  panels?: PluginPanelManifest[];
   /** Reads the plugin package asked for; absent for older records. */
   permissions?: string[];
+  /** Declared capabilities and their support state; absent for older records. */
+  contributions?: PluginContributions;
 }
 
 export interface MarketSourceRecord {
@@ -503,6 +545,41 @@ export interface PluginPageSession {
   keepAlive: boolean;
 }
 
+/** One action an installed, enabled plugin registers with the host. */
+export interface RegisteredPluginAction {
+  pluginId: string;
+  pluginName: string;
+  /** The plugin page that receives the dispatched action. */
+  pageId: string;
+  id: string;
+  menu: string;
+  title: string;
+  titles: Record<string, string>;
+}
+
+/** One panel an installed, enabled plugin registers with the host. */
+export interface RegisteredPluginPanel {
+  pluginId: string;
+  pluginName: string;
+  panelId: string;
+  slot: string;
+  title: string;
+  titles: Record<string, string>;
+  permissions: string[];
+}
+
+/** Runtime counters for one async `magpie.hooks` gateway hook. */
+export interface GatewayHookStateDto {
+  pluginId: string;
+  pluginSpec: string;
+  pluginName: string;
+  calls: number;
+  failures: number;
+  avgMillis: number;
+  lastOutcome: string;
+  lastBytes: number;
+}
+
 // ---- installed plugins -----------------------------------------------------
 
 export const listInstalledPlugins = (): Promise<InstalledPluginRecord[]> =>
@@ -525,6 +602,35 @@ export const setPluginEnabled = (id: string, enabled: boolean): Promise<Installe
 
 export const setPluginOptions = (id: string, options: unknown): Promise<InstalledPluginRecord> =>
   invoke<InstalledPluginRecord>('plugins_set_options', { id, options });
+
+// ---- plugin tools (Streamable HTTP MCP) ------------------------------------
+
+/** One tool an installed plugin exposes through the shared MCP endpoint. */
+export interface PluginToolDto {
+  pluginId: string;
+  pluginSpec: string;
+  pluginName: string;
+  toolName: string;
+  mcpName: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+/** The tools summary backing the installed page's MCP strip. */
+export interface PluginToolsSummaryDto {
+  endpointUrl: string;
+  aliasUrl: string;
+  gatewayRunning: boolean;
+  mcpServerId: string | null;
+  tools: PluginToolDto[];
+}
+
+export const listPluginTools = (): Promise<PluginToolsSummaryDto> =>
+  invoke<PluginToolsSummaryDto>('plugins_list_tools');
+
+/** Point the MCP management entry at the live tools endpoint; answers its id. */
+export const syncPluginToolsMcpServer = (): Promise<string> =>
+  invoke<string>('plugins_sync_tools_mcp_server');
 
 // ---- markets ---------------------------------------------------------------
 
@@ -817,6 +923,28 @@ export const openPluginPage = (
 /** Release the host-side token a page session holds. */
 export const closePluginPage = (pluginId: string, pageId: string): Promise<void> =>
   invoke<void>('plugins_close_page', { pluginId, pageId });
+
+// ---- plugin actions and inline panels --------------------------------------
+
+export const listPluginActions = (): Promise<RegisteredPluginAction[]> =>
+  invoke<RegisteredPluginAction[]>('plugins_list_actions');
+
+export const listPluginPanels = (): Promise<RegisteredPluginPanel[]> =>
+  invoke<RegisteredPluginPanel[]>('plugins_list_panels');
+
+export const openPluginPanel = (
+  pluginId: string,
+  panelId: string,
+): Promise<PluginPageSession> =>
+  invoke<PluginPageSession>('plugins_open_panel', { pluginId, panelId });
+
+/** Release the host-side token a panel session holds. */
+export const closePluginPanel = (pluginId: string, panelId: string): Promise<void> =>
+  invoke<void>('plugins_close_panel', { pluginId, panelId });
+
+/** Counters for the async `magpie.hooks` gateway hooks that have run. */
+export const getPluginGatewayHookStates = (): Promise<GatewayHookStateDto[]> =>
+  invoke<GatewayHookStateDto[]>('plugins_gateway_hook_states');
 
 /** One read a page's package declared, performed by the Rust host. */
 export const readPluginPageBridge = (

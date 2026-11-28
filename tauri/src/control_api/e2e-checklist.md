@@ -65,6 +65,10 @@
 | `plugin bun-ensure`（L1） | 记录 `available` 与托管目录 | 已可用时不重复下载；缺失时下载并校验 SHA-256 | `plugin bun-status`；托管目录文件 | 无需（可保留运行时）；异常时删除托管目录重试 |
 | `plugin host-status` / `plugin host-restart`（L0/L1） | 记录宿主 `running`、`crashes`、`circuitOpen` | status 只读；restart 先中断再拉起，generation 递增且不计崩溃 | 两次 `host-status` 对比 `startedAt`/`pid` | 无需；若插件进行中先等请求结束 |
 | `plugin pages`（只读） | 记录启用插件页面 | 返回已启用插件的页面清单；不返回 token | 输出与插件中心页面列表对比 | 无需 |
+| `plugin tools`（只读） | 记录启用 Provider 插件与网关状态 | 返回 `endpointUrl`/`aliasUrl`/`gatewayRunning`/`mcpServerId`/`tools[]`；无启用 Provider 插件时为空表且不启动 Bun | `--json`；`plugin host-status` 未因读取变成 running | 无需 |
+| `plugin sync-tools-mcp`（L1） | 记录中央 MCP server 列表 | 创建或刷新 HTTP server `ai-toolbox-plugins`，URL 指向 `/mcp/plugins`；触发 MCP 同步；返回 `mcpServerId` | `plugin tools --json` 的 `mcpServerId`；MCP 页面 server 列表；目标 CLI MCP 文件 | 删除该 MCP server 或恢复 DB |
+| `plugin actions` / `plugin panels`（只读） | 记录启用插件的 `magpie.actions` / `magpie.panels` | 只返回启用插件；字段包含 `pluginId`/`menu` 或 `panelId`/`slot`；不返回 token | 输出与插件中心菜单/面板对比 | 无需 |
+| `plugin hooks`（只读） | 记录 Bun 宿主状态 | Bun 未运行时返回空表且不启动 Bun；运行中返回 `calls`/`failures`/`avgMillis`/`lastOutcome`/`lastBytes` | `--json`；`plugin host-status` 前后对比 | 无需 |
 
 ## 4. Provider 域
 

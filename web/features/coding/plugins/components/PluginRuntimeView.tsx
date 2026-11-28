@@ -19,6 +19,7 @@ import {
   clearPluginRuntimeLogs,
   ensurePluginBun,
   getPluginBunStatus,
+  getPluginGatewayHookStates,
   getPluginHostStatus,
   getPluginMiddlewareStates,
   getPluginRuntimeLogs,
@@ -29,10 +30,13 @@ import {
   type BunHostStatus,
   type BunPathProbe,
   type BunRuntimeStatus,
+  type GatewayHookStateDto,
+  type InstalledPluginRecord,
   type MiddlewareStateView,
   type PluginRuntimeLogEntry,
   type PluginSettings,
   type PluginUpdateSummary,
+  type RegisteredPluginPanel,
 } from '@/services';
 import {
   formatMicroseconds,
@@ -40,6 +44,8 @@ import {
   isChinaMirrorRegistry,
   redactPluginLog,
 } from '../utils/pluginFormatters';
+import { usePluginBridgeTheme } from '../utils/pluginPageTheme';
+import PluginPanelSlot from './PluginPanelSlot';
 import styles from './PluginRuntimeView.module.less';
 
 type LogFilter = 'all' | 'info' | 'warn' | 'error';
@@ -50,6 +56,11 @@ interface PluginRuntimeViewProps {
   pluginSettings: PluginSettings | null;
   chinaMirrorBusy: boolean;
   checkingUpdates: boolean;
+  installedPlugins?: InstalledPluginRecord[];
+  /** Inline panels the host exposes on the settings surface. */
+  panels?: RegisteredPluginPanel[];
+  onPanelOptionsChanged?: (pluginId: string, options: Record<string, unknown>) => void;
+  onOpenInstall?: (packageName: string) => void;
   onToggleChinaMirror: (enabled: boolean) => void;
   onCheckUpdates: () => Promise<PluginUpdateSummary>;
   onSettingsSaved: (settings: PluginSettings) => void;
@@ -78,6 +89,10 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   pluginSettings,
   chinaMirrorBusy,
   checkingUpdates,
+  installedPlugins,
+  panels,
+  onPanelOptionsChanged,
+  onOpenInstall,
   onToggleChinaMirror,
   onCheckUpdates,
   onSettingsSaved,
@@ -86,12 +101,14 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
   const { t, i18n } = useTranslation();
   const { message, modal } = App.useApp();
   const { isActive } = useKeepAlive();
+  const bridgeTheme = usePluginBridgeTheme();
 
   const [bunStatus, setBunStatus] = React.useState<BunRuntimeStatus | null>(null);
   const [hostStatus, setHostStatus] = React.useState<BunHostStatus | null>(null);
   const [settings, setSettings] = React.useState<PluginSettings | null>(null);
   const [draft, setDraft] = React.useState<PluginSettings>(DEFAULT_PLUGIN_SETTINGS);
   const [middlewareStates, setMiddlewareStates] = React.useState<MiddlewareStateView[]>([]);
+  const [gatewayHookStates, setGatewayHookStates] = React.useState<GatewayHookStateDto[]>([]);
   const [logs, setLogs] = React.useState<PluginRuntimeLogEntry[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshingAll, setRefreshingAll] = React.useState(false);
@@ -107,13 +124,14 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
 
   const loadAll = React.useCallback(async (): Promise<boolean> => {
     setLoading(true);
-    const [bunResult, hostResult, settingsResult, middlewareResult, logsResult] =
+    const [bunResult, hostResult, settingsResult, middlewareResult, logsResult, hooksResult] =
       await Promise.allSettled([
         getPluginBunStatus(),
         getPluginHostStatus(),
         getPluginSettings(),
         getPluginMiddlewareStates(),
         getPluginRuntimeLogs(300),
+        getPluginGatewayHookStates(),
       ]);
     let firstError: string | null = null;
 
@@ -146,6 +164,9 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
     } else if (!firstError) {
       firstError = formatPluginError(logsResult.reason);
     }
+    // Async hooks are an optional diagnostic: a backend without the command
+    // simply shows no hook section instead of failing the whole runtime page.
+    setGatewayHookStates(hooksResult.status === 'fulfilled' ? hooksResult.value : []);
     setError(firstError);
     setLoading(false);
     return firstError === null;
@@ -495,6 +516,13 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
       return t('plugins.runtime.eventsAll');
     }
     return t('plugins.runtime.eventsCount', { count: state.events.length });
+  };
+
+  const formatHookMillis = (value: number) => {
+    if (!Number.isFinite(value) || value <= 0) {
+      return '0';
+    }
+    return value >= 10 ? value.toFixed(0) : value.toFixed(1);
   };
 
   if (loading && !bunStatus && !hostStatus) {
@@ -885,6 +913,53 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
         )}
       </div>
 
+      {gatewayHookStates.length > 0 ? (
+        <div className={styles.section}>
+          <div className={styles.sectionHeader}>
+            <h3>{t('plugins.runtime.hooksTitle')}</h3>
+            <span className={styles.sectionHint}>
+              {t('plugins.runtime.hooksCount', { count: gatewayHookStates.length })}
+            </span>
+          </div>
+          <div className={styles.tableCard}>
+            <table className={styles.statsTable}>
+              <thead>
+                <tr>
+                  <th>{t('plugins.runtime.hookColumns.name')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.hookColumns.calls')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.hookColumns.failures')}</th>
+                  <th className={styles.numeric}>{t('plugins.runtime.hookColumns.avg')}</th>
+                  <th>{t('plugins.runtime.hookColumns.lastOutcome')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gatewayHookStates.map((state) => (
+                  <tr key={`${state.pluginId}:${state.pluginSpec}`}>
+                    <td>
+                      <div className={styles.identity}>
+                        <span
+                          className={styles.identityName}
+                          title={state.pluginName || state.pluginSpec}
+                        >
+                          {state.pluginName || state.pluginSpec}
+                        </span>
+                        <span className={styles.identityMeta}>{state.pluginSpec}</span>
+                      </div>
+                    </td>
+                    <td className={styles.numeric}>{state.calls}</td>
+                    <td className={styles.numeric}>{state.failures}</td>
+                    <td className={styles.numeric}>{formatHookMillis(state.avgMillis)}</td>
+                    <td>
+                      <span className={styles.hook}>{state.lastOutcome || '—'}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
       <div className={styles.section}>
         <div className={styles.sectionHeader}>
           <h3>{t('plugins.runtime.logsTitle')}</h3>
@@ -971,6 +1046,16 @@ const PluginRuntimeView: React.FC<PluginRuntimeViewProps> = ({
           </div>
         </div>
       </div>
+
+      <PluginPanelSlot
+        slot="settings"
+        panels={panels ?? []}
+        active={active}
+        theme={bridgeTheme}
+        installedPlugins={installedPlugins ?? []}
+        onOptionsChanged={onPanelOptionsChanged}
+        onOpenInstall={onOpenInstall}
+      />
 
       <div className={styles.runtimeFooter}>
         <Activity size={13} aria-hidden="true" />

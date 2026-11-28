@@ -13,8 +13,10 @@ import {
   getPluginSettings,
   listInstalledPlugins,
   listPluginAccounts,
+  listPluginActions,
   listPluginMarkets,
   listPluginPages,
+  listPluginPanels,
   openPluginPage,
   savePluginSettings,
   type BunRuntimeStatus,
@@ -26,14 +28,18 @@ import {
   type PluginSettings,
   type PluginUpdateItem,
   type PluginUpdateSummary,
+  type RegisteredPluginAction,
   type RegisteredPluginPage,
+  type RegisteredPluginPanel,
 } from '@/services';
 import InstalledPluginsView from '../components/InstalledPluginsView';
 import PluginAccountsView from '../components/PluginAccountsView';
 import PluginInstallModal from '../components/PluginInstallModal';
 import PluginMarketView from '../components/PluginMarketView';
 import PluginOptionsModal from '../components/PluginOptionsModal';
-import PluginPageFrame from '../components/PluginPageFrame';
+import PluginPageFrame, {
+  type PluginPagePendingAction,
+} from '../components/PluginPageFrame';
 import PluginRuntimeView from '../components/PluginRuntimeView';
 import PluginSidebar from '../components/PluginSidebar';
 import {
@@ -95,6 +101,11 @@ const PluginsPage: React.FC = () => {
   const [chinaMirrorBusy, setChinaMirrorBusy] = React.useState(false);
   const [marketCount, setMarketCount] = React.useState<number | null>(null);
   const [registeredPages, setRegisteredPages] = React.useState<RegisteredPluginPage[]>([]);
+  const [pluginActions, setPluginActions] = React.useState<RegisteredPluginAction[]>([]);
+  const [pluginPanels, setPluginPanels] = React.useState<RegisteredPluginPanel[]>([]);
+  const [pendingActions, setPendingActions] = React.useState<
+    Record<string, PluginPagePendingAction>
+  >({});
   const [pagesLoaded, setPagesLoaded] = React.useState(false);
   const [pagesError, setPagesError] = React.useState<string | null>(null);
   const [mountedPages, setMountedPages] = React.useState<MountedPageEntry[]>([]);
@@ -126,6 +137,7 @@ const PluginsPage: React.FC = () => {
 
   const mountedKeysRef = React.useRef(new Set<string>());
   const recycleTimersRef = React.useRef(new Map<string, number>());
+  const actionSeqRef = React.useRef(0);
 
   React.useEffect(() => {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, sidebarCollapsed ? '1' : '0');
@@ -145,14 +157,22 @@ const PluginsPage: React.FC = () => {
   }, []);
 
   const loadSharedData = React.useCallback(async (): Promise<boolean> => {
-    const results = await Promise.allSettled([
-      listInstalledPlugins(),
-      listPluginAccounts(),
-      listPluginMarkets(),
-      getPluginMiddlewareStates(),
-      getPluginBunStatus(),
-      getPluginSettings(),
-      listPluginPages(),
+    // Actions and panels are a separate, silent group: a backend that does not
+    // answer those commands yet must not raise the page-level load error.
+    const [results, slotResults] = await Promise.all([
+      Promise.allSettled([
+        listInstalledPlugins(),
+        listPluginAccounts(),
+        listPluginMarkets(),
+        getPluginMiddlewareStates(),
+        getPluginBunStatus(),
+        getPluginSettings(),
+        listPluginPages(),
+      ]),
+      Promise.allSettled([
+        listPluginActions(),
+        listPluginPanels(),
+      ]),
     ]);
     const [
       installedResult,
@@ -189,6 +209,12 @@ const PluginsPage: React.FC = () => {
       // Keep the last known pages so a transient failure doesn't tear down
       // frames the reader still has open.
       setPagesError(formatPluginError(pagesResult.reason));
+    }
+    if (slotResults[0].status === 'fulfilled') {
+      setPluginActions(slotResults[0].value);
+    }
+    if (slotResults[1].status === 'fulfilled') {
+      setPluginPanels(slotResults[1].value);
     }
 
     const firstFailure = results.find(
@@ -473,8 +499,10 @@ const PluginsPage: React.FC = () => {
       listInstalledPlugins(),
       getPluginSettings(),
       listPluginPages(),
+      listPluginActions(),
+      listPluginPanels(),
     ]);
-    const [installedResult, settingsResult, pagesResult] = results;
+    const [installedResult, settingsResult, pagesResult, actionsResult, panelsResult] = results;
     if (installedResult.status === 'fulfilled') {
       setInstalledPlugins(installedResult.value);
     }
@@ -484,6 +512,12 @@ const PluginsPage: React.FC = () => {
     if (pagesResult.status === 'fulfilled') {
       setRegisteredPages(pagesResult.value);
       setPagesError(null);
+    }
+    if (actionsResult.status === 'fulfilled') {
+      setPluginActions(actionsResult.value);
+    }
+    if (panelsResult.status === 'fulfilled') {
+      setPluginPanels(panelsResult.value);
     }
   }, []);
 
@@ -584,6 +618,43 @@ const PluginsPage: React.FC = () => {
       )),
     );
   };
+
+  const providerActions = React.useMemo(
+    () => pluginActions.filter((action) => action.menu === 'provider'),
+    [pluginActions],
+  );
+
+  // Queue one action for its page, then open that page. The frame dispatches
+  // the action only after its bridge handshake, so a cold page still sees it.
+  const handleTriggerPluginAction = React.useCallback((
+    action: RegisteredPluginAction,
+    payload: { provider?: { id: string; name: string } },
+  ) => {
+    const seq = actionSeqRef.current + 1;
+    actionSeqRef.current = seq;
+    const pageKey = getPageKey(action);
+    setPendingActions((current) => ({
+      ...current,
+      [pageKey]: {
+        seq,
+        id: action.id,
+        ...(payload.provider ? { provider: payload.provider } : {}),
+      },
+    }));
+    navigate(getPluginsCustomPagePath(action.pluginId, action.pageId));
+  }, [navigate]);
+
+  const handleActionDelivered = React.useCallback((pageKey: string, seq: number) => {
+    setPendingActions((current) => {
+      const pending = current[pageKey];
+      if (!pending || pending.seq !== seq) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[pageKey];
+      return next;
+    });
+  }, []);
 
   const pluginRecordById = React.useMemo(
     () => new Map(installedPlugins.map((plugin) => [plugin.id, plugin])),
@@ -690,10 +761,12 @@ const PluginsPage: React.FC = () => {
                       visible={pageVisible}
                       theme={bridgeTheme}
                       options={optionsForPage(entry)}
+                      pendingAction={pendingActions[entry.key] ?? null}
                       onRetrySession={() => void openPageSession(entry.page)}
                       onOptionsChanged={handlePageOptionsChanged}
                       onOpenOptions={handleOpenPageOptions}
                       onOpenInstall={(packageName) => openInstallModal(packageName)}
+                      onActionDelivered={(seq) => handleActionDelivered(entry.key, seq)}
                     />
                   );
                 })}
@@ -745,6 +818,12 @@ const PluginsPage: React.FC = () => {
                 active={keepAliveActive && !isPageRoute && activeTab === 'accounts'}
                 refreshKey={refreshKey}
                 installedPlugins={installedPlugins}
+                providerActions={providerActions}
+                onTriggerAction={(action, provider) =>
+                  handleTriggerPluginAction(action, { provider })}
+                panels={pluginPanels}
+                onPanelOptionsChanged={handlePageOptionsChanged}
+                onOpenInstall={(packageName) => openInstallModal(packageName)}
                 onDataChanged={reloadSharedData}
                 onBrowseMarket={() => handleSelectTab('market')}
                 onOpenRuntime={() => handleSelectTab('runtime')}
@@ -771,6 +850,10 @@ const PluginsPage: React.FC = () => {
                 pluginSettings={pluginSettings}
                 chinaMirrorBusy={chinaMirrorBusy}
                 checkingUpdates={checkingUpdates}
+                installedPlugins={installedPlugins}
+                panels={pluginPanels}
+                onPanelOptionsChanged={handlePageOptionsChanged}
+                onOpenInstall={(packageName) => openInstallModal(packageName)}
                 onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
                 onCheckUpdates={handleCheckUpdates}
                 onSettingsSaved={setPluginSettings}

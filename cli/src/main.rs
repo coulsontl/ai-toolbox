@@ -290,6 +290,17 @@ fn run_plugin(cli: &Cli, command: &PluginCommand) -> Result<Value, Failure> {
         PluginCommand::Pages => Ok(client
             .request(Method::Get, "/v1/plugins/pages", None)?
             .body),
+        PluginCommand::Tools => Ok(client.request(Method::Get, "/v1/plugins/tools", None)?.body),
+        PluginCommand::SyncToolsMcp => Ok(client
+            .request(Method::Post, "/v1/plugins/tools/sync-mcp", Some(&json!({})))?
+            .body),
+        PluginCommand::Actions => Ok(client
+            .request(Method::Get, "/v1/plugins/actions", None)?
+            .body),
+        PluginCommand::Panels => Ok(client
+            .request(Method::Get, "/v1/plugins/panels", None)?
+            .body),
+        PluginCommand::Hooks => Ok(client.request(Method::Get, "/v1/plugins/hooks", None)?.body),
         PluginCommand::RefreshModels => Ok(client
             .request(
                 Method::Post,
@@ -1012,6 +1023,16 @@ fn print_human(value: &Value) {
         println!("ok");
         return;
     }
+    if let Some(items) = value.as_array() {
+        if items.is_empty() {
+            println!("(none)");
+            return;
+        }
+        for item in items {
+            println!("{}", summarize_item(item));
+        }
+        return;
+    }
     if let Some(object) = value.as_object() {
         if object.contains_key("running") && object.contains_key("discoveryFile") {
             println!("enabled:        {}", bool_text(object.get("enabled")));
@@ -1019,6 +1040,31 @@ fn print_human(value: &Value) {
             println!("url:            {}", text(object.get("url")));
             println!("approval mode:  {}", text(object.get("approvalMode")));
             println!("discovery file: {}", text(object.get("discoveryFile")));
+            return;
+        }
+        if object.contains_key("endpointUrl") && object.contains_key("tools") {
+            println!("endpoint:       {}", text(object.get("endpointUrl")));
+            println!("alias:          {}", text(object.get("aliasUrl")));
+            println!(
+                "gateway:        {}",
+                bool_text(object.get("gatewayRunning"))
+            );
+            println!("mcp server:     {}", text(object.get("mcpServerId")));
+            let tools = object
+                .get("tools")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if tools.is_empty() {
+                println!("(no plugin tools)");
+            }
+            for tool in tools {
+                println!("{}", summarize_tool(tool));
+            }
+            return;
+        }
+        if let Some(server_id) = object.get("mcpServerId").and_then(Value::as_str) {
+            println!("mcp server:     {server_id}");
             return;
         }
         for key in ["clis", "providers", "plugins", "prompts", "models", "items"] {
@@ -1055,6 +1101,20 @@ fn summarize_item(item: &Value) -> String {
         Some(object) => object,
         None => return item.to_string(),
     };
+    // Plugin diagnostics carry their own shapes; summarize them by their
+    // stable human fields instead of the generic id/name fallback.
+    if object.contains_key("lastOutcome") {
+        return summarize_gateway_hook(object);
+    }
+    if object.contains_key("panelId") {
+        return summarize_panel(object);
+    }
+    if object.contains_key("menu") {
+        return summarize_action(object);
+    }
+    if object.contains_key("mcpName") {
+        return summarize_tool(item);
+    }
     let id = [
         "id",
         "providerKey",
@@ -1106,6 +1166,59 @@ fn summarize_item(item: &Value) -> String {
         }
     }
     line
+}
+
+/// `<mcpName>  [<pluginName>]  <description>` for `plugin tools`.
+fn summarize_tool(tool: &Value) -> String {
+    let name = text(tool.get("mcpName"));
+    let plugin = text(tool.get("pluginName"));
+    let description = tool
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if description.is_empty() {
+        format!("{name}  [{plugin}]")
+    } else {
+        format!("{name}  [{plugin}]  {description}")
+    }
+}
+
+/// `<pluginName>  <menu>/<id>  <title>` for `plugin actions`.
+fn summarize_action(object: &Map<String, Value>) -> String {
+    format!(
+        "{}  {}/{}  {}",
+        text(object.get("pluginName")),
+        text(object.get("menu")),
+        text(object.get("id")),
+        text(object.get("title"))
+    )
+}
+
+/// `<pluginName>  <slot>/<panelId>  <title>` for `plugin panels`.
+fn summarize_panel(object: &Map<String, Value>) -> String {
+    format!(
+        "{}  {}/{}  {}",
+        text(object.get("pluginName")),
+        text(object.get("slot")),
+        text(object.get("panelId")),
+        text(object.get("title"))
+    )
+}
+
+/// `<pluginName>  calls=N failures=N avg=Xms last=<outcome>` for `plugin hooks`.
+fn summarize_gateway_hook(object: &Map<String, Value>) -> String {
+    let calls = object.get("calls").and_then(Value::as_u64).unwrap_or(0);
+    let failures = object.get("failures").and_then(Value::as_u64).unwrap_or(0);
+    let average = object
+        .get("avgMillis")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    format!(
+        "{}  calls={calls} failures={failures} avg={average:.1}ms last={}",
+        text(object.get("pluginName")),
+        text(object.get("lastOutcome"))
+    )
 }
 
 fn text(value: Option<&Value>) -> String {
@@ -1236,6 +1349,46 @@ mod tests {
         assert_eq!(
             summarize_item(&item),
             "demo  Demo  v1.0.0 -> v1.1.0  [available]"
+        );
+    }
+
+    #[test]
+    fn summarize_item_shows_plugin_tools_actions_panels_and_hooks() {
+        assert_eq!(
+            summarize_item(&json!({
+                "mcpName": "demo_forecast",
+                "pluginName": "Demo",
+                "description": "Forecast the weather",
+            })),
+            "demo_forecast  [Demo]  Forecast the weather"
+        );
+        assert_eq!(
+            summarize_item(&json!({
+                "id": "open-dashboard",
+                "menu": "provider",
+                "title": "Open dashboard",
+                "pluginName": "Demo",
+            })),
+            "Demo  provider/open-dashboard  Open dashboard"
+        );
+        assert_eq!(
+            summarize_item(&json!({
+                "panelId": "provider-status",
+                "slot": "provider",
+                "title": "Status",
+                "pluginName": "Demo",
+            })),
+            "Demo  provider/provider-status  Status"
+        );
+        assert_eq!(
+            summarize_item(&json!({
+                "pluginName": "Demo",
+                "calls": 12,
+                "failures": 1,
+                "avgMillis": 3.0,
+                "lastOutcome": "ready",
+            })),
+            "Demo  calls=12 failures=1 avg=3.0ms last=ready"
         );
     }
 

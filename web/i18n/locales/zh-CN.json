@@ -6636,6 +6636,31 @@
       "providerSignedOut": "未登录",
       "middlewareSummary": "{{hooks}} · {{calls}} 次调用 · 均值 {{avg}}",
       "pageSummary": "{{pages}} 个页面 · {{permissions}} 项权限",
+      "tools": {
+        "title": "插件工具 MCP · {{count}} 个工具",
+        "pluginCount": "{{count}} 个工具",
+        "copyEndpoint": "复制地址",
+        "copySuccess": "MCP 地址已复制",
+        "copyFailed": "复制地址失败：{{error}}",
+        "sync": "同步到 MCP 管理",
+        "resync": "更新 MCP 配置",
+        "syncSuccess": "插件工具已同步到 MCP 管理",
+        "syncFailed": "同步到 MCP 管理失败：{{error}}",
+        "synced": "已同步",
+        "gatewayStopped": "网关未运行，工具地址暂不可用",
+        "moreTools": "…等 {{count}} 个"
+      },
+      "unsupportedTag": "部分能力暂不支持",
+      "unsupportedTooltip": "其余能力正常可用，以下声明项当前版本暂未接入：",
+      "capabilities": {
+        "hooks": "中间件钩子",
+        "panels": "界面面板",
+        "actions": "快捷操作",
+        "replaces": "渠道替换",
+        "agent": "Agent 能力",
+        "privacyModels": "隐私模型",
+        "search": "搜索能力"
+      },
       "bunReady": "插件运行在 Bun {{version}} 上",
       "bunMissing": "Bun 运行时未就绪",
       "viewRuntime": "查看运行时",
@@ -6667,6 +6692,7 @@
       "accountsHint": "凭据只保存在本机。",
       "noAccountsDesc": "登录后即可在网关中使用该渠道。",
       "login": "登录账号",
+      "pluginActions": "插件动作",
       "refreshModels": "刷新模型",
       "refreshUsageAll": "刷新额度",
       "checkinAll": "一键签到",
@@ -6731,11 +6757,13 @@
         "rate": "×{{rate}}",
         "fast": "快速"
       },
+      "nonChatTag": "非对话",
       "optionsTitle": "插件开关",
       "optionsHint": "由插件声明，切换后立即生效。",
       "optionConfirmTitle": "确认切换 {{label}}",
       "optionSaveFailed": "保存插件开关失败：{{error}}",
       "signedInCount": "已登录 {{count}} 个账号",
+      "singleAccountHint": "该渠道插件仅支持单账号",
       "providerSearch": "搜索渠道",
       "providerSearchEmpty": "没有匹配的渠道",
       "autoCheckin": "自动签到",
@@ -6760,6 +6788,7 @@
       "modelTooltipContext": "上下文：{{context}}",
       "modelTooltipCapabilities": "能力：{{capabilities}}",
       "modelTooltipNone": "能力：无标注",
+      "nonChatHint": "当前代理网关与 Coding CLI 仅支持对话模型，不会同步该模型。",
       "modelIdCopyHint": "点击复制模型 ID"
     },
     "market": {
@@ -6953,6 +6982,15 @@
       "middlewareTitle": "中间件性能",
       "middlewareCount": "{{count}} 个中间件",
       "middlewareEmpty": "暂无正在运行的中间件插件",
+      "hooksTitle": "异步网关钩子",
+      "hooksCount": "{{count}} 个钩子",
+      "hookColumns": {
+        "name": "插件",
+        "calls": "调用",
+        "failures": "失败",
+        "avg": "平均耗时 (ms)",
+        "lastOutcome": "最近结果"
+      },
       "columns": {
         "name": "名称",
         "hooks": "钩子",
@@ -7087,6 +7125,9 @@
       "retry": "重试",
       "navigationBlockedTitle": "页面发生外部跳转",
       "navigationBlockedDetail": "页面发生了外部跳转，已自动断开桥接以保护数据安全。重新加载可恢复原始插件页。"
+    },
+    "panels": {
+      "loadFailed": "面板加载失败"
     },
     "sidebar": {
       "expand": "展开菜单",

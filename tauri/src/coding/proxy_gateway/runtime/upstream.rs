@@ -70,7 +70,8 @@ use crate::plugins::gateway_bridge::{
     self, PluginAccountStrategy, PluginGatewayBody, PluginProviderRef,
 };
 use crate::plugins::middleware_rt::{
-    EventOutcome, EventSession, MiddlewareState, ProviderTarget, RequestInfo, RequestOutcome,
+    AccountCandidate, AccountOutcome, EventOutcome, EventSession, MiddlewareState, ProviderTarget,
+    RequestInfo, RequestOutcome,
 };
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -174,9 +175,7 @@ fn header_map_pairs(map: &HeaderMap) -> Vec<(String, String)> {
                     value
                         .to_str()
                         .map(str::to_string)
-                        .unwrap_or_else(|_| {
-                            String::from_utf8_lossy(value.as_bytes()).into_owned()
-                        }),
+                        .unwrap_or_else(|_| String::from_utf8_lossy(value.as_bytes()).into_owned()),
                 )
             })
             .collect(),
@@ -187,12 +186,7 @@ fn normalized_pair_list(pairs: &[(String, String)]) -> Vec<(String, String)> {
     sorted_header_pairs(
         pairs
             .iter()
-            .map(|(name, value)| {
-                (
-                    name.trim().to_ascii_lowercase(),
-                    value.trim().to_string(),
-                )
-            })
+            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
             .collect(),
     )
 }
@@ -283,10 +277,24 @@ struct CopilotTokenCacheEntry {
 static COPILOT_TOKEN_CACHE: LazyLock<Mutex<HashMap<String, CopilotTokenCacheEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(super) struct GatewayRequestOptions {
     pub(super) provider_override_id: Option<String>,
     pub(super) disable_health_mutation: bool,
+    /// Whether the request arrived over a loopback connection. In-process
+    /// callers and existing tests default to `true`; the real TCP accept path
+    /// fills it from `stream.peer_addr()`.
+    pub(super) is_loopback_peer: bool,
+}
+
+impl Default for GatewayRequestOptions {
+    fn default() -> Self {
+        Self {
+            provider_override_id: None,
+            disable_health_mutation: false,
+            is_loopback_peer: true,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1049,6 +1057,7 @@ fn emit_failover_event_if_needed(
     }
 }
 
+#[cfg(test)]
 pub(super) async fn route_request(
     request: &DebugHttpRequest,
     context: &GatewayRuntimeContext,
@@ -1089,6 +1098,14 @@ pub(super) async fn route_request_with_options(
             None,
             "local health endpoint",
         );
+    }
+
+    // The plugin tools MCP server is served by the gateway itself: no
+    // provider routing, no token accounting, just the JSON-RPC reply.
+    if request_path == crate::plugins::tools_mcp::MCP_PATH
+        || request_path == crate::plugins::tools_mcp::MCP_ALIAS_PATH
+    {
+        return route_plugin_tools_mcp(request, context, options.is_loopback_peer).await;
     }
 
     if let Some(plugin_route) = match_plugin_route(&request.path) {
@@ -1134,10 +1151,27 @@ pub(super) async fn route_request_with_options(
         return response;
     }
 
-    // Gateway middleware may rewrite or reject the request before any
-    // protocol conversion or provider selection happens. A plugin-free
+    // Asynchronous gateway hooks run first (they may await I/O), then the
+    // in-process middleware sees the body they left. A plugin-free
     // installation pays one atomic read here.
     let middleware_state = MiddlewareState::new();
+    let mut gateway_hook_run: Option<GatewayHookRun> = None;
+    let mut gateway_hook_request: Option<DebugHttpRequest> = None;
+    if let Some(manager) = context
+        .plugin_manager
+        .as_ref()
+        .filter(|manager| manager.host().has_enabled_gateway_hooks())
+    {
+        if let Some((rewritten, run)) = begin_gateway_hooks(manager, request, &route).await {
+            gateway_hook_request = rewritten;
+            gateway_hook_run = Some(run);
+        }
+    }
+    if gateway_hook_request.is_some() {
+        middleware_state.record_gateway_hook_rewrite(GATEWAY_HOOK_REWRITE_LABEL);
+    }
+    let request = gateway_hook_request.as_ref().unwrap_or(request);
+
     let mut middleware_request: Option<DebugHttpRequest> = None;
     if let Some(middleware) = context.middleware() {
         if middleware.has_request_hooks() {
@@ -1305,7 +1339,67 @@ pub(super) async fn route_request_with_options(
         response.privacy = Some(privacy);
     }
     apply_response_middleware(context, request, &route, &mut response, &middleware_state).await;
-    finalize_middleware_response(response, middleware_request.as_ref(), &middleware_state)
+    let response =
+        finalize_middleware_response(response, middleware_request.as_ref(), &middleware_state);
+    settle_gateway_hook_run(gateway_hook_run, request, &response);
+    response
+}
+
+/// Answer `/mcp/plugins` (and its Magpie alias) in-process. The plugin tools
+/// MCP server speaks Streamable HTTP JSON-RPC; nothing here reaches a
+/// provider or counts tokens.
+///
+/// A plugin tool runs inside the Bun host with the user's full machine access,
+/// so this endpoint only accepts connections that came from this machine even
+/// when the gateway itself listens on `0.0.0.0`.
+async fn route_plugin_tools_mcp(
+    request: &DebugHttpRequest,
+    context: &GatewayRuntimeContext,
+    is_loopback_peer: bool,
+) -> DebugHttpResponse {
+    if !is_loopback_peer {
+        return json_response(
+            403,
+            "Forbidden",
+            json!({
+                "error": "loopback_only",
+                "message": "Plugin tools MCP endpoint only accepts loopback connections.",
+            }),
+            "plugin-tools-mcp",
+            None,
+            "plugin tools MCP server rejected a non-loopback connection",
+        );
+    }
+    let Some(manager) = context.plugin_manager.as_ref() else {
+        return json_response(
+            503,
+            "Service Unavailable",
+            json!({
+                "error": "plugin_runtime_missing",
+                "message": "The plugin runtime is not available, so no plugin tool can run.",
+            }),
+            "plugin-tools-mcp",
+            None,
+            "plugin tools MCP server requested without a plugin runtime",
+        );
+    };
+    let (status, headers, body) = crate::plugins::tools_mcp::handle_mcp_http_request(
+        manager,
+        &request.method,
+        &request.headers,
+        &request.body,
+    )
+    .await;
+    let mut response = empty_response(
+        status,
+        status_text_for(status),
+        "plugin-tools-mcp",
+        "plugin tools MCP server answered locally",
+    );
+    response.headers = headers;
+    response.response_body_bytes = body.len() as u64;
+    response.body = body;
+    response
 }
 
 /// Build the gateway route view of a `/plugin/<provider_id>/...` request.
@@ -1528,6 +1622,23 @@ async fn forward_plugin_inference(
     plugin_route: &PluginRoute,
 ) -> DebugHttpResponse {
     let middleware_state = MiddlewareState::new();
+    let mut gateway_hook_run: Option<GatewayHookRun> = None;
+    let mut gateway_hook_request: Option<DebugHttpRequest> = None;
+    if let Some(manager) = context
+        .plugin_manager
+        .as_ref()
+        .filter(|manager| manager.host().has_enabled_gateway_hooks())
+    {
+        if let Some((rewritten, run)) = begin_gateway_hooks(manager, request, route).await {
+            gateway_hook_request = rewritten;
+            gateway_hook_run = Some(run);
+        }
+    }
+    if gateway_hook_request.is_some() {
+        middleware_state.record_gateway_hook_rewrite(GATEWAY_HOOK_REWRITE_LABEL);
+    }
+    let request = gateway_hook_request.as_ref().unwrap_or(request);
+
     let mut middleware_request: Option<DebugHttpRequest> = None;
     if let Some(middleware) = context.middleware() {
         if middleware.has_request_hooks() {
@@ -1553,34 +1664,36 @@ async fn forward_plugin_inference(
 
     // Direct plugin routes are real inference traffic: the same privacy
     // policy, blocking and restore path as the CLI takeover routes applies.
-    let privacy = match if matches!(request.method.as_str(), "GET" | "HEAD")
-        && request.body.is_empty()
-    {
-        Ok(None)
-    } else {
-        context
-            .privacy
-            .begin(route.cli_key.as_str(), &request.headers, &request.body, None)
-    } {
-        Ok(privacy) => privacy,
-        Err(error) => {
-            let mut response = json_response(
-                400,
-                "Bad Request",
-                privacy_error_value(route, 400, "privacy_request_blocked", &error),
-                route.route_name,
+    let privacy =
+        match if matches!(request.method.as_str(), "GET" | "HEAD") && request.body.is_empty() {
+            Ok(None)
+        } else {
+            context.privacy.begin(
+                route.cli_key.as_str(),
+                &request.headers,
+                &request.body,
                 None,
-                &error,
-            );
-            response.cli_key = Some(route.cli_key);
-            response.error_category = Some("privacy_request_blocked".to_string());
-            return finalize_middleware_response(
-                response,
-                middleware_request.as_ref(),
-                &middleware_state,
-            );
-        }
-    };
+            )
+        } {
+            Ok(privacy) => privacy,
+            Err(error) => {
+                let mut response = json_response(
+                    400,
+                    "Bad Request",
+                    privacy_error_value(route, 400, "privacy_request_blocked", &error),
+                    route.route_name,
+                    None,
+                    &error,
+                );
+                response.cli_key = Some(route.cli_key);
+                response.error_category = Some("privacy_request_blocked".to_string());
+                return finalize_middleware_response(
+                    response,
+                    middleware_request.as_ref(),
+                    &middleware_state,
+                );
+            }
+        };
 
     let Some(manager) = context.plugin_manager.as_ref() else {
         return finalize_middleware_response(
@@ -1668,6 +1781,12 @@ async fn forward_plugin_inference(
     let upstream_response_snapshot_limit = settings
         .store_response_body
         .then(|| settings.log_max_body_size_kb.saturating_mul(1024) as usize);
+    // This direct route has no user model mapping, so the plugin's vendor id
+    // (when it declares one) is what the upstream must receive.
+    let upstream_model_id = endpoint
+        .upstream_model_id
+        .clone()
+        .unwrap_or_else(|| requested_model.clone());
     let result = send_upstream_request(
         context,
         request,
@@ -1675,7 +1794,7 @@ async fn forward_plugin_inference(
         route,
         &mut provider,
         &requested_model,
-        &requested_model,
+        &upstream_model_id,
         settings.thinking_rectifier_enabled,
         settings.responses_encrypted_content_rectifier_enabled,
         settings.thinking_budget_rectifier_enabled,
@@ -1699,7 +1818,7 @@ async fn forward_plugin_inference(
             response.cost_multiplier = Some(provider.meta.cost_multiplier.clone());
             response.pricing_model_source = Some(provider.meta.pricing_model_source.clone());
             response.requested_model = Some(requested_model.clone());
-            response.upstream_model_id = Some(requested_model.clone());
+            response.upstream_model_id = Some(upstream_model_id.clone());
             response.attempt_count = 1;
             response.provider_attempt_count = 1;
             response
@@ -1713,7 +1832,7 @@ async fn forward_plugin_inference(
                     route,
                     &provider,
                     &requested_model,
-                    &requested_model,
+                    &upstream_model_id,
                     error,
                     1,
                     1,
@@ -1736,7 +1855,7 @@ async fn forward_plugin_inference(
                 response.provider_id = Some(provider.id.clone());
                 response.provider_name = Some(provider.name.clone());
                 response.requested_model = Some(requested_model.clone());
-                response.upstream_model_id = Some(requested_model.clone());
+                response.upstream_model_id = Some(upstream_model_id.clone());
                 response.upstream_request_body = error.upstream_request_body;
                 response.target_protocol = Some(provider.target_protocol);
                 response.upstream_response_body = error.upstream_response_body;
@@ -1785,17 +1904,12 @@ async fn forward_plugin_inference(
                     }
                     response.status_code = 502;
                     response.status_text = "Bad Gateway".into();
-                    response.body = privacy_error_value(
-                        route,
-                        502,
-                        "privacy_restore_failed",
-                        &error,
-                    )
-                    .to_string()
-                    .into_bytes();
+                    response.body =
+                        privacy_error_value(route, 502, "privacy_restore_failed", &error)
+                            .to_string()
+                            .into_bytes();
                     response.response_body_bytes = response.body.len() as u64;
-                    response.headers =
-                        vec![("Content-Type".into(), "application/json".into())];
+                    response.headers = vec![("Content-Type".into(), "application/json".into())];
                     response.error_category = Some("privacy_restore_failed".into());
                     response.note = error;
                 }
@@ -1804,7 +1918,10 @@ async fn forward_plugin_inference(
         response.privacy = Some(privacy);
     }
     apply_response_middleware(context, request, route, &mut response, &middleware_state).await;
-    finalize_middleware_response(response, middleware_request.as_ref(), &middleware_state)
+    let response =
+        finalize_middleware_response(response, middleware_request.as_ref(), &middleware_state);
+    settle_gateway_hook_run(gateway_hook_run, request, &response);
+    response
 }
 
 /// Build the middleware request context shared by every hook.
@@ -1822,7 +1939,369 @@ fn middleware_request_info(
         path: route.forwarded_path.clone(),
         // Magpie's `ctx.agent` is the CLI family the request came from.
         agent: route.cli_key.as_str().to_string(),
-        caller: None,
+        caller: Some(middleware_caller(request, route)),
+    }
+}
+
+/// The caller Magpie would report to a hook: the `x-magpie-caller-*` headers
+/// when the request came through another gateway, otherwise the CLI route it
+/// arrived on.
+fn middleware_caller(request: &DebugHttpRequest, route: &GatewayRoute) -> Value {
+    let header = |name: &str| {
+        request
+            .headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| percent_decode(value))
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(agent) = header("x-magpie-caller-agent") {
+        let name = header("x-magpie-caller-name").unwrap_or_else(|| agent.clone());
+        let via = request
+            .headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("x-magpie-caller-via"))
+            .map(|(_, value)| {
+                value
+                    .split(',')
+                    .map(percent_decode)
+                    .filter(|hop| !hop.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return json!({ "agent": agent, "name": name, "via": via });
+    }
+    json!({
+        "agent": route.cli_key.as_str(),
+        "name": route.route_name,
+        "via": [],
+    })
+}
+
+// ---- asynchronous gateway hooks (`magpie.hooks`) ---------------------------
+
+/// How long the gateway waits for the hook chain before it keeps the client's
+/// original request. `host.js` caps one hook's `gatewayTimeoutMs` at 30000 ms
+/// and lets a chain's budget reach that cap, so 30 s covers the host's own
+/// maximum. Starting the host (including a cold Bun download) happens outside
+/// this budget; see `BunHost::gateway_request_begin`.
+const GATEWAY_HOOKS_BEGIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// The label a hook rewrite carries in the request detail.
+const GATEWAY_HOOK_REWRITE_LABEL: &str = "magpie.hooks";
+
+/// One begun `gatewayRequest` run. The host keeps the run's private state
+/// until it is finished or closed; dropping this guard closes it so an early
+/// failure never leaks a run.
+struct GatewayHookRun {
+    manager: crate::plugins::PluginManagerState,
+    run_id: String,
+    token: String,
+    settled: bool,
+}
+
+impl GatewayHookRun {
+    fn finish(mut self, reply: Value, success: bool, request: Option<Value>) {
+        self.settled = true;
+        let manager = self.manager.clone();
+        let run_id = self.run_id.clone();
+        let token = self.token.clone();
+        // Never hold the client's response while `onResponse` runs.
+        tokio::spawn(async move {
+            let mut response = json!({ "reply": reply, "success": success });
+            if let (Some(object), Some(request)) = (response.as_object_mut(), request) {
+                object.insert("request".to_string(), request);
+            }
+            manager
+                .host()
+                .gateway_request_finish(&run_id, &token, response)
+                .await;
+        });
+    }
+
+    fn close(mut self) {
+        self.settled = true;
+        let manager = self.manager.clone();
+        let run_id = self.run_id.clone();
+        let token = self.token.clone();
+        tokio::spawn(async move {
+            manager.host().gateway_request_close(&run_id, &token).await;
+        });
+    }
+}
+
+impl Drop for GatewayHookRun {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let manager = self.manager.clone();
+        let run_id = self.run_id.clone();
+        let token = self.token.clone();
+        tokio::spawn(async move {
+            manager.host().gateway_request_close(&run_id, &token).await;
+        });
+    }
+}
+
+/// The identity a `magpie.hooks` context carries. Never headers or
+/// credentials: the body is the plugin's input, the context is who asked.
+fn gateway_hook_context(request: &DebugHttpRequest, route: &GatewayRoute) -> Value {
+    json!({
+        "protocol": source_protocol_from_route(route)
+            .map(middleware_protocol_name)
+            .unwrap_or_else(|| route.route_name.to_string()),
+        "model": extract_requested_model(request, route).unwrap_or_default(),
+        "stream": request_declares_streaming(request) || route_declares_streaming(route),
+        "path": route.forwarded_path,
+        "agent": route.cli_key.as_str(),
+        "session": gateway_hook_session(request),
+        "cwd": "",
+        "query": route.query.clone().unwrap_or_default(),
+        "caller": middleware_caller(request, route),
+    })
+}
+
+/// The session identifier the host may hand to a hook, from the same
+/// well-known headers the plugin bridge reads.
+fn gateway_hook_session(request: &DebugHttpRequest) -> String {
+    const SESSION_HEADERS: [&str; 4] = [
+        "x-magpie-session",
+        "x-claude-code-session-id",
+        "x-session-id",
+        "session_id",
+    ];
+    for name in SESSION_HEADERS {
+        if let Some((_, value)) = request
+            .headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Keep a hook from changing the top-level `stream` flag, which the client
+/// already decided. Returns whether the flag was restored.
+fn protect_gateway_hook_stream(original: &Value, next: &mut Value) -> bool {
+    let Some(object) = next.as_object_mut() else {
+        return false;
+    };
+    let original_stream = original.get("stream").cloned();
+    if object.get("stream").cloned() == original_stream {
+        return false;
+    }
+    match original_stream {
+        Some(stream) => {
+            object.insert("stream".to_string(), stream);
+        }
+        None => {
+            object.remove("stream");
+        }
+    }
+    true
+}
+
+/// Run the asynchronous request hooks before the in-process middleware.
+///
+/// Returns the rewritten request (only when the body actually changed) and
+/// the run guard, or `None` for "no hook applied" (fail-open).
+async fn begin_gateway_hooks(
+    manager: &crate::plugins::PluginManagerState,
+    request: &DebugHttpRequest,
+    route: &GatewayRoute,
+) -> Option<(Option<DebugHttpRequest>, GatewayHookRun)> {
+    let body: Value = serde_json::from_slice(&request.body).ok()?;
+    if !body.is_object() {
+        return None;
+    }
+    let params = json!({
+        "body": body.clone(),
+        "context": gateway_hook_context(request, route),
+    });
+    let reply = match manager
+        .host()
+        .gateway_request_begin(params, GATEWAY_HOOKS_BEGIN_TIMEOUT)
+        .await
+    {
+        Ok(Some(reply)) => reply,
+        Ok(None) => return None,
+        Err(error) => {
+            log::debug!("gateway hooks skipped: {error}");
+            return None;
+        }
+    };
+    let run_id = reply
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let token = reply
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let Some(mut next) = reply.get("body").cloned().filter(Value::is_object) else {
+        // The host holds a run we cannot use: release it now.
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager.host().gateway_request_close(&run_id, &token).await;
+        });
+        return None;
+    };
+    if protect_gateway_hook_stream(&body, &mut next) {
+        log::warn!("gateway hook changed the top-level stream flag; kept the request's value");
+    }
+    let run = GatewayHookRun {
+        manager: manager.clone(),
+        run_id,
+        token,
+        settled: false,
+    };
+    if next == body {
+        return Some((None, run));
+    }
+    match serde_json::to_vec(&next) {
+        Ok(bytes) => {
+            let mut rewritten = request.clone();
+            rewritten.body = bytes;
+            Some((Some(rewritten), run))
+        }
+        Err(_) => Some((None, run)),
+    }
+}
+
+/// Hand the completed exchange to `onResponse`, or close the run when there
+/// is no whole JSON reply to show (streaming, a non-JSON body, a pre-upstream
+/// failure). Always non-blocking.
+fn settle_gateway_hook_run(
+    run: Option<GatewayHookRun>,
+    request: &DebugHttpRequest,
+    response: &DebugHttpResponse,
+) {
+    let Some(run) = run else {
+        return;
+    };
+    if response.body_stream.is_some() || response.is_streaming {
+        run.close();
+        return;
+    }
+    let Ok(reply) = serde_json::from_slice::<Value>(&response.body) else {
+        run.close();
+        return;
+    };
+    if !reply.is_object() {
+        run.close();
+        return;
+    }
+    let success = gateway_hook_reply_is_success(response.status_code, &reply);
+    let request_value = serde_json::from_slice::<Value>(&request.body).ok();
+    run.finish(reply, success, request_value);
+}
+
+/// Magpie's verdict on a reply: no error envelope and a completion status.
+fn gateway_hook_reply_is_success(status: u16, reply: &Value) -> bool {
+    if status >= 400 {
+        return false;
+    }
+    let error_is_empty = match reply.get("error") {
+        None | Some(Value::Null) => true,
+        Some(Value::String(message)) => message.is_empty() || message == "null",
+        Some(_) => false,
+    };
+    let completion = reply.get("status").and_then(Value::as_str);
+    error_is_empty && !matches!(completion, Some("failed") | Some("incomplete"))
+}
+
+/// Starting from `initial_account`, walk the provider's quota-preferred
+/// candidates until one middleware does not return `{ skip: true }`. A
+/// middleware that throws or times out counts as "use" (fail-open). If every
+/// candidate is passed over, the original choice still serves the request.
+#[allow(clippy::too_many_arguments)]
+async fn account_after_middleware(
+    manager: &crate::plugins::PluginManagerState,
+    middleware: &crate::plugins::middleware_rt::MiddlewareRuntime,
+    reference: &PluginProviderRef,
+    provider_name: &str,
+    cli_key: GatewayCliKey,
+    model: &str,
+    initial_account: String,
+    info: &RequestInfo,
+    state: &MiddlewareState,
+) -> String {
+    let Ok(candidates) = gateway_bridge::enabled_accounts(manager, &reference.provider_id) else {
+        return initial_account;
+    };
+    if candidates.is_empty() {
+        return initial_account;
+    }
+    let mut remaining = gateway_bridge::preferred_account_candidates(
+        manager.db(),
+        &reference.provider_id,
+        &candidates,
+        chrono::Utc::now(),
+    );
+    let mut account = initial_account.clone();
+    for _ in 0..candidates.len() {
+        let candidate = AccountCandidate {
+            provider_id: reference.provider_id.clone(),
+            provider_name: provider_name.to_string(),
+            account_key: account.clone(),
+            kind: cli_key.as_str().to_string(),
+            model: model.to_string(),
+        };
+        match middleware.run_on_account(info, &candidate, state).await {
+            AccountOutcome::Use => return account,
+            AccountOutcome::Skip { by } => {
+                log::debug!("gateway middleware '{by}' passed plugin account '{account}' over");
+                remaining.retain(|key| key != &account);
+                if remaining.is_empty() {
+                    return initial_account;
+                }
+                account = manager.gateway().accounts.select(
+                    &reference.provider_id,
+                    reference.account_strategy,
+                    reference.account_key.as_deref(),
+                    &remaining,
+                );
+            }
+        }
+    }
+    initial_account
+}
+
+/// Decode one percent-encoded header value the way the host's
+/// `decodeURIComponent` does. Invalid escapes are kept literally.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) =
+                (hex_digit(bytes[index + 1]), hex_digit(bytes[index + 2]))
+            {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -1964,7 +2443,10 @@ impl SseMiddlewareState {
     }
 }
 
-pub(super) fn sse_middleware_stream(inner: DebugBodyStream, session: EventSession) -> DebugBodyStream {
+pub(super) fn sse_middleware_stream(
+    inner: DebugBodyStream,
+    session: EventSession,
+) -> DebugBodyStream {
     let state = SseMiddlewareState {
         inner,
         buffer: Vec::new(),
@@ -2817,6 +3299,23 @@ fn force_aux_non_streaming_headers(headers: &mut UpstreamHeaders) {
     });
 }
 
+/// The model id to put on the wire for a plugin provider.
+///
+/// A plugin model may be public under one id and served by its vendor under
+/// another (`api.id`). The vendor id wins unless an explicit user model
+/// mapping already replaced the requested model; in that case the mapping is
+/// the user's decision and stays authoritative.
+fn plugin_upstream_model_id(
+    endpoint: &gateway_bridge::PluginProviderEndpoint,
+    requested_model: &str,
+    resolved_upstream_model: &str,
+) -> Option<String> {
+    let vendor_model = endpoint.upstream_model_id.as_deref()?;
+    let user_mapped = resolved_upstream_model != requested_model
+        && resolved_upstream_model != strip_one_m_context_marker(requested_model);
+    (!user_mapped).then(|| vendor_model.to_string())
+}
+
 async fn send_upstream_request(
     context: &GatewayRuntimeContext,
     request: &DebugHttpRequest,
@@ -2908,6 +3407,14 @@ async fn send_upstream_request(
         plugin_account = Some(gateway_bridge::select_plugin_account(manager, &reference));
         plugin_endpoint = Some(endpoint);
     }
+    // A plugin-declared vendor model id must reach the body, the Gemini path
+    // model segment and the host call, not just the client-facing alias.
+    let plugin_upstream_model = plugin_endpoint.as_ref().and_then(|endpoint| {
+        plugin_upstream_model_id(endpoint, requested_model, upstream_model_id)
+    });
+    let upstream_model_id = plugin_upstream_model
+        .as_deref()
+        .unwrap_or(upstream_model_id);
     let compact_compat = CodexResponsesCompactCompat::new(route, provider);
     let remote_compaction = RemoteCompactionCompat::resolve(
         route,
@@ -2971,6 +3478,35 @@ async fn send_upstream_request(
             build_responses_encrypted_content_rectified_body(&upstream_body, strip_item_ids)?
         {
             upstream_body = rectified;
+        }
+    }
+    // An `onAccount` middleware may pass the selected account over before
+    // anything is sent. The next candidate keeps the router's rotation and
+    // cooldown state; when every candidate is skipped the original selection
+    // still serves the request rather than failing it.
+    if let (Some(reference), Some(middleware), Some(manager)) = (
+        provider.plugin_provider.clone(),
+        context.middleware(),
+        context.plugin_manager.as_ref(),
+    ) {
+        if middleware.has_on_account_hooks() {
+            let info = middleware_request_info(request, route, source_protocol);
+            plugin_account = Some(
+                account_after_middleware(
+                    manager,
+                    middleware,
+                    &reference,
+                    &provider.name,
+                    route.cli_key,
+                    upstream_model_id,
+                    plugin_account
+                        .take()
+                        .unwrap_or_else(|| reference.provider_id.clone()),
+                    &info,
+                    middleware_state,
+                )
+                .await,
+            );
         }
     }
     let pre_on_provider_body = upstream_body.clone();
@@ -24982,7 +25518,44 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
                 middleware_request_info(&request, &route, source_protocol_from_route(&route));
             assert_eq!(info.protocol, protocol, "{path}");
             assert_eq!(info.agent, route.cli_key.as_str(), "{path}");
+            let caller = info.caller.expect("caller");
+            assert_eq!(caller["agent"], route.cli_key.as_str(), "{path}");
+            assert_eq!(caller["name"], route.route_name, "{path}");
+            assert_eq!(caller["via"], json!([]), "{path}");
         }
+    }
+
+    #[test]
+    fn middleware_request_info_prefers_forwarded_caller_headers() {
+        let path = "/anthropic/v1/messages";
+        let request = DebugHttpRequest {
+            id: 1,
+            method: "POST".to_string(),
+            path: path.to_string(),
+            headers: vec![
+                (
+                    "x-magpie-caller-agent".to_string(),
+                    "claude%20desktop".to_string(),
+                ),
+                (
+                    "x-magpie-caller-name".to_string(),
+                    "Claude%20Desktop".to_string(),
+                ),
+                (
+                    "x-magpie-caller-via".to_string(),
+                    "laptop,office%20gateway".to_string(),
+                ),
+            ],
+            body: br#"{"model":"m"}"#.to_vec(),
+        };
+        let route = match_gateway_route(path).unwrap();
+        let info = middleware_request_info(&request, &route, source_protocol_from_route(&route));
+        let caller = info.caller.expect("caller");
+        assert_eq!(caller["agent"], "claude desktop");
+        assert_eq!(caller["name"], "Claude Desktop");
+        assert_eq!(caller["via"], json!(["laptop", "office gateway"]));
+        // `ctx.agent` stays the CLI route the request arrived on.
+        assert_eq!(info.agent, route.cli_key.as_str());
     }
 
     #[test]
@@ -25161,7 +25734,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
             url: "https://api.example.com/v1/chat/completions".to_string(),
             method: "POST".to_string(),
             headers: vec![
-                ("authorization".to_string(), "Bearer plugin-token".to_string()),
+                (
+                    "authorization".to_string(),
+                    "Bearer plugin-token".to_string(),
+                ),
                 ("x-api-key".to_string(), "plugin-key".to_string()),
                 ("x-plugin-trace".to_string(), "1".to_string()),
             ],
@@ -25191,7 +25767,10 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         // A non-sensitive header difference is still a plugin rewrite.
         let changed = gateway_bridge::CapturedPluginRequest {
             headers: vec![
-                ("authorization".to_string(), "Bearer plugin-token".to_string()),
+                (
+                    "authorization".to_string(),
+                    "Bearer plugin-token".to_string(),
+                ),
                 ("x-plugin-trace".to_string(), "2".to_string()),
             ],
             ..wire.clone()
@@ -25256,6 +25835,175 @@ data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"qwen3","choic
         assert_eq!(
             observations.rewrites[0].detail.as_deref(),
             Some("rewrite-body")
+        );
+    }
+
+    #[test]
+    fn middleware_gateway_hook_stream_flag_is_protected() {
+        // A hook may not turn a client's stream on or off.
+        let original = json!({"model": "m", "stream": true, "messages": []});
+        let mut next = json!({"model": "m", "stream": false, "messages": []});
+        assert!(protect_gateway_hook_stream(&original, &mut next));
+        assert_eq!(next["stream"], true);
+        assert_eq!(next["model"], "m");
+
+        // Nor invent one where the client declared none.
+        let original = json!({"model": "m"});
+        let mut next = json!({"model": "m", "stream": true});
+        assert!(protect_gateway_hook_stream(&original, &mut next));
+        assert!(next.get("stream").is_none());
+
+        // An untouched flag is not a rewrite.
+        let original = json!({"stream": true});
+        let mut next = json!({"stream": true, "note": "kept"});
+        assert!(!protect_gateway_hook_stream(&original, &mut next));
+        assert_eq!(next["note"], "kept");
+    }
+
+    #[test]
+    fn middleware_gateway_hook_context_carries_identity_but_no_headers() {
+        let request = debug_request_with_headers(
+            br#"{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}"#,
+            vec![
+                ("x-magpie-session", "sess-1"),
+                ("authorization", "Bearer secret-token"),
+            ],
+        );
+        let route = match_gateway_route("/anthropic/v1/messages?beta=1").unwrap();
+        let context = gateway_hook_context(&request, &route);
+
+        assert_eq!(context["protocol"], "anthropic");
+        assert_eq!(context["model"], "m");
+        assert_eq!(context["stream"], true);
+        assert_eq!(context["agent"], route.cli_key.as_str());
+        assert_eq!(context["session"], "sess-1");
+        assert_eq!(context["cwd"], "");
+        assert_eq!(context["query"], "beta=1");
+        assert_eq!(context["caller"]["agent"], route.cli_key.as_str());
+        // Credentials never cross into a hook context.
+        let serialized = context.to_string();
+        assert!(!serialized.contains("secret-token"), "{serialized}");
+        assert!(!serialized.contains("authorization"), "{serialized}");
+    }
+
+    #[test]
+    fn middleware_gateway_hook_reply_success_matches_magpie() {
+        assert!(gateway_hook_reply_is_success(
+            200,
+            &json!({"content": [], "error": null})
+        ));
+        assert!(gateway_hook_reply_is_success(200, &json!({"output": []})));
+        assert!(!gateway_hook_reply_is_success(
+            200,
+            &json!({"error": {"message": "upstream failed"}})
+        ));
+        assert!(!gateway_hook_reply_is_success(
+            200,
+            &json!({"status": "incomplete"})
+        ));
+        assert!(!gateway_hook_reply_is_success(
+            200,
+            &json!({"status": "failed"})
+        ));
+        assert!(!gateway_hook_reply_is_success(502, &json!({"output": []})));
+    }
+
+    #[test]
+    fn middleware_gateway_hook_body_rewrites_are_serialized_once() {
+        // The gateway compares parsed values, so a hook that returns the
+        // request untouched is not a rewrite even though the JSON key order
+        // changed on the wire.
+        let original = json!({"model": "m", "messages": []});
+        let mut next = original.clone();
+        assert!(!protect_gateway_hook_stream(&original, &mut next));
+        assert_eq!(next, original);
+
+        next["model"] = json!("other");
+        assert_ne!(next, original);
+        let bytes = serde_json::to_vec(&next).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), next);
+    }
+
+    // ---- plugin tools MCP endpoint --------------------------------------
+
+    #[test]
+    fn mcp_plugin_tools_endpoint_rejects_non_loopback_peers() {
+        let context = GatewayRuntimeContext::new(ProxyGatewaySettings::default(), None, None);
+        for path in [
+            crate::plugins::tools_mcp::MCP_PATH,
+            crate::plugins::tools_mcp::MCP_ALIAS_PATH,
+        ] {
+            let mut request = debug_request(br#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#);
+            request.path = path.to_string();
+
+            let denied = tauri::async_runtime::block_on(route_request_with_options(
+                &request,
+                &context,
+                &GatewayRequestOptions {
+                    is_loopback_peer: false,
+                    ..GatewayRequestOptions::default()
+                },
+            ));
+            assert_eq!(denied.status_code, 403, "{path}");
+            let body: Value = serde_json::from_slice(&denied.body).unwrap();
+            assert_eq!(body["error"], "loopback_only");
+            assert_eq!(
+                body["message"],
+                "Plugin tools MCP endpoint only accepts loopback connections."
+            );
+
+            // A loopback peer reaches the handler; without a plugin runtime it
+            // answers 503, but never the loopback-only rejection.
+            let allowed = tauri::async_runtime::block_on(route_request_with_options(
+                &request,
+                &context,
+                &GatewayRequestOptions::default(),
+            ));
+            assert_ne!(allowed.status_code, 403, "{path}");
+            assert_eq!(allowed.status_code, 503, "{path}");
+        }
+    }
+
+    #[test]
+    fn plugin_provider_uses_the_declared_vendor_api_id() {
+        let endpoint = gateway_bridge::PluginProviderEndpoint {
+            provider_id: "demo".to_string(),
+            plugin_spec: "demo-plugin".to_string(),
+            provider_name: "Demo".to_string(),
+            base_url: "https://api.example.com".to_string(),
+            npm: "@ai-sdk/openai-compatible".to_string(),
+            target_protocol: AiProtocol::OpenAiChat,
+            upstream_model_id: Some("vendor-model".to_string()),
+            models: vec![gateway_bridge::PluginModelInfo {
+                id: "public-alias".to_string(),
+                api_id: "vendor-model".to_string(),
+                ..Default::default()
+            }],
+        };
+
+        // No user mapping: the vendor id replaces the public alias.
+        assert_eq!(
+            plugin_upstream_model_id(&endpoint, "public-alias", "public-alias").as_deref(),
+            Some("vendor-model")
+        );
+        // The `[1m]` marker is stripped before forwarding, not a user mapping.
+        assert_eq!(
+            plugin_upstream_model_id(&endpoint, "public-alias[1m]", "public-alias").as_deref(),
+            Some("vendor-model")
+        );
+        // An explicit user mapping stays authoritative.
+        assert_eq!(
+            plugin_upstream_model_id(&endpoint, "public-alias", "mapped-model"),
+            None
+        );
+        // A model without a vendor id keeps the requested model.
+        let no_vendor_id = gateway_bridge::PluginProviderEndpoint {
+            upstream_model_id: None,
+            ..endpoint
+        };
+        assert_eq!(
+            plugin_upstream_model_id(&no_vendor_id, "public-alias", "public-alias"),
+            None
         );
     }
 }

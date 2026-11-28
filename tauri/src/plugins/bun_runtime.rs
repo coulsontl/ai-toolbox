@@ -140,6 +140,17 @@ struct RuntimeState {
     last_error: Option<String>,
 }
 
+/// Marks a managed download as running. `Drop` always clears the flag, so a
+/// cancelled `ensure` (the surrounding future is dropped) can never leave the
+/// settings pane showing a download that will never finish.
+struct DownloadingGuard<'a>(&'a BunRuntime);
+
+impl Drop for DownloadingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set_downloading(false);
+    }
+}
+
 /// Shared Bun locator and downloader.
 pub struct BunRuntime {
     db: SqliteDbState,
@@ -241,9 +252,8 @@ impl BunRuntime {
             return Ok(probe);
         }
 
-        self.set_downloading(true);
+        let _downloading = self.begin_downloading();
         let result = self.download_and_probe().await;
-        self.set_downloading(false);
         match &result {
             Ok(probe) => {
                 self.set_last_error(None);
@@ -328,6 +338,12 @@ impl BunRuntime {
             downloading: state.downloading,
             last_error: state.last_error.clone(),
         }
+    }
+
+    /// Mark the managed download as running until the returned guard drops.
+    fn begin_downloading(&self) -> DownloadingGuard<'_> {
+        self.set_downloading(true);
+        DownloadingGuard(self)
     }
 
     fn set_downloading(&self, downloading: bool) {
@@ -584,6 +600,28 @@ mod tests {
         assert_eq!(status.expected_version, BUN_VERSION);
         assert!(!status.downloading);
         assert!(!status.asset.is_empty());
+    }
+
+    #[test]
+    fn dropping_the_download_guard_clears_the_flag() {
+        let (_root, runtime) = test_runtime();
+        {
+            let _guard = runtime.begin_downloading();
+            assert!(
+                runtime
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .downloading
+            );
+        }
+        assert!(
+            !runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .downloading
+        );
     }
 
     #[tokio::test]

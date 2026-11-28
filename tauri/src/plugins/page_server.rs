@@ -226,17 +226,28 @@ impl PluginPageServer {
                     (entry_file, service_port),
                 );
             }
+            // Panels share the plugin's token table under a `panel:` scope.
+            // They never carry a service port: a panel is only HTML.
+            for panel in &record.panels {
+                let entry_file = std::path::Path::new(&panel.entry_file)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| panel.entry_file.clone());
+                expected.insert(
+                    (record.id.clone(), format!("panel:{}", panel.id)),
+                    (entry_file, None),
+                );
+            }
         }
         let mut state = self.state.lock().unwrap();
-        state
-            .routes
-            .retain(|_, route| match expected.get(&(route.plugin_id.clone(), route.page_id.clone()))
-            {
+        state.routes.retain(|_, route| {
+            match expected.get(&(route.plugin_id.clone(), route.page_id.clone())) {
                 Some((entry_file, service_port)) => {
                     route.entry_file == *entry_file && route.service_port == *service_port
                 }
                 None => false,
-            });
+            }
+        });
         Ok(())
     }
 
@@ -569,7 +580,7 @@ fn content_type_for(path: &Path) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::types::{InstalledPluginRecord, PluginPageManifest};
+    use crate::plugins::types::{InstalledPluginRecord, PluginPageManifest, PluginPanelManifest};
     use serde_json::json;
 
     struct RawResponse {
@@ -920,6 +931,63 @@ mod tests {
             .unwrap();
         record.pages[0].entry_file = "renamed.html".to_string();
         store::upsert_installed_plugin(&db, &record).unwrap();
+        server.sync_enabled_plugins(&db).unwrap();
+        assert_eq!(
+            request(address, "GET", &format!("/_plugin/{second}/index.html"))
+                .await
+                .status,
+            404
+        );
+    }
+
+    #[tokio::test]
+    async fn panel_tokens_survive_a_sync_and_are_revoked_with_the_plugin() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let (_root, entry) = page_fixture();
+        let server = Arc::new(PluginPageServer::new());
+        let token = server
+            .register_page("plugin-a", "panel:settings-1", &entry, None)
+            .unwrap();
+        let address = server.ensure_started().await.unwrap();
+
+        let record = InstalledPluginRecord {
+            id: "plugin-a".to_string(),
+            package_name: "plugin-a".to_string(),
+            enabled: true,
+            panels: vec![PluginPanelManifest {
+                id: "settings-1".to_string(),
+                slot: "settings".to_string(),
+                entry_file: "index.html".to_string(),
+                ..PluginPanelManifest::default()
+            }],
+            ..InstalledPluginRecord::default()
+        };
+        store::upsert_installed_plugin(&db, &record).unwrap();
+        server.sync_enabled_plugins(&db).unwrap();
+        assert_eq!(
+            request(address, "GET", &format!("/_plugin/{token}/index.html"))
+                .await
+                .status,
+            200
+        );
+
+        // The panel declaration changed: the old token's root is stale.
+        let mut updated = record.clone();
+        updated.panels[0].entry_file = "renamed.html".to_string();
+        store::upsert_installed_plugin(&db, &updated).unwrap();
+        server.sync_enabled_plugins(&db).unwrap();
+        assert_eq!(
+            request(address, "GET", &format!("/_plugin/{token}/index.html"))
+                .await
+                .status,
+            404
+        );
+
+        // Disabling the plugin revokes every panel token with its pages.
+        let second = server
+            .register_page("plugin-a", "panel:settings-1", &entry, None)
+            .unwrap();
+        store::set_plugin_enabled(&db, "plugin-a", false).unwrap();
         server.sync_enabled_plugins(&db).unwrap();
         assert_eq!(
             request(address, "GET", &format!("/_plugin/{second}/index.html"))

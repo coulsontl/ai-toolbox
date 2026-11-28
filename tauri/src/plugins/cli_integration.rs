@@ -331,15 +331,47 @@ fn plugin_protocol(row: &PluginProviderRow) -> AiProtocol {
         .unwrap_or(AiProtocol::OpenAiChat)
 }
 
-fn filter_models(row: &PluginProviderRow, model_ids: &[String]) -> Vec<PluginModelInfo> {
+fn filter_models(models: &[PluginModelInfo], model_ids: &[String]) -> Vec<PluginModelInfo> {
     if model_ids.is_empty() {
-        return row.models.clone();
+        return models.to_vec();
     }
-    row.models
+    models
         .iter()
         .filter(|model| model_ids.iter().any(|id| id == &model.id))
         .cloned()
         .collect()
+}
+
+/// The plugin account a CLI provider was configured with, read back from the
+/// stored `meta.pluginProvider` reference.
+fn stored_plugin_account_ref(
+    db: &SqliteDbState,
+    cli: Cli,
+    provider_id: &str,
+) -> Option<PluginProviderRef> {
+    let row = db
+        .with_conn(|conn| db_get(conn, DbTable::CliProvider(cli), provider_id))
+        .ok()??;
+    let plugin = row.get("meta")?.get("pluginProvider")?;
+    serde_json::from_value(plugin.clone()).ok()
+}
+
+/// The account whose model list a single-account channel should use. The
+/// pinned key wins; otherwise the router would start on the first enabled
+/// account.
+fn single_account_key(
+    manager: &PluginManagerState,
+    provider_id: &str,
+    pinned: Option<String>,
+) -> Option<String> {
+    pinned
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .or_else(|| {
+            gateway_bridge::enabled_accounts(manager, provider_id)
+                .ok()
+                .and_then(|accounts| accounts.into_iter().next())
+        })
 }
 
 /// Build the stored `settings_config` for a gateway-takeover CLI.
@@ -868,7 +900,15 @@ pub async fn plugins_add_provider_to_cli(
         Some(&input.plugin_spec),
         &input.provider_id,
     )?;
-    let models = filter_models(row, &input.model_ids);
+    let account_key = match input.account_strategy {
+        PluginAccountStrategy::Single => {
+            single_account_key(manager.inner(), &row.id, input.account_key.clone())
+        }
+        PluginAccountStrategy::AutoRotate => None,
+    };
+    let models =
+        gateway_bridge::models_for_cli(row, input.account_strategy, account_key.as_deref());
+    let models = filter_models(&models, &input.model_ids);
     if !input.model_ids.is_empty() && models.is_empty() {
         return Err(format!(
             "None of the selected models are offered by plugin provider '{}'",
@@ -1388,21 +1428,36 @@ pub async fn plugins_sync_cli_provider_models(
         .ok_or_else(|| {
             format!("Plugin provider '{plugin_provider_id}' is not offered by any installed plugin")
         })?;
-    let models = row.models.clone();
 
     let settings = load_settings_from_sqlite_state(&db)?;
     let (origin, _) = gateway_origin(&settings, Some(&gateway));
 
-    let old = if let Some(cli) = takeover_cli(&cli_key) {
+    let (old, models) = if let Some(cli) = takeover_cli(&cli_key) {
         let provider_id = if cli_provider_id.trim().is_empty() {
             format!("plugin-{}", row.id)
         } else {
             cli_provider_id.trim().to_string()
         };
-        sync_takeover_models(&db, cli, &provider_id, &models).await?
+        let stored = stored_plugin_account_ref(&db, cli, &provider_id);
+        let strategy = stored
+            .as_ref()
+            .map(|reference| reference.account_strategy)
+            .unwrap_or_default();
+        let account_key = match strategy {
+            PluginAccountStrategy::Single => single_account_key(
+                manager.inner(),
+                &row.id,
+                stored.and_then(|reference| reference.account_key),
+            ),
+            PluginAccountStrategy::AutoRotate => None,
+        };
+        let models = gateway_bridge::models_for_cli(row, strategy, account_key.as_deref());
+        let old = sync_takeover_models(&db, cli, &provider_id, &models).await?;
+        (old, models)
     } else {
         let cli = file_cli(&cli_key)
             .ok_or_else(|| format!("'{cli_key}' has no plugin integration path"))?;
+        let models = gateway_bridge::models_for_cli(row, PluginAccountStrategy::AutoRotate, None);
         let old = if cli == FileCli::Zcode {
             sync_zcode_models(&db, &cli_provider_id, &models).await?
         } else {
@@ -1410,7 +1465,7 @@ pub async fn plugins_sync_cli_provider_models(
                 .await?
         };
         emit_file_cli_sync_events(&app, cli);
-        old
+        (old, models)
     };
     let _ = app.emit("config-changed", "window");
 
@@ -1499,11 +1554,13 @@ mod tests {
                 id: "alpha-model".to_string(),
                 name: "Alpha Model".to_string(),
                 npm: "@ai-sdk/openai-compatible".to_string(),
+                ..PluginModelInfo::default()
             },
             PluginModelInfo {
                 id: "beta-model".to_string(),
                 name: String::new(),
                 npm: String::new(),
+                ..PluginModelInfo::default()
             },
         ]
     }

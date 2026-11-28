@@ -16,7 +16,7 @@ pub mod protocol;
 pub mod stream;
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
@@ -37,7 +37,6 @@ use super::bun_runtime::BunRuntime;
 use super::installer;
 use super::paths::PluginPaths;
 use super::store;
-use super::types::PluginKind;
 
 use protocol::{
     encode_abort, encode_request, parse_host_line, CapturedWireRequest, FetchHead, HostEvent,
@@ -48,6 +47,11 @@ use stream::{FetchAbort, FetchBodyStream, PluginFetchResponse};
 const RPC_TIMEOUT: Duration = Duration::from_secs(120);
 const INIT_TIMEOUT: Duration = Duration::from_secs(120);
 const FETCH_HEAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// A finish/close notification is best-effort and must never hold a request.
+const GATEWAY_NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Diagnostics answer from an already running host; this only bounds a wedged
+/// one, the call never starts Bun.
+const GATEWAY_STATES_TIMEOUT: Duration = Duration::from_secs(2);
 const SIGNIN_METHODS: [&str; 4] = ["authorize", "callback", "apiKey", "importFiles"];
 /// Frames a fetch body may queue before the reader applies backpressure.
 /// The credit window (512 KiB / 2 KiB overhead) bounds the host to ~256.
@@ -68,6 +72,22 @@ pub struct BunHostStatus {
     pub last_error: Option<String>,
     pub started_at: Option<String>,
     pub log_entries: usize,
+}
+
+/// One tool a plugin's `tool` hook exports, as `host.js` listed it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginToolDef {
+    pub name: String,
+    pub description: String,
+    /// JSON Schema of the tool's arguments.
+    pub parameters: Value,
+}
+
+/// Every tool one plugin gives, cached from the host's `init` reply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PluginToolSet {
+    pub spec: String,
+    pub tools: Vec<PluginToolDef>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -237,6 +257,8 @@ struct HostInner {
     started_at: Option<String>,
     next_id: u64,
     pending: HashMap<u64, Pending>,
+    /// Tools the host reported at `init`; empty until the first start.
+    tools: Vec<PluginToolSet>,
 }
 
 impl HostInner {
@@ -251,6 +273,7 @@ impl HostInner {
             started_at: None,
             next_id: 1,
             pending: HashMap::new(),
+            tools: Vec::new(),
         }
     }
 
@@ -277,10 +300,15 @@ pub struct BunHost {
     inner: Arc<Mutex<HostInner>>,
     start_lock: Mutex<()>,
     logs: Arc<RuntimeLogRing>,
+    /// Whether any installed, enabled plugin declares asynchronous gateway
+    /// hooks. The gateway consults this on every request, so it is cached and
+    /// refreshed with the plugin list instead of reading the database.
+    gateway_hooks_enabled: AtomicBool,
 }
 
 impl BunHost {
     pub fn new(db: SqliteDbState, paths: PluginPaths, bun: Arc<BunRuntime>) -> Self {
+        let gateway_hooks_enabled = AtomicBool::new(installed_gateway_hooks(&db));
         Self {
             db,
             paths,
@@ -288,7 +316,107 @@ impl BunHost {
             inner: Arc::new(Mutex::new(HostInner::new())),
             start_lock: Mutex::new(()),
             logs: Arc::new(RuntimeLogRing::new()),
+            gateway_hooks_enabled,
         }
+    }
+
+    // ---- asynchronous gateway hooks ---------------------------------------
+
+    /// Whether some enabled plugin contributes `magpie.hooks`. A page-only,
+    /// middleware-only or provider-only installation answers `false` with no
+    /// database or process work.
+    pub fn has_enabled_gateway_hooks(&self) -> bool {
+        self.gateway_hooks_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Re-read the installed plugin list after an install, removal, enable,
+    /// disable or manifest refresh.
+    pub fn refresh_gateway_hooks_flag(&self) {
+        self.gateway_hooks_enabled
+            .store(installed_gateway_hooks(&self.db), Ordering::Relaxed);
+    }
+
+    async fn is_process_running(&self) -> bool {
+        let mut inner = self.inner.lock().await;
+        match inner.process.as_mut() {
+            Some(process) => {
+                process.child.try_wait().ok().flatten().is_none()
+                    && process.alive.load(Ordering::SeqCst)
+            }
+            None => false,
+        }
+    }
+
+    /// Run `gatewayRequest` with `operation: "begin"`.
+    ///
+    /// Failure is fail-open: the gateway keeps its original request. Starting
+    /// the host (including a first-run Bun download) deliberately happens
+    /// outside the caller's hook budget; only the hook RPC itself is bounded,
+    /// so a cold download is never cancelled by a request deadline.
+    pub async fn gateway_request_begin(
+        &self,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Option<Value>, String> {
+        let mut params = params;
+        if let Some(object) = params.as_object_mut() {
+            object.insert("operation".to_string(), json!("begin"));
+        }
+        self.ensure_running().await?;
+        match self.send_call("gatewayRequest", params, timeout).await {
+            Ok(value) if value.is_null() => Ok(None),
+            Ok(value) => Ok(Some(value)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Hand the completed exchange to `onResponse`. Best-effort: the caller
+    /// runs this in the background and never waits for it.
+    pub async fn gateway_request_finish(&self, run_id: &str, token: &str, response: Value) {
+        let mut params = json!({
+            "operation": "finish",
+            "id": run_id,
+            "token": token,
+        });
+        if let (Some(target), Value::Object(extra)) = (params.as_object_mut(), response) {
+            for (key, value) in extra {
+                target.insert(key, value);
+            }
+        }
+        if let Err(error) = self
+            .send_call("gatewayRequest", params, GATEWAY_NOTIFY_TIMEOUT)
+            .await
+        {
+            log::debug!("gateway response hook did not run: {error}");
+        }
+    }
+
+    /// Release an abandoned run (streaming reply, early failure or error).
+    pub async fn gateway_request_close(&self, run_id: &str, token: &str) {
+        let params = json!({
+            "operation": "close",
+            "id": run_id,
+            "token": token,
+        });
+        if !self.is_process_running().await {
+            return;
+        }
+        if let Err(error) = self
+            .send_call("gatewayRequest", params, GATEWAY_NOTIFY_TIMEOUT)
+            .await
+        {
+            log::debug!("gateway hook run could not be closed: {error}");
+        }
+    }
+
+    /// Hook diagnostics from an already running host. Opening Settings must
+    /// never start Bun just to display them.
+    pub async fn gateway_states(&self) -> Result<Value, String> {
+        if !self.is_process_running().await {
+            return Ok(json!({}));
+        }
+        self.send_call("gatewayStates", json!({}), GATEWAY_STATES_TIMEOUT)
+            .await
     }
 
     // ---- lifecycle ---------------------------------------------------------
@@ -442,6 +570,7 @@ impl BunHost {
 
         match self.send_call("init", init_params, INIT_TIMEOUT).await {
             Ok(result) => {
+                let mut tool_sets = Vec::new();
                 if let Some(plugins) = result.get("plugins").and_then(Value::as_array) {
                     for plugin in plugins {
                         if let Some(error) = plugin.get("error").and_then(Value::as_str) {
@@ -452,9 +581,13 @@ impl BunHost {
                             self.logs
                                 .push("event", "error", &format!("{spec}: {error}"));
                         }
+                        if let Some(tool_set) = parse_plugin_tool_set(plugin) {
+                            tool_sets.push(tool_set);
+                        }
                     }
                 }
                 let mut inner = self.inner.lock().await;
+                inner.tools = tool_sets;
                 inner.crashes = 0;
                 Ok(())
             }
@@ -469,15 +602,13 @@ impl BunHost {
         let records = store::list_installed_plugins(&self.db)?;
         let mut items = Vec::new();
         for record in records {
-            if !record.enabled || !record.has_provider_entry {
+            // The Bun host loads a provider entry and/or an asynchronous
+            // gateway hook. A pure rquickjs middleware, a page or a panel has
+            // nothing to load here and must never start Bun.
+            if !record.enabled || !(record.has_provider_entry || record.contributions.has_hooks) {
                 continue;
             }
-            // A page-only package has no host part; starting Bun for it would
-            // load nothing and burn a runtime for a static folder.
             if record.is_page_only() {
-                continue;
-            }
-            if !matches!(record.kind, PluginKind::Provider | PluginKind::Both) {
                 continue;
             }
             let target = installer::plugin_target_path(&self.paths, &record);
@@ -489,11 +620,27 @@ impl BunHost {
                 );
                 continue;
             }
-            items.push(json!({
+            let mut item = json!({
                 "spec": record.spec,
                 "target": target.to_string_lossy(),
                 "options": record.options,
-            }));
+            });
+            if record.contributions.has_hooks {
+                match gateway_entry_path(&target, &record.contributions.hooks_entry) {
+                    Ok(hooks_path) => item["gateway"] = Value::String(hooks_path),
+                    Err(error) => {
+                        self.logs
+                            .push("event", "warn", &format!("{}: {error}", record.spec));
+                        // A hook-only item without its gateway file would make
+                        // `host.js` reject the package as "no OpenCode plugin
+                        // function", so leave it out entirely.
+                        if !record.has_provider_entry {
+                            continue;
+                        }
+                    }
+                }
+            }
+            items.push(item);
         }
         Ok(items)
     }
@@ -525,6 +672,7 @@ impl BunHost {
         if let Some(process) = inner.process.take() {
             process.alive.store(false, Ordering::SeqCst);
         }
+        inner.tools.clear();
         inner.last_error = Some(error.to_string());
         // A start that fails during `init` is as unusable as a crash; count
         // it so an always-failing plugin set cannot retry forever.
@@ -541,6 +689,7 @@ impl BunHost {
     /// Kill the host and start it again. Used after plugin changes and by the
     /// settings pane.
     pub async fn restart(&self) -> Result<(), String> {
+        self.refresh_gateway_hooks_flag();
         let _guard = self.start_lock.lock().await;
         {
             let mut inner = self.inner.lock().await;
@@ -551,6 +700,7 @@ impl BunHost {
             for (_, pending) in inner.pending.drain() {
                 pending.fail("The plugin host was restarted");
             }
+            inner.tools.clear();
             inner.crashes = 0;
             inner.circuit_open = false;
             inner.backoff_until = None;
@@ -563,6 +713,8 @@ impl BunHost {
     /// Restart only when the host is running: installing a plugin must not
     /// pay for a Bun download or start a host nobody asked for.
     pub async fn notify_plugins_changed(&self) -> Result<(), String> {
+        // The cached hooks flag belongs to the plugin list, not the process.
+        self.refresh_gateway_hooks_flag();
         let running = {
             let inner = self.inner.lock().await;
             inner
@@ -725,6 +877,60 @@ impl BunHost {
         })
     }
 
+    // ---- plugin tools -------------------------------------------------------
+
+    /// Whether any enabled plugin contributes host code at all. A page-only
+    /// or middleware-only installation must never start Bun just to list
+    /// tools it cannot have.
+    fn has_enabled_provider_plugin(&self) -> Result<bool, String> {
+        Ok(store::list_installed_plugins(&self.db)?
+            .into_iter()
+            .any(|record| record.enabled && record.has_provider_entry))
+    }
+
+    /// The tools the enabled provider plugins give, as cached from the host's
+    /// `init` reply. Returns an empty list without starting Bun when no
+    /// provider plugin is enabled.
+    pub async fn list_tools(&self) -> Result<Vec<PluginToolSet>, String> {
+        if !self.has_enabled_provider_plugin()? {
+            return Ok(Vec::new());
+        }
+        let running = {
+            let inner = self.inner.lock().await;
+            inner
+                .process
+                .as_ref()
+                .is_some_and(|process| process.alive.load(Ordering::SeqCst))
+        };
+        if !running {
+            self.ensure_running().await?;
+        }
+        Ok(self.inner.lock().await.tools.clone())
+    }
+
+    /// Run one plugin tool in the host. The host itself bounds the run with
+    /// `timeout_ms`; this call only has to outlive it.
+    pub async fn run_tool(
+        &self,
+        spec: &str,
+        name: &str,
+        args: Value,
+        timeout_ms: u64,
+        agent: Option<&str>,
+    ) -> Result<Value, String> {
+        self.call(
+            "tool",
+            json!({
+                "spec": spec,
+                "name": name,
+                "args": args,
+                "ms": timeout_ms,
+                "agent": agent.unwrap_or(""),
+            }),
+        )
+        .await
+    }
+
     // ---- provider-specific helpers ----------------------------------------
 
     pub async fn providers(&self, params: Value) -> Result<Value, String> {
@@ -757,6 +963,22 @@ impl BunHost {
 
     pub async fn sign_out(&self, params: Value) -> Result<Value, String> {
         self.call("signOut", params).await
+    }
+
+    /// Drop what the host cached of one account's sign-in (its loader and
+    /// auth), so the next request re-reads `plugin-auth.json`. This never
+    /// restarts the Bun process.
+    pub async fn reload_account(
+        &self,
+        provider: &str,
+        account: Option<&str>,
+    ) -> Result<(), String> {
+        self.call(
+            "reload",
+            json!({ "provider": provider, "account": account }),
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn usage(&self, params: Value) -> Result<Value, String> {
@@ -841,6 +1063,38 @@ impl BunHost {
     }
 }
 
+/// Whether the installed plugin list currently has an enabled package that
+/// contributes asynchronous gateway hooks.
+fn installed_gateway_hooks(db: &SqliteDbState) -> bool {
+    store::list_installed_plugins(db)
+        .map(|records| {
+            records.iter().any(|record| {
+                record.enabled
+                    && record.contributions.has_hooks
+                    && !record.contributions.hooks_entry.trim().is_empty()
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The absolute file `host.js` imports as a plugin's `gateway` entry.
+///
+/// A single-file hooks plugin is its own target; a package resolves
+/// `magpie.hooks` inside its folder, refusing paths that leave it.
+fn gateway_entry_path(target: &Path, hooks_entry: &str) -> Result<String, String> {
+    let path = if target.is_file() {
+        std::fs::canonicalize(target).map_err(|error| {
+            format!(
+                "Failed to resolve the hooks file '{}': {error}",
+                target.display()
+            )
+        })?
+    } else {
+        installer::resolve_hooks_entry(target, hooks_entry)?
+    };
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// Delay before the next automatic start, or `None` when the consecutive
 /// crash count opens the circuit.
 fn next_backoff(crashes: u32) -> Option<Duration> {
@@ -849,6 +1103,48 @@ fn next_backoff(crashes: u32) -> Option<Duration> {
     }
     let index = (crashes.saturating_sub(1) as usize).min(BACKOFF_SECONDS.len() - 1);
     Some(Duration::from_secs(BACKOFF_SECONDS[index]))
+}
+
+/// One plugin's `init` entry as a tool set: its `tools` array (name,
+/// description and the JSON Schema `host.js` calls `schema`). Entries with
+/// no tool are dropped so they never reach the MCP server.
+fn parse_plugin_tool_set(plugin: &Value) -> Option<PluginToolSet> {
+    let spec = plugin.get("spec").and_then(Value::as_str)?.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    let tools = plugin
+        .get("tools")?
+        .as_array()?
+        .iter()
+        .filter_map(|tool| {
+            let name = tool.get("name").and_then(Value::as_str)?.trim();
+            if name.is_empty() {
+                return None;
+            }
+            let description = tool
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let parameters = tool
+                .get("schema")
+                .filter(|schema| schema.is_object())
+                .cloned()
+                .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+            Some(PluginToolDef {
+                name: name.to_string(),
+                description: description.to_string(),
+                parameters,
+            })
+        })
+        .collect::<Vec<_>>();
+    if tools.is_empty() {
+        return None;
+    }
+    Some(PluginToolSet {
+        spec: spec.to_string(),
+        tools,
+    })
 }
 
 fn provider_options_map(db: &SqliteDbState) -> Value {
@@ -1109,6 +1405,7 @@ async fn on_process_gone(
     };
     logs.push("process", "error", &message);
     inner.last_error = Some(message.clone());
+    inner.tools.clear();
     match next_backoff(inner.crashes) {
         Some(backoff) => inner.backoff_until = Some(Instant::now() + backoff),
         None => {
@@ -1182,6 +1479,7 @@ pub fn redact_secrets(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::types::InstalledPluginRecord;
 
     fn test_host() -> (tempfile::TempDir, BunHost) {
         let root = tempfile::tempdir().unwrap();
@@ -1404,6 +1702,105 @@ mod tests {
         let mut line = Vec::new();
         let error = read_bounded_line(&mut reader, &mut line).await.unwrap_err();
         assert!(error.contains("longer than"), "{error}");
+    }
+
+    fn hooks_record(temp: &tempfile::TempDir, id: &str) -> InstalledPluginRecord {
+        let dir = temp.path().join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.hooks.js"), "export function onRequest() {}").unwrap();
+        InstalledPluginRecord {
+            id: id.to_string(),
+            spec: id.to_string(),
+            package_name: id.to_string(),
+            display_name: id.to_string(),
+            version: "1.0.0".to_string(),
+            kind: crate::plugins::types::PluginKind::Middleware,
+            enabled: true,
+            source_type: "local".to_string(),
+            local_path: dir.to_string_lossy().to_string(),
+            contributions: crate::plugins::types::PluginContributions {
+                has_hooks: true,
+                hooks_entry: "index.hooks.js".to_string(),
+                ..Default::default()
+            },
+            ..InstalledPluginRecord::default()
+        }
+    }
+
+    #[test]
+    fn the_gateway_hooks_flag_tracks_the_installed_plugin_list() {
+        let root = tempfile::tempdir().unwrap();
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let paths = PluginPaths::new(root.path());
+        let bun = Arc::new(BunRuntime::new(db.clone(), paths.clone()));
+        let host = BunHost::new(db.clone(), paths.clone(), bun);
+
+        // No hook plugin: the gateway pays one atomic read and nothing else.
+        assert!(!host.has_enabled_gateway_hooks());
+
+        store::upsert_installed_plugin(&db, &hooks_record(&root, "hooks-only")).unwrap();
+        host.refresh_gateway_hooks_flag();
+        assert!(host.has_enabled_gateway_hooks());
+
+        // A fresh host reads the list at construction too.
+        let other = BunHost::new(
+            db.clone(),
+            paths.clone(),
+            Arc::new(BunRuntime::new(db.clone(), paths.clone())),
+        );
+        assert!(other.has_enabled_gateway_hooks());
+
+        store::set_plugin_enabled(&db, "hooks-only", false).unwrap();
+        host.refresh_gateway_hooks_flag();
+        assert!(!host.has_enabled_gateway_hooks());
+    }
+
+    #[tokio::test]
+    async fn gateway_states_answers_without_starting_bun() {
+        let (_root, host) = test_host();
+        // Diagnostics come only from an already running host; asking for them
+        // must never spawn a process.
+        let states = host.gateway_states().await.unwrap();
+        assert_eq!(states, json!({}));
+        assert!(!host.status().await.running);
+    }
+
+    #[test]
+    fn host_items_carry_hook_only_packages_and_skip_ui_only_ones() {
+        let root = tempfile::tempdir().unwrap();
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let paths = PluginPaths::new(root.path());
+        let bun = Arc::new(BunRuntime::new(db.clone(), paths.clone()));
+        let host = BunHost::new(db.clone(), paths.clone(), bun);
+
+        store::upsert_installed_plugin(&db, &hooks_record(&root, "hooks-only")).unwrap();
+
+        // A page-only record contributes no host item.
+        store::upsert_installed_plugin(
+            &db,
+            &InstalledPluginRecord {
+                id: "page-only".to_string(),
+                spec: "page-only".to_string(),
+                package_name: "page-only".to_string(),
+                enabled: true,
+                source_type: "local".to_string(),
+                local_path: root.path().join("page-only").to_string_lossy().to_string(),
+                pages: vec![crate::plugins::types::PluginPageManifest {
+                    id: "default".to_string(),
+                    entry_file: "index.html".to_string(),
+                    ..Default::default()
+                }],
+                ..InstalledPluginRecord::default()
+            },
+        )
+        .unwrap();
+
+        let items = host.host_plugin_items().unwrap();
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item["spec"], "hooks-only");
+        let gateway = item["gateway"].as_str().expect("gateway path");
+        assert!(gateway.ends_with("index.hooks.js"), "{gateway}");
     }
 
     #[test]

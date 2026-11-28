@@ -82,6 +82,11 @@ aitoolbox plugin bun-probe <path>
 aitoolbox plugin host-status
 aitoolbox plugin host-restart
 aitoolbox plugin pages
+aitoolbox plugin tools
+aitoolbox plugin sync-tools-mcp
+aitoolbox plugin actions
+aitoolbox plugin panels
+aitoolbox plugin hooks
 ```
 
 - `plugin settings` 不带修改参数时是 GET，返回 `bunManualPath` / `npmRegistry` / `followAppProxy` / `providerAutoCheckin` / `autoUpdateEnabled` / `autoUpdateIntervalHours` / `lastAutoUpdateCheckAt`；带任一参数或 `--json-body` 时是 PUT，只更新传入字段（未传字段保留）。`--china-mirror true|false` 映射到 `https://registry.npmmirror.com` / `https://registry.npmjs.org`；`--clear-bun-path` 把 `bunManualPath` 置空，恢复自动探测。`lastAutoUpdateCheckAt` 由后端维护，`--json-body` 传入也不会覆盖；`autoUpdateIntervalHours` 由后端 clamp 到 1–720。
@@ -91,6 +96,10 @@ aitoolbox plugin pages
 - `plugin bun-status` / `plugin bun-probe <path>` 只读：分别查看当前 Bun 运行时来源与探测任意可执行文件；`plugin bun-ensure` 会下载/校验托管 Bun（L1，需要授权）。
 - `plugin host-status` 查看 Bun 宿主进程；`plugin host-restart` 是 L1 可逆写操作，会中断进行中的插件请求。
 - `plugin pages` 返回已启用插件的自定义页面清单（`pluginId`、`pageId`、`title`、`entryFile` 等），不签发页面 token。
+- `plugin tools` 返回已启用 Provider 插件通过 `tool` 钩子导出的工具清单，以及本机网关的 Streamable HTTP MCP 端点：`endpointUrl`（`/mcp/plugins`）、`aliasUrl`（`/mcp/magpie/tools`）、`gatewayRunning`、`mcpServerId` 和 `tools[]`（含 `mcpName`、`toolName`、`inputSchema`）。没有启用的 Provider 插件时返回空表且不会拉起 Bun。
+- `plugin sync-tools-mcp`（L1）在中央 MCP 管理里创建或刷新 HTTP server `ai-toolbox-plugins`，指向当前网关端口并触发 MCP 同步，返回 `{ "mcpServerId": "..." }`。网关端口变化后重新执行即可刷新。
+- `plugin actions` / `plugin panels` 分别返回已启用插件声明的 `magpie.actions` 菜单动作与 `magpie.panels` 内嵌面板注册表；只返回启用插件，不返回 token。
+- `plugin hooks` 返回异步 `magpie.hooks` 的诊断（`calls`、`failures`、`avgMillis`、`lastOutcome`、`lastBytes`）。Bun 宿主未运行时直接返回空表，不会为了诊断拉起进程。
 
 `link-cli` 的 JSON 与桌面「添加到 CLI」弹窗一致。`pluginSpec`、`providerId`、`cliKey` 必填，`displayName` 建议填写；URL 路径里的 provider 必须与 body 的 `providerId` 一致，否则 400：
 
@@ -276,7 +285,7 @@ aitoolbox gateway restore --cli <cliKey>
 
 授权请求会显示在桌面模态框：
 
-- L1（可逆写法）：新增/修改供应商、模型、配置、提示词、应用配置、切换网关主 Provider。
+- L1（可逆写法）：新增/修改供应商、模型、配置、提示词、应用配置、切换网关主 Provider、同步插件工具 MCP server。
 - L2（高风险）：删除供应商、停止网关、接管/恢复 CLI、卸载插件、远程安装插件、插件更新（会下载并执行新版本插件代码）。
 - `read_only` 模式下所有写操作直接返回 403；停止控制面或切到 `read_only` 时挂起弹窗会立即过期，CLI 得到退出码 4。
 - 不要尝试通过直接改 SQLite、CLI 配置文件或调用内部 IPC 来绕过授权。`control.json` 只在 §1.1 的降级场景中于内存内读取 `url`/`token`，不写回、不回显。授权是用户对信任边界的决定。
@@ -317,6 +326,11 @@ GET    /v1/plugins/settings
 PUT    /v1/plugins/settings
 POST   /v1/plugins/update
 GET    /v1/plugins/pages
+GET    /v1/plugins/tools
+POST   /v1/plugins/tools/sync-mcp
+GET    /v1/plugins/actions
+GET    /v1/plugins/panels
+GET    /v1/plugins/hooks
 GET    /v1/plugins/bun
 POST   /v1/plugins/bun/ensure
 POST   /v1/plugins/bun/probe

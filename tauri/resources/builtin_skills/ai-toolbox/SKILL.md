@@ -37,6 +37,7 @@ aitoolbox cli list --json
 - 已被网关接管的 CLI 不要手工 `restore` 再改供应商：直接 `provider update` / `provider apply` / `model add`，后端会恢复直连、写入、再按原模式重新接管。
 - 插件：`plugin install` → `plugin reload` → `plugin logs` / `plugin middleware` / `plugin accounts` → `plugin link-cli`；npm/GitHub 插件检查或升级用 `plugin update [id] [--check-only]`。
 - 插件运行环境：`plugin settings`（Bun 路径、npm registry、是否跟随应用代理、自动更新开关/间隔）、`plugin bun-status` / `plugin bun-ensure` / `plugin bun-probe <path>`、`plugin host-status` / `plugin host-restart`、`plugin pages`（自定义页面清单）。
+- 插件扩展与诊断：`plugin tools`（Provider 插件 `tool` 钩子导出的工具 + 网关 MCP 端点）、`plugin sync-tools-mcp`（同步到中央 MCP 管理，L1）、`plugin actions` / `plugin panels`（菜单动作与内嵌面板）、`plugin hooks`（异步 `magpie.hooks` 诊断）。
 - 每次写操作后做一次只读核对，不要只相信退出码。
 
 ### 1.4 授权与失败处理
@@ -65,10 +66,22 @@ aitoolbox cli list --json
 | 会话管理 | 浏览、搜索、重命名、导入、导出和删除各 CLI 的会话记录 | 各 CLI Tab 的会话区或 `Session` 入口 |
 | WSL / SSH 同步 | 把本机配置、MCP 和 Skills 同步到 WSL 或远程 SSH 主机 | `Settings` → WSL / SSH |
 | 备份恢复 | 本地、WebDAV、GitHub/Gitee 私有仓库备份，可加密、可自动执行 | `Settings` → 备份 |
-| 插件体系 | 安装、重载、检查更新和升级 Magpie / OpenCode 兼容插件，提供 Provider 渠道、Gateway 中间件和自定义页面 | `Plugins` / 插件中心，或 `aitoolbox plugin` |
+| 插件体系 | 安装、重载、检查更新和升级 Magpie / OpenCode 兼容插件；Provider 渠道（多账号、额度、签到、模型发现）、`rquickjs` 网关中间件与 `onAccount`、异步 `magpie.hooks`、`tool` 钩子到本机 MCP、自定义页面 / `magpie.actions` / `magpie.panels`，并用能力矩阵提示未支持项 | `Plugins` / 插件中心，或 `aitoolbox plugin` |
 | 本地控制 API | 让本机 Agent 通过 `127.0.0.1` + Bearer Token 调用同一套配置能力，写操作默认弹窗授权 | `Settings` → Agent 集成 |
 | 系统托盘 | 不打开主窗口即可切换常用供应商、模型、提示词、MCP 和 Skills | 托盘菜单 |
 | 深链接 | 通过 `aitoolbox://` 导入或分享供应商配置 | 浏览器 / 聊天应用 |
+
+插件扩展命令速览：
+
+```bash
+aitoolbox plugin tools           # Provider 插件导出的工具 + 网关 MCP 端点（/mcp/plugins）
+aitoolbox plugin sync-tools-mcp  # 创建/刷新中央 MCP server ai-toolbox-plugins（L1）
+aitoolbox plugin actions         # magpie.actions 菜单动作
+aitoolbox plugin panels          # magpie.panels 内嵌面板
+aitoolbox plugin hooks           # 异步 magpie.hooks 诊断（calls/failures/avgMillis）
+```
+
+安装插件时返回的 `contributions.unsupportedFeatures` 会列出本版本尚未消费的能力（`replaces` / `agent` / `privacyModels`）；这是明确提示，不是静默失效。开发细节见 `references/plugins.md`。
 
 ## 3. 常用操作
 

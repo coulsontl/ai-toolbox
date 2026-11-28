@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use bytes::Bytes;
@@ -27,9 +27,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value};
 
 use crate::coding::proxy_gateway::transformer::AiProtocol;
+use crate::db::SqliteDbState;
 
 use super::bun_host::auth::list_accounts;
 use super::bun_host::protocol::CapturedWireRequest;
+use super::store;
+use super::types::PluginAccountMetaRecord;
 use super::PluginManagerState;
 
 /// The body of a plugin fetch reply, in the shape the gateway forwards.
@@ -89,6 +92,28 @@ pub struct PluginModelInfo {
     pub id: String,
     pub name: String,
     pub npm: String,
+    /// The model's own API base URL, when it differs from the provider's.
+    pub url: String,
+    /// The vendor's own id for the model, when it differs from `id`.
+    pub api_id: String,
+    /// Other AI SDK packages the vendor serves this model on, besides `npm`.
+    pub also: Vec<String>,
+    /// Every kind of output the model declared (`text`, `image`, ...).
+    pub outputs: Vec<String>,
+    /// Whether the plugin actually said what the model outputs. A model that
+    /// said nothing is treated as chat-capable.
+    pub outputs_said: bool,
+}
+
+/// Whether a model can serve a chat CLI. Models that never declared their
+/// output kinds keep the old behaviour; a model that declared them must list
+/// `text` somewhere.
+pub fn model_supports_chat(model: &PluginModelInfo) -> bool {
+    !model.outputs_said
+        || model
+            .outputs
+            .iter()
+            .any(|output| output.eq_ignore_ascii_case("text"))
 }
 
 /// Everything the gateway needs to talk to one plugin provider.
@@ -101,6 +126,9 @@ pub struct PluginProviderEndpoint {
     pub base_url: String,
     pub npm: String,
     pub target_protocol: AiProtocol,
+    /// The vendor's own id for the requested model, when it differs from the
+    /// public id the CLI asked for. Upstream requests must carry this value.
+    pub upstream_model_id: Option<String>,
     pub models: Vec<PluginModelInfo>,
 }
 
@@ -129,6 +157,12 @@ pub struct PluginFetchReply {
 }
 
 const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
+/// Bounds `Retry-After` so a broken header can neither thrash nor park an
+/// account for longer than an hour.
+const RETRY_AFTER_MIN: Duration = Duration::from_secs(5);
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(3600);
+/// How long an account whose sign-in the host marked `expired` is skipped.
+const EXPIRED_SIGN_IN_COOLDOWN: Duration = Duration::from_secs(300);
 const PROVIDER_CACHE_TTL: Duration = Duration::from_secs(60);
 /// Upper bound on account switches for one logical request (429 only).
 const MAX_ACCOUNT_SWITCHES: usize = 4;
@@ -207,13 +241,19 @@ impl PluginAccountRouter {
 
     /// Cool an account down after the upstream answered 429.
     pub fn mark_rate_limited(&self, provider_id: &str, account: &str) {
+        self.mark_rate_limited_for(provider_id, account, RATE_LIMIT_COOLDOWN);
+    }
+
+    /// Cool an account down for an explicit duration (a `Retry-After`, or a
+    /// sign-in the host marked expired).
+    pub fn mark_rate_limited_for(&self, provider_id: &str, account: &str, duration: Duration) {
         let mut cooldowns = self
             .cooldowns
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         cooldowns.insert(
             cooldown_key(provider_id, account),
-            Instant::now() + RATE_LIMIT_COOLDOWN,
+            Instant::now() + duration,
         );
     }
 
@@ -235,6 +275,103 @@ impl PluginAccountRouter {
 
 fn cooldown_key(provider_id: &str, account: &str) -> String {
     format!("{provider_id}\u{1}{account}")
+}
+
+/// Whether an account's cached quota snapshot says it has nothing left to
+/// spend. Deliberately conservative: only an explicit full window (or a
+/// non-positive balance) counts, so a plugin's partial or unfamiliar shape
+/// never sidelines a working account.
+pub fn is_quota_exhausted(quota: &Value, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let Some(object) = quota.as_object() else {
+        return false;
+    };
+    if let Some(windows) = object
+        .get("windows")
+        .and_then(Value::as_array)
+        .filter(|windows| !windows.is_empty())
+    {
+        return windows
+            .iter()
+            .any(|window| quota_window_exhausted(window, now));
+    }
+    let Some(balance) = object.get("balance") else {
+        return false;
+    };
+    if let Some(balance) = balance.as_f64() {
+        return balance <= 0.0;
+    }
+    let Some(balance) = balance.as_str() else {
+        return false;
+    };
+    matches!(balance.trim(), "0" | "$0" | "$0.00")
+}
+
+/// One usage window. `used` is a percentage (0–100) of the window, exactly as
+/// `host.js` documents it; `limit` is the window's own amount in its unit and
+/// is not `used`'s denominator. A window marked `aside` never sidelines the
+/// account, and one whose reset moment already passed (or carries an
+/// unreadable one) is not evidence.
+fn quota_window_exhausted(window: &Value, now: chrono::DateTime<chrono::Utc>) -> bool {
+    let Some(window) = window.as_object() else {
+        return false;
+    };
+    if window.get("aside").and_then(Value::as_bool) == Some(true) {
+        return false;
+    }
+    if let Some(resets_at) = window.get("resetsAt").filter(|value| !value.is_null()) {
+        let Some(resets_at) = resets_at
+            .as_str()
+            .and_then(|text| chrono::DateTime::parse_from_rfc3339(text).ok())
+            .map(|resets_at| resets_at.with_timezone(&chrono::Utc))
+        else {
+            return false;
+        };
+        if resets_at <= now {
+            return false;
+        }
+    }
+    let Some(used) = window.get("used").and_then(Value::as_f64) else {
+        return false;
+    };
+    used >= 100.0
+}
+
+/// Split candidate account keys into the ones whose cached quota is not
+/// exhausted. When every candidate looks exhausted the full list is returned:
+/// a stale snapshot must never leave the router without an account to try.
+pub fn preferred_account_candidates(
+    db: &SqliteDbState,
+    provider_id: &str,
+    candidates: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<String> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let metas = store::list_account_metas(db).unwrap_or_default();
+    let healthy = candidates
+        .iter()
+        .filter(|account| !account_quota_exhausted(&metas, provider_id, account, now))
+        .cloned()
+        .collect::<Vec<_>>();
+    if healthy.is_empty() {
+        candidates.to_vec()
+    } else {
+        healthy
+    }
+}
+
+fn account_quota_exhausted(
+    metas: &[PluginAccountMetaRecord],
+    provider_id: &str,
+    account: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    metas.iter().any(|meta| {
+        meta.id == account
+            && (meta.provider_id.trim().is_empty() || meta.provider_id == provider_id)
+            && is_quota_exhausted(&meta.quota, now)
+    })
 }
 
 /// Provider rows fetched from the host plus a short-lived cache.
@@ -265,6 +402,13 @@ impl PluginGatewayState {
             .clear();
     }
 
+    /// The last provider listing, without asking the host. Background
+    /// maintenance reads `renewLead` from here so it never starts Bun just to
+    /// learn a renewal window.
+    pub fn cached_provider_rows(&self) -> Vec<PluginProviderRow> {
+        self.cached_rows("providers").unwrap_or_default()
+    }
+
     fn cached_rows(&self, key: &str) -> Option<Vec<PluginProviderRow>> {
         let cache = self
             .provider_cache
@@ -293,6 +437,18 @@ pub struct PluginProviderRow {
     pub api: String,
     pub npm: String,
     pub models: Vec<PluginModelInfo>,
+    /// Account keys in the host's display order.
+    pub accounts: Vec<String>,
+    /// Per-account model ids, when the plugin lists each account separately.
+    pub account_models: HashMap<String, Vec<String>>,
+    /// The channel only ever uses one account.
+    pub single: bool,
+    /// The plugin's sign-ins are renewed in the background.
+    pub renews: bool,
+    /// The lead window the plugin asks for before expiry.
+    pub renew_lead_ms: Option<i64>,
+    /// The vendor spends a refresh token once, so never copy the sign-in.
+    pub rotating: bool,
 }
 
 /// List every provider the installed plugins expose, cached briefly.
@@ -306,10 +462,55 @@ pub async fn list_plugin_provider_rows(
             return Ok(rows);
         }
     }
-    let listing = manager.host().providers(json!({})).await?;
+    let params = provider_listing_params(manager).await?;
+    let listing = manager.host().providers(params).await?;
     let rows = parse_provider_rows(&listing);
     state.store_rows("providers".to_string(), rows.clone());
     Ok(rows)
+}
+
+/// The params the host's `providers` RPC takes. `proxies` is keyed by
+/// provider id and then by account key (`""` covers every account), so one
+/// entry per declared provider is enough.
+pub async fn provider_listing_params(manager: &PluginManagerState) -> Result<Value, String> {
+    let proxy = manager.proxy_url().await?;
+    let mut proxies = JsonMap::new();
+    if !proxy.trim().is_empty() {
+        for record in super::store::list_installed_plugins(manager.db())? {
+            for provider in record.providers {
+                proxies
+                    .entry(provider)
+                    .or_insert_with(|| json!({ "": proxy }));
+            }
+        }
+        // A legacy package may not declare `magpie.providers`; the previous
+        // listing still knows the ids it exposed.
+        for row in manager.gateway().cached_provider_rows() {
+            proxies
+                .entry(row.id)
+                .or_insert_with(|| json!({ "": proxy }));
+        }
+    }
+    if proxies.is_empty() {
+        Ok(json!({}))
+    } else {
+        Ok(json!({ "proxies": proxies }))
+    }
+}
+
+/// The proxy a plugin host call should use: an explicit caller override wins,
+/// otherwise the app proxy the plugin settings follow (empty = direct).
+pub async fn effective_proxy(
+    manager: &PluginManagerState,
+    explicit: Option<String>,
+) -> Result<String, String> {
+    match explicit
+        .map(|proxy| proxy.trim().to_string())
+        .filter(|proxy| !proxy.is_empty())
+    {
+        Some(proxy) => Ok(proxy),
+        None => manager.proxy_url().await,
+    }
 }
 
 fn parse_provider_rows(listing: &Value) -> Vec<PluginProviderRow> {
@@ -332,11 +533,41 @@ fn parse_provider_rows(listing: &Value) -> Vec<PluginProviderRow> {
                                 id: model_id,
                                 name: json_text(model.get("name")).unwrap_or_default(),
                                 npm: json_text(model.get("npm")).unwrap_or_default(),
+                                url: json_text(model.get("url")).unwrap_or_default(),
+                                api_id: json_text(model.get("apiId")).unwrap_or_default(),
+                                also: json_string_array(model.get("also")),
+                                outputs: json_string_array(model.get("outputs")),
+                                outputs_said: model
+                                    .get("outputsSaid")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false),
                             })
                         })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            let accounts = entry
+                .get("accounts")
+                .and_then(Value::as_array)
+                .map(|accounts| {
+                    accounts
+                        .iter()
+                        .filter_map(|account| json_text(account.get("key")))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let mut account_models = HashMap::new();
+            if let Some(accounts) = entry.get("accounts").and_then(Value::as_array) {
+                for account in accounts {
+                    let Some(key) = json_text(account.get("key")) else {
+                        continue;
+                    };
+                    let per_account = json_string_array(account.get("models"));
+                    if !per_account.is_empty() {
+                        account_models.insert(key, per_account);
+                    }
+                }
+            }
             Some(PluginProviderRow {
                 id,
                 spec: json_text(entry.get("spec")).unwrap_or_default(),
@@ -344,6 +575,27 @@ fn parse_provider_rows(listing: &Value) -> Vec<PluginProviderRow> {
                 api: json_text(entry.get("api")).unwrap_or_default(),
                 npm: json_text(entry.get("npm")).unwrap_or_default(),
                 models,
+                accounts,
+                account_models,
+                single: entry
+                    .get("single")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                renews: entry
+                    .get("renews")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                renew_lead_ms: entry
+                    .get("renewLead")
+                    .and_then(|lead| {
+                        lead.as_i64()
+                            .or_else(|| lead.as_f64().map(|lead| lead.round() as i64))
+                    })
+                    .filter(|lead| *lead >= 0),
+                rotating: entry
+                    .get("rotating")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             })
         })
         .collect()
@@ -352,6 +604,18 @@ fn parse_provider_rows(listing: &Value) -> Vec<PluginProviderRow> {
 fn json_text(value: Option<&Value>) -> Option<String> {
     let text = value?.as_str()?.trim();
     (!text.is_empty()).then(|| text.to_string())
+}
+
+fn json_string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Resolve one plugin provider from the host listing.
@@ -400,19 +664,32 @@ fn endpoint_from_row(
     requested_model: &str,
     fallback_protocol: AiProtocol,
 ) -> Result<PluginProviderEndpoint, String> {
-    let base_url = row.api.trim().trim_end_matches('/').to_string();
+    let model = row.models.iter().find(|model| model.id == requested_model);
+    // A model may be served on a different API base than its provider, and
+    // the host reports that as `model.url`.
+    let base_url = model
+        .map(|model| model.url.trim())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| row.api.trim())
+        .trim_end_matches('/')
+        .to_string();
     if base_url.is_empty() {
         return Err(format!(
             "Plugin provider '{}' does not declare an API base URL",
             row.id
         ));
     }
-    let model = row.models.iter().find(|model| model.id == requested_model);
     let npm = model
         .map(|model| model.npm.clone())
         .filter(|npm| !npm.trim().is_empty())
         .unwrap_or_else(|| row.npm.clone());
     let target_protocol = npm_to_ai_protocol(&npm).unwrap_or(fallback_protocol);
+    // A model may be public under one id while the vendor serves it under
+    // another (`api.id`); the gateway must send the vendor's id upstream.
+    let upstream_model_id = model.and_then(|model| {
+        let api_id = model.api_id.trim();
+        (!api_id.is_empty() && api_id != model.id).then(|| api_id.to_string())
+    });
     Ok(PluginProviderEndpoint {
         provider_id: row.id.clone(),
         plugin_spec: row.spec.clone(),
@@ -420,8 +697,48 @@ fn endpoint_from_row(
         base_url,
         npm,
         target_protocol,
+        upstream_model_id,
         models: row.models.clone(),
     })
+}
+
+/// The models a coding CLI may be offered: chat-capable ones only, and for a
+/// single-account channel narrowed to that account's own list when the
+/// plugin lists models per account.
+pub fn models_for_cli(
+    row: &PluginProviderRow,
+    strategy: PluginAccountStrategy,
+    pinned_account: Option<&str>,
+) -> Vec<PluginModelInfo> {
+    let mut models = row
+        .models
+        .iter()
+        .filter(|model| model_supports_chat(model))
+        .cloned()
+        .collect::<Vec<_>>();
+    if strategy == PluginAccountStrategy::Single {
+        if let Some(allowed) = account_model_ids(row, pinned_account) {
+            models.retain(|model| allowed.iter().any(|id| id == &model.id));
+        }
+    }
+    models
+}
+
+/// The model ids the single selected account serves, when the plugin lists
+/// them. `pinned_account` wins; otherwise the first listed account that has
+/// its own list is used, mirroring the host's single-account order.
+fn account_model_ids<'a>(
+    row: &'a PluginProviderRow,
+    pinned_account: Option<&str>,
+) -> Option<&'a Vec<String>> {
+    if let Some(pinned) = pinned_account {
+        // The pinned account is the one that will serve requests: when the
+        // plugin gives it no list of its own, the provider's union is right.
+        return row.account_models.get(pinned);
+    }
+    row.accounts
+        .iter()
+        .find_map(|key| row.account_models.get(key))
 }
 
 /// The enabled account keys of one plugin provider, in display order.
@@ -450,11 +767,17 @@ pub fn select_plugin_account(
     reference: &PluginProviderRef,
 ) -> String {
     let candidates = enabled_accounts(manager, &reference.provider_id).unwrap_or_default();
+    let selectable = preferred_account_candidates(
+        manager.db(),
+        &reference.provider_id,
+        &candidates,
+        chrono::Utc::now(),
+    );
     manager.gateway().accounts.select(
         &reference.provider_id,
         reference.account_strategy,
         reference.account_key.as_deref(),
-        &candidates,
+        &selectable,
     )
 }
 
@@ -510,6 +833,15 @@ pub async fn send_via_plugin_host_with_capture(
 ) -> Result<PluginFetchReply, String> {
     let capture = capture.filter(|capture| capture.headers || capture.body);
     let candidates = enabled_accounts(manager, &reference.provider_id)?;
+    // Rotation prefers accounts whose cached quota is not used up; a fresh
+    // snapshot is not required — the persisted one is the conservative guess
+    // until the next `usage` call replaces it.
+    let selectable = preferred_account_candidates(
+        manager.db(),
+        &reference.provider_id,
+        &candidates,
+        chrono::Utc::now(),
+    );
     let mut account = initial_account.to_string();
     let mut switches_left = if reference.account_strategy == PluginAccountStrategy::AutoRotate {
         candidates.len().clamp(1, MAX_ACCOUNT_SWITCHES)
@@ -517,6 +849,7 @@ pub async fn send_via_plugin_host_with_capture(
         0
     };
     let mut reloaded = false;
+    let session = session_from_headers(headers);
 
     loop {
         let mut params = json!({
@@ -534,36 +867,74 @@ pub async fn send_via_plugin_host_with_capture(
             if let Some(capture) = capture_request_json(capture.as_ref()) {
                 object.insert("captureRequest".to_string(), capture);
             }
+            if let Some(session) = session {
+                object.insert("session".to_string(), Value::String(session.to_string()));
+            }
         }
         let response = manager.host().fetch(params).await?;
 
-        if response.status == 401
-            && reference.account_strategy == PluginAccountStrategy::AutoRotate
-            && !reloaded
-        {
-            // The account was renewed on disk after the host cached it. One
-            // restart makes the host re-read `plugin-auth.json`; retry the
-            // same account rather than burning the whole rotation.
-            reloaded = true;
-            drop(response.body);
-            manager.host().restart().await?;
-            continue;
+        if response.status == 401 {
+            let sign_in = header_value(&response.headers, "x-magpie-sign-in");
+            if sign_in.is_some_and(|said| said.eq_ignore_ascii_case("expired")) {
+                // The host already judged this account's sign-in dead. Do not
+                // retry it: park it briefly and, in rotation mode, move on to
+                // another account.
+                manager.gateway().accounts.mark_rate_limited_for(
+                    &reference.provider_id,
+                    &account,
+                    EXPIRED_SIGN_IN_COOLDOWN,
+                );
+                if reference.account_strategy == PluginAccountStrategy::AutoRotate
+                    && switches_left > 0
+                {
+                    switches_left -= 1;
+                    let next = manager.gateway().accounts.select(
+                        &reference.provider_id,
+                        reference.account_strategy,
+                        reference.account_key.as_deref(),
+                        &selectable,
+                    );
+                    if next != account {
+                        drop(response.body);
+                        account = next;
+                        continue;
+                    }
+                }
+            } else if !reloaded {
+                // The account was renewed on disk after the host cached it.
+                // Clearing this account's loader/auth cache makes the host
+                // re-read `plugin-auth.json` on the retry; the whole Bun
+                // process must keep running.
+                reloaded = true;
+                drop(response.body);
+                if let Err(error) = manager
+                    .host()
+                    .reload_account(&reference.provider_id, Some(&account))
+                    .await
+                {
+                    log::debug!("reloading plugin account '{account}' after a 401 failed: {error}");
+                }
+                continue;
+            }
         }
 
         if response.status == 429
             && reference.account_strategy == PluginAccountStrategy::AutoRotate
             && switches_left > 0
         {
-            manager
-                .gateway()
-                .accounts
-                .mark_rate_limited(&reference.provider_id, &account);
+            let cooldown = parse_retry_after(&response.headers, SystemTime::now())
+                .unwrap_or(RATE_LIMIT_COOLDOWN);
+            manager.gateway().accounts.mark_rate_limited_for(
+                &reference.provider_id,
+                &account,
+                cooldown,
+            );
             switches_left -= 1;
             let next = manager.gateway().accounts.select(
                 &reference.provider_id,
                 reference.account_strategy,
                 reference.account_key.as_deref(),
-                &candidates,
+                &selectable,
             );
             if next != account {
                 drop(response.body);
@@ -585,6 +956,47 @@ pub async fn send_via_plugin_host_with_capture(
             wire_request: response.wire_request,
         });
     }
+}
+
+/// The `Retry-After` of a plugin reply, as a cooldown. Accepts decimal
+/// seconds and an HTTP-date, and clamps to 5s..=1h.
+pub fn parse_retry_after(headers: &[(String, String)], now: SystemTime) -> Option<Duration> {
+    let raw = header_value(headers, "retry-after")?;
+    let duration = if let Ok(seconds) = raw.parse::<u64>() {
+        Duration::from_secs(seconds)
+    } else {
+        let at = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+        let now = chrono::DateTime::<chrono::Utc>::from(now);
+        Duration::from_secs(at.signed_duration_since(now).num_seconds().max(0) as u64)
+    };
+    Some(duration.clamp(RETRY_AFTER_MIN, RETRY_AFTER_MAX))
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(header, _)| header.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+/// A session identifier the host may hand to `chat.headers` hooks. Only
+/// well-known session headers are read; nothing else from the request is
+/// forwarded as a session.
+fn session_from_headers(headers: &HeaderMap) -> Option<&str> {
+    const SESSION_HEADERS: [&str; 4] = [
+        "x-magpie-session",
+        "x-claude-code-session-id",
+        "x-session-id",
+        "session_id",
+    ];
+    SESSION_HEADERS.iter().find_map(|name| {
+        headers
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
 }
 
 /// Request headers forwarded to the host. Inbound placeholder credentials are
@@ -786,6 +1198,152 @@ mod tests {
         assert!(accounts.contains(&selected));
     }
 
+    fn quota_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339("2026-11-28T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn quota_windows_mark_only_full_unreset_accounts() {
+        let now = quota_now();
+        // `used` is a percentage: 100% is exhausted even without a limit.
+        assert!(is_quota_exhausted(
+            &json!({ "windows": [{ "used": 100 }] }),
+            now
+        ));
+        assert!(is_quota_exhausted(
+            &json!({ "windows": [{ "used": 120 }] }),
+            now
+        ));
+        // `limit` is the window's own amount, never `used`'s denominator:
+        // 50% of 10 credits still has half its allowance left.
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 50, "limit": 10 }] }),
+            now
+        ));
+        // Full and not reset yet.
+        assert!(is_quota_exhausted(
+            &json!({ "windows": [{ "used": 100, "resetsAt": "2026-11-29T00:00:00Z" }] }),
+            now
+        ));
+        // The reset moment already passed: the snapshot is stale.
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 100, "resetsAt": "2026-11-27T00:00:00Z" }] }),
+            now
+        ));
+        // An unreadable reset is not evidence either.
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 100, "resetsAt": "soon" }] }),
+            now
+        ));
+        // `aside` windows never stop the account, even at 100%.
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 100, "aside": true }] }),
+            now
+        ));
+        assert!(is_quota_exhausted(
+            &json!({ "windows": [{ "used": 100, "aside": false }] }),
+            now
+        ));
+        // Room left.
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 99 }] }),
+            now
+        ));
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 99, "limit": 100 }] }),
+            now
+        ));
+    }
+
+    #[test]
+    fn quota_balances_apply_only_without_windows() {
+        let now = quota_now();
+        assert!(is_quota_exhausted(&json!({ "balance": 0 }), now));
+        assert!(is_quota_exhausted(&json!({ "balance": -3.5 }), now));
+        assert!(is_quota_exhausted(&json!({ "balance": "0" }), now));
+        assert!(is_quota_exhausted(&json!({ "balance": "$0" }), now));
+        assert!(is_quota_exhausted(&json!({ "balance": "$0.00" }), now));
+        assert!(!is_quota_exhausted(&json!({ "balance": 1.5 }), now));
+        assert!(!is_quota_exhausted(&json!({ "balance": "$1.00" }), now));
+        // Empty windows are no valid windows, so the balance decides.
+        assert!(is_quota_exhausted(
+            &json!({ "windows": [], "balance": 0 }),
+            now
+        ));
+        // A non-empty window list always wins over the balance.
+        assert!(!is_quota_exhausted(
+            &json!({ "windows": [{ "used": 1, "limit": 100 }], "balance": 0 }),
+            now
+        ));
+    }
+
+    #[test]
+    fn quota_shapes_that_are_not_objects_are_ignored() {
+        let now = quota_now();
+        assert!(!is_quota_exhausted(&json!({}), now));
+        assert!(!is_quota_exhausted(&json!(null), now));
+        assert!(!is_quota_exhausted(&json!("0"), now));
+        assert!(!is_quota_exhausted(&json!([{ "used": 100 }]), now));
+    }
+
+    #[tokio::test]
+    async fn quota_exhausted_accounts_are_rotated_out() {
+        let root = tempfile::tempdir().unwrap();
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let manager = crate::plugins::PluginManager::new(db.clone(), root.path().to_path_buf());
+        manager.paths().ensure_dirs().unwrap();
+        std::fs::write(
+            manager.paths().auth_path(),
+            json!({
+                "demo": { "type": "oauth", "access": "one" },
+                "demo#2": { "type": "oauth", "access": "two" },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        store::upsert_account_meta(
+            &db,
+            &PluginAccountMetaRecord {
+                id: "demo".to_string(),
+                plugin_id: "demo-plugin".to_string(),
+                provider_id: "demo".to_string(),
+                quota: json!({
+                    "windows": [{ "used": 100, "limit": 100, "resetsAt": "2999-01-01T00:00:00Z" }],
+                }),
+                ..PluginAccountMetaRecord::default()
+            },
+        )
+        .unwrap();
+
+        let reference = PluginProviderRef {
+            plugin_spec: "demo-plugin".to_string(),
+            provider_id: "demo".to_string(),
+            account_key: None,
+            account_strategy: PluginAccountStrategy::AutoRotate,
+        };
+        // The exhausted account is never selected while a healthy one exists,
+        // even across the round-robin cursor.
+        for _ in 0..4 {
+            assert_eq!(select_plugin_account(&manager, &reference), "demo#2");
+        }
+
+        // With only the exhausted account left, it is still attempted rather
+        // than failing locally.
+        store::upsert_account_meta(
+            &db,
+            &PluginAccountMetaRecord {
+                id: "demo#2".to_string(),
+                plugin_id: "demo-plugin".to_string(),
+                enabled: false,
+                ..PluginAccountMetaRecord::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(select_plugin_account(&manager, &reference), "demo");
+    }
+
     #[test]
     fn single_strategy_pins_or_falls_back_to_the_first_account() {
         let router = PluginAccountRouter::new();
@@ -831,7 +1389,9 @@ mod tests {
                 id: "claude-x".to_string(),
                 name: "Claude X".to_string(),
                 npm: "@ai-sdk/anthropic".to_string(),
+                ..PluginModelInfo::default()
             }],
+            ..PluginProviderRow::default()
         };
         let endpoint =
             endpoint_from_row(&row, "claude-x", AiProtocol::OpenAiChat).expect("endpoint");
@@ -840,5 +1400,240 @@ mod tests {
 
         let fallback = endpoint_from_row(&row, "other", AiProtocol::OpenAiChat).expect("endpoint");
         assert_eq!(fallback.target_protocol, AiProtocol::OpenAiChat);
+    }
+
+    #[test]
+    fn endpoint_carries_the_vendor_api_id_of_the_requested_model() {
+        let row = PluginProviderRow {
+            id: "demo".to_string(),
+            spec: "demo-plugin".to_string(),
+            api: "https://api.example.com/v1".to_string(),
+            npm: "@ai-sdk/openai-compatible".to_string(),
+            models: vec![
+                PluginModelInfo {
+                    id: "public-alias".to_string(),
+                    api_id: "vendor-model".to_string(),
+                    ..PluginModelInfo::default()
+                },
+                PluginModelInfo {
+                    id: "same-id".to_string(),
+                    api_id: "same-id".to_string(),
+                    ..PluginModelInfo::default()
+                },
+                PluginModelInfo {
+                    id: "no-api-id".to_string(),
+                    ..PluginModelInfo::default()
+                },
+            ],
+            ..PluginProviderRow::default()
+        };
+
+        let endpoint =
+            endpoint_from_row(&row, "public-alias", AiProtocol::OpenAiChat).expect("endpoint");
+        assert_eq!(endpoint.upstream_model_id.as_deref(), Some("vendor-model"));
+
+        // A model whose api.id is its public id needs no rewrite.
+        let endpoint =
+            endpoint_from_row(&row, "same-id", AiProtocol::OpenAiChat).expect("endpoint");
+        assert_eq!(endpoint.upstream_model_id, None);
+
+        let endpoint =
+            endpoint_from_row(&row, "no-api-id", AiProtocol::OpenAiChat).expect("endpoint");
+        assert_eq!(endpoint.upstream_model_id, None);
+    }
+
+    fn model(id: &str, outputs_said: bool, outputs: &[&str]) -> PluginModelInfo {
+        PluginModelInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            outputs: outputs.iter().map(|output| output.to_string()).collect(),
+            outputs_said,
+            ..PluginModelInfo::default()
+        }
+    }
+
+    #[test]
+    fn a_model_url_overrides_the_provider_api_base() {
+        let row = PluginProviderRow {
+            id: "demo".to_string(),
+            spec: "demo-plugin".to_string(),
+            api: "https://api.example.com/v1".to_string(),
+            npm: "@ai-sdk/openai-compatible".to_string(),
+            models: vec![PluginModelInfo {
+                id: "vision-model".to_string(),
+                url: "https://media.example.com/v2/".to_string(),
+                ..PluginModelInfo::default()
+            }],
+            ..PluginProviderRow::default()
+        };
+        let endpoint =
+            endpoint_from_row(&row, "vision-model", AiProtocol::OpenAiChat).expect("endpoint");
+        assert_eq!(endpoint.base_url, "https://media.example.com/v2");
+
+        // A model without its own URL keeps the provider base.
+        let endpoint = endpoint_from_row(&row, "other", AiProtocol::OpenAiChat).expect("endpoint");
+        assert_eq!(endpoint.base_url, "https://api.example.com/v1");
+    }
+
+    #[test]
+    fn chat_models_skip_declared_non_chat_outputs() {
+        assert!(model_supports_chat(&model("chat", false, &[])));
+        assert!(model_supports_chat(&model(
+            "chat",
+            true,
+            &["text", "image"]
+        )));
+        assert!(model_supports_chat(&model("chat", true, &["TEXT"])));
+        assert!(!model_supports_chat(&model("image", true, &["image"])));
+
+        let row = PluginProviderRow {
+            id: "demo".to_string(),
+            models: vec![
+                model("chat", true, &["text"]),
+                model("image", true, &["image"]),
+                model("unsaid", false, &[]),
+            ],
+            ..PluginProviderRow::default()
+        };
+        let models = models_for_cli(&row, PluginAccountStrategy::AutoRotate, None);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["chat", "unsaid"]
+        );
+    }
+
+    #[test]
+    fn a_single_account_narrows_models_to_its_own_list() {
+        let row = PluginProviderRow {
+            id: "demo".to_string(),
+            models: vec![
+                model("alpha", true, &["text"]),
+                model("beta", true, &["text"]),
+                model("gamma", true, &["text"]),
+            ],
+            accounts: vec!["demo".to_string(), "demo#2".to_string()],
+            account_models: HashMap::from([
+                ("demo".to_string(), vec!["alpha".to_string()]),
+                ("demo#2".to_string(), vec!["beta".to_string()]),
+            ]),
+            ..PluginProviderRow::default()
+        };
+
+        let pinned = models_for_cli(&row, PluginAccountStrategy::Single, Some("demo#2"));
+        assert_eq!(
+            pinned
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["beta"]
+        );
+
+        // No pinned key: the first listed account with its own list wins.
+        let first = models_for_cli(&row, PluginAccountStrategy::Single, None);
+        assert_eq!(
+            first
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha"]
+        );
+
+        // Rotation keeps the union.
+        let union = models_for_cli(&row, PluginAccountStrategy::AutoRotate, Some("demo"));
+        assert_eq!(union.len(), 3);
+    }
+
+    #[test]
+    fn parse_retry_after_accepts_seconds_dates_and_clamps() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let header = |value: &str| vec![("retry-after".to_string(), value.to_string())];
+
+        assert_eq!(
+            parse_retry_after(&header("120"), now),
+            Some(Duration::from_secs(120))
+        );
+        // Anything shorter than five seconds is raised to five.
+        assert_eq!(
+            parse_retry_after(&header("0"), now),
+            Some(Duration::from_secs(5))
+        );
+        // Anything longer than an hour is capped.
+        assert_eq!(
+            parse_retry_after(&header("86400"), now),
+            Some(Duration::from_secs(3600))
+        );
+
+        let at = chrono::DateTime::<chrono::Utc>::from(now) + chrono::Duration::seconds(90);
+        assert_eq!(
+            parse_retry_after(&header(&at.to_rfc2822()), now),
+            Some(Duration::from_secs(90))
+        );
+        let past = chrono::DateTime::<chrono::Utc>::from(now) - chrono::Duration::seconds(90);
+        assert_eq!(
+            parse_retry_after(&header(&past.to_rfc2822()), now),
+            Some(Duration::from_secs(5))
+        );
+
+        assert_eq!(parse_retry_after(&header("soon"), now), None);
+        assert_eq!(parse_retry_after(&[], now), None);
+    }
+
+    #[test]
+    fn provider_rows_carry_the_hosts_account_and_renewal_facts() {
+        let rows = parse_provider_rows(&json!([{
+            "id": "demo",
+            "spec": "demo-plugin",
+            "name": "Demo",
+            "api": "https://api.example.com",
+            "npm": "@ai-sdk/openai-compatible",
+            "single": true,
+            "renews": true,
+            "renewLead": 900000,
+            "rotating": true,
+            "accounts": [
+                { "key": "demo", "models": ["alpha"] },
+                { "key": "demo#2" },
+                { "key": "demo#3", "models": [] }
+            ],
+            "models": [{
+                "id": "alpha",
+                "name": "Alpha",
+                "npm": "",
+                "url": "https://alpha.example.com/v1",
+                "apiId": "vendor-alpha",
+                "also": ["@ai-sdk/anthropic"],
+                "outputs": ["text"],
+                "outputsSaid": true
+            }]
+        }]));
+
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert!(row.single);
+        assert!(row.renews);
+        assert_eq!(row.renew_lead_ms, Some(900_000));
+        assert!(row.rotating);
+        assert_eq!(
+            row.accounts,
+            vec![
+                "demo".to_string(),
+                "demo#2".to_string(),
+                "demo#3".to_string()
+            ]
+        );
+        assert_eq!(
+            row.account_models.get("demo"),
+            Some(&vec!["alpha".to_string()])
+        );
+        assert!(!row.account_models.contains_key("demo#2"));
+        assert!(!row.account_models.contains_key("demo#3"));
+        assert_eq!(row.models[0].url, "https://alpha.example.com/v1");
+        assert_eq!(row.models[0].api_id, "vendor-alpha");
+        assert_eq!(row.models[0].also, vec!["@ai-sdk/anthropic"]);
+        assert_eq!(row.models[0].outputs, vec!["text"]);
+        assert!(row.models[0].outputs_said);
     }
 }

@@ -218,7 +218,7 @@ fn select_page<'a>(
     }
 }
 
-fn encode_path_segment(value: &str) -> String {
+pub(super) fn encode_path_segment(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {

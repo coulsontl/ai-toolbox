@@ -20,12 +20,14 @@ pub mod stats;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock};
 use std::time::{Duration, Instant};
 
+use ring::rand::SecureRandom;
 use rquickjs::function::Opt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::{Context, Ctx, Function, Module, Object, Runtime, Value};
@@ -88,6 +90,9 @@ pub enum MiddlewareRewriteStage {
 pub struct MiddlewareState {
     values: Arc<StdMutex<BTreeMap<String, JsonValue>>>,
     rewrites: Arc<StdMutex<BTreeMap<MiddlewareRewriteStage, Vec<String>>>>,
+    /// The account `onAccount` last saw, per plugin; later hooks of the same
+    /// request get it as `ctx.account`, as Magpie does.
+    accounts: Arc<StdMutex<BTreeMap<String, JsonValue>>>,
 }
 
 impl MiddlewareState {
@@ -116,6 +121,13 @@ impl MiddlewareState {
 
     pub fn response_rewrites(&self) -> Vec<String> {
         self.rewrites_for(MiddlewareRewriteStage::Response)
+    }
+
+    /// Record an asynchronous gateway hook (`magpie.hooks`) as the rewriter
+    /// of the request body. Those hooks run in the Bun host rather than in
+    /// this engine, but their effect belongs in the same diagnostics list.
+    pub fn record_gateway_hook_rewrite(&self, label: &str) {
+        self.record_rewrite_label(MiddlewareRewriteStage::Request, label);
     }
 
     fn record_rewrite(&self, stage: MiddlewareRewriteStage, module: &LoadedMiddleware) {
@@ -153,18 +165,39 @@ impl MiddlewareState {
             .insert(plugin_id.to_string(), value);
     }
 
+    fn account_json(&self, plugin_id: &str) -> Option<JsonValue> {
+        self.accounts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(plugin_id)
+            .cloned()
+    }
+
+    fn set_account(&self, plugin_id: &str, account: JsonValue) {
+        self.accounts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(plugin_id.to_string(), account);
+    }
+
     fn ctx_json(
         &self,
         info_json: &JsonValue,
         module: &LoadedMiddleware,
         extra: JsonValue,
     ) -> JsonValue {
-        build_ctx(
+        let mut ctx = build_ctx(
             info_json,
             &module.options,
             self.plugin_state(&module.plugin_id),
             extra,
-        )
+        );
+        if let (Some(account), Some(object)) =
+            (self.account_json(&module.plugin_id), ctx.as_object_mut())
+        {
+            object.insert("account".to_string(), account);
+        }
+        ctx
     }
 }
 
@@ -177,6 +210,30 @@ pub struct ProviderTarget {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub account: String,
     pub model: String,
+}
+
+/// The account a plugin request is about to use, as `onAccount` is told it.
+/// The plugin never sees the account's key or sign-in: `account_key` is only
+/// the host's lookup key and is hashed into a per-middleware `ref` before it
+/// crosses into JavaScript.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCandidate {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub account_key: String,
+    /// The CLI family asking, e.g. `claudecode` or `codex`.
+    pub kind: String,
+    pub model: String,
+}
+
+/// What `onAccount` decided for one account.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountOutcome {
+    /// No middleware objected: the request may use this account.
+    Use,
+    /// One middleware returned `{ skip: true }`; `by` names it.
+    Skip { by: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,6 +253,7 @@ pub enum EventOutcome {
 enum Hook {
     OnRequest,
     OnProvider,
+    OnAccount,
     OnEvent,
     OnResponse,
     OnUsage,
@@ -206,6 +264,7 @@ impl Hook {
         match self {
             Self::OnRequest => "onRequest",
             Self::OnProvider => "onProvider",
+            Self::OnAccount => "onAccount",
             Self::OnEvent => "onEvent",
             Self::OnResponse => "onResponse",
             Self::OnUsage => "onUsage",
@@ -217,6 +276,7 @@ impl Hook {
 struct HookSet {
     on_request: bool,
     on_provider: bool,
+    on_account: bool,
     on_event: bool,
     on_response: bool,
     on_usage: bool,
@@ -226,7 +286,12 @@ struct HookSet {
 
 impl HookSet {
     fn any(&self) -> bool {
-        self.on_request || self.on_provider || self.on_event || self.on_response || self.on_usage
+        self.on_request
+            || self.on_provider
+            || self.on_account
+            || self.on_event
+            || self.on_response
+            || self.on_usage
     }
 
     fn wants_event(&self, name: &str) -> bool {
@@ -241,6 +306,7 @@ impl HookSet {
         for (enabled, name) in [
             (self.on_request, "onRequest"),
             (self.on_provider, "onProvider"),
+            (self.on_account, "onAccount"),
             (self.on_event, "onEvent"),
             (self.on_response, "onResponse"),
             (self.on_usage, "onUsage"),
@@ -279,6 +345,7 @@ struct Snapshot {
     has_usage: bool,
     has_request: bool,
     has_provider: bool,
+    has_account: bool,
     has_event: bool,
     has_response: bool,
 }
@@ -292,6 +359,7 @@ impl Snapshot {
             has_usage: false,
             has_request: false,
             has_provider: false,
+            has_account: false,
             has_event: false,
             has_response: false,
         }
@@ -307,6 +375,9 @@ pub struct MiddlewareRuntime {
     usage_tx: mpsc::Sender<JsonValue>,
     usage_rx: StdMutex<Option<mpsc::Receiver<JsonValue>>>,
     usage_worker_started: AtomicBool,
+    /// The HMAC key `onAccount` refs are made with, read from
+    /// `account-ref.key` on first use and kept for the process lifetime.
+    ref_key: StdMutex<Option<Vec<u8>>>,
 }
 
 impl MiddlewareRuntime {
@@ -320,6 +391,7 @@ impl MiddlewareRuntime {
             usage_tx,
             usage_rx: StdMutex::new(Some(usage_rx)),
             usage_worker_started: AtomicBool::new(false),
+            ref_key: StdMutex::new(None),
         }
     }
 
@@ -346,6 +418,10 @@ impl MiddlewareRuntime {
 
     pub fn has_provider_hooks(&self) -> bool {
         self.current().has_provider
+    }
+
+    pub fn has_on_account_hooks(&self) -> bool {
+        self.current().has_account
     }
 
     pub fn has_event_hooks(&self) -> bool {
@@ -430,6 +506,7 @@ impl MiddlewareRuntime {
         let has_usage = modules.iter().any(|module| module.hooks.on_usage);
         let has_request = modules.iter().any(|module| module.hooks.on_request);
         let has_provider = modules.iter().any(|module| module.hooks.on_provider);
+        let has_account = modules.iter().any(|module| module.hooks.on_account);
         let has_event = modules.iter().any(|module| module.hooks.on_event);
         let has_response = modules.iter().any(|module| module.hooks.on_response);
         let snapshot = Snapshot {
@@ -439,6 +516,7 @@ impl MiddlewareRuntime {
             has_usage,
             has_request,
             has_provider,
+            has_account,
             has_event,
             has_response,
         };
@@ -623,6 +701,101 @@ impl MiddlewareRuntime {
         }
 
         serde_json::to_vec(&value).unwrap_or_else(|_| body.to_vec())
+    }
+
+    /// Ask every `onAccount` middleware about one candidate account, in
+    /// order. The first `{ skip: true }` passes the account over; a hook that
+    /// throws, times out, returns null/undefined or anything that is not
+    /// `{ skip: true }` fails open.
+    pub async fn run_on_account(
+        &self,
+        info: &RequestInfo,
+        candidate: &AccountCandidate,
+        state: &MiddlewareState,
+    ) -> AccountOutcome {
+        let snapshot = self.current();
+        let modules: Vec<Arc<LoadedMiddleware>> = snapshot
+            .modules
+            .iter()
+            .filter(|module| module.hooks.on_account)
+            .cloned()
+            .collect();
+        if modules.is_empty() {
+            return AccountOutcome::Use;
+        }
+        let info_json = serde_json::to_value(info).unwrap_or_else(|_| json!({}));
+
+        for module in modules {
+            // The ref is keyed per middleware: two middleware see different
+            // refs for the same account, and neither can turn one back into
+            // the account's key without this machine's key.
+            let account = json!({
+                "ref": self.account_ref(&module, candidate),
+                "provider": candidate.provider_id,
+                "name": candidate.provider_name,
+                "kind": candidate.kind,
+                "model": candidate.model,
+            });
+            state.set_account(&module.plugin_id, account.clone());
+            let ctx_json = state.ctx_json(&info_json, &module, json!({}));
+            match invoke(&module, Hook::OnAccount, &account, &ctx_json, REQUEST_LIMIT).await {
+                Ok(output) => {
+                    if let Some(next_state) = output.state {
+                        state.set_plugin_state(&module.plugin_id, next_state);
+                    }
+                    if let JsHookValue::Object(said) = output.value {
+                        if said.get("skip").and_then(JsonValue::as_bool) == Some(true) {
+                            return AccountOutcome::Skip {
+                                by: rewrite_label(&module),
+                            };
+                        }
+                    }
+                }
+                Err(_) => {
+                    // `invoke` already recorded the failure; fail open.
+                }
+            }
+        }
+        AccountOutcome::Use
+    }
+
+    /// The key `onAccount` refs are made with: `account-ref.key` when it can
+    /// be read or created, otherwise a per-run random key (with a warning).
+    fn ref_key(&self) -> Vec<u8> {
+        let mut guard = self
+            .ref_key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(key) = guard.as_ref() {
+            return key.clone();
+        }
+        let key = match load_or_create_ref_key(&self.paths) {
+            Ok(key) => key,
+            Err(error) => {
+                log::warn!("plugin middleware account refs are this run's only: {error}");
+                let mut key = vec![0u8; 32];
+                let _ = ring::rand::SystemRandom::new().fill(&mut key);
+                key
+            }
+        };
+        *guard = Some(key.clone());
+        key
+    }
+
+    fn account_ref(&self, module: &LoadedMiddleware, candidate: &AccountCandidate) -> String {
+        let key = self.ref_key();
+        let hmac_key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key);
+        let mut context = ring::hmac::Context::with_key(&hmac_key);
+        for part in [
+            "ai-toolbox account ref v1",
+            middleware_identity(module),
+            candidate.provider_id.as_str(),
+            candidate.account_key.as_str(),
+        ] {
+            context.update(part.as_bytes());
+            context.update(&[0]);
+        }
+        hex::encode(&context.sign().as_ref()[..16])
     }
 
     /// Run `onResponse` on a whole JSON reply. `ctx.status` is the reply's
@@ -855,6 +1028,75 @@ fn rewrite_label(module: &LoadedMiddleware) -> String {
         module.spec.trim().to_string()
     } else {
         name.to_string()
+    }
+}
+
+/// The stable identity a middleware's account refs are keyed by: its package
+/// spec (a display name may change or repeat across plugins).
+fn middleware_identity(module: &LoadedMiddleware) -> &str {
+    let spec = module.spec.trim();
+    if spec.is_empty() {
+        module.name.trim()
+    } else {
+        spec
+    }
+}
+
+/// Read `account-ref.key`, or create it with 32 random bytes the first time.
+/// An existing file is never overwritten: every ref a middleware kept would
+/// change if the key did.
+fn load_or_create_ref_key(paths: &PluginPaths) -> Result<Vec<u8>, String> {
+    let path = paths.account_ref_key_path();
+    match std::fs::read(&path) {
+        Ok(bytes) => decode_ref_key(&bytes, &path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_ref_key(&path),
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+    }
+}
+
+fn decode_ref_key(bytes: &[u8], path: &Path) -> Result<Vec<u8>, String> {
+    let text = String::from_utf8_lossy(bytes);
+    let not_a_key = || format!("{} is not a key", path.display());
+    let key = hex::decode(text.trim()).map_err(|_| not_a_key())?;
+    if key.len() != 32 {
+        return Err(not_a_key());
+    }
+    Ok(key)
+}
+
+/// Atomically create the key file. `create_new` is the atomic step: when two
+/// processes race, exactly one writes and the loser reads the winner's key.
+fn create_ref_key(path: &Path) -> Result<Vec<u8>, String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+    let mut key = vec![0u8; 32];
+    ring::rand::SystemRandom::new()
+        .fill(&mut key)
+        .map_err(|_| "Failed to make a random account ref key".to_string())?;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(mut file) => {
+            file.write_all(format!("{}\n", hex::encode(&key)).as_bytes())
+                .map_err(|error| format!("Failed to write {}: {error}", path.display()))?;
+            file.sync_all()
+                .map_err(|error| format!("Failed to sync {}: {error}", path.display()))?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("Failed to read {}: {error}", path.display()))?;
+            decode_ref_key(&bytes, path)
+        }
+        Err(error) => Err(format!("Failed to create {}: {error}", path.display())),
     }
 }
 
@@ -1202,6 +1444,7 @@ fn discover_module(entry: &Path, root: &Path) -> Result<HookSet, String> {
         let mut hooks = HookSet {
             on_request: export_is_function(&ctx, &namespace, "onRequest")?,
             on_provider: export_is_function(&ctx, &namespace, "onProvider")?,
+            on_account: export_is_function(&ctx, &namespace, "onAccount")?,
             on_event: export_is_function(&ctx, &namespace, "onEvent")?,
             on_response: export_is_function(&ctx, &namespace, "onResponse")?,
             on_usage: export_is_function(&ctx, &namespace, "onUsage")?,
@@ -1214,6 +1457,7 @@ fn discover_module(entry: &Path, root: &Path) -> Result<HookSet, String> {
                     hooks = HookSet {
                         on_request: object_is_function(&ctx, &object, "onRequest")?,
                         on_provider: object_is_function(&ctx, &object, "onProvider")?,
+                        on_account: object_is_function(&ctx, &object, "onAccount")?,
                         on_event: object_is_function(&ctx, &object, "onEvent")?,
                         on_response: object_is_function(&ctx, &object, "onResponse")?,
                         on_usage: object_is_function(&ctx, &object, "onUsage")?,
@@ -1224,7 +1468,7 @@ fn discover_module(entry: &Path, root: &Path) -> Result<HookSet, String> {
         }
         if !hooks.any() {
             return Err(
-                "Middleware exports none of onRequest, onProvider, onEvent, onResponse and onUsage"
+                "Middleware exports none of onRequest, onProvider, onAccount, onEvent, onResponse and onUsage"
                     .to_string(),
             );
         }
@@ -2376,5 +2620,148 @@ mod tests {
         assert_eq!(next["stream"], true);
         assert_eq!(next["model"], "x");
         assert_eq!(module.stats.failures(), 1);
+    }
+
+    fn account_candidate() -> AccountCandidate {
+        AccountCandidate {
+            provider_id: "demo".to_string(),
+            provider_name: "Demo".to_string(),
+            account_key: "person@example.com#2".to_string(),
+            kind: "claudecode".to_string(),
+            model: "claude-x".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn on_account_skip_passes_the_account_over() {
+        let root = tempfile::tempdir().unwrap();
+        let source = r#"export function onAccount(account, ctx) {
+            ctx.state.seenRef = account.ref;
+            return { skip: true }
+        }"#;
+        let entry = write_plugin(root.path(), "skip", source);
+        let (_db, runtime) = runtime_with(root.path().join("data").as_path(), &entry, source);
+        runtime.reload().await;
+        assert!(runtime.has_on_account_hooks());
+
+        let state = MiddlewareState::new();
+        let outcome = runtime
+            .run_on_account(&info(), &account_candidate(), &state)
+            .await;
+        assert_eq!(
+            outcome,
+            AccountOutcome::Skip {
+                by: "Demo".to_string()
+            }
+        );
+        let seen = state.plugin_state("demo")["seenRef"]
+            .as_str()
+            .expect("hook saw the ref")
+            .to_string();
+        assert_eq!(seen.len(), 32);
+        assert!(!seen.contains("person"));
+        assert!(!seen.contains("example.com"));
+    }
+
+    #[tokio::test]
+    async fn on_account_undefined_and_throws_fail_open() {
+        let root = tempfile::tempdir().unwrap();
+        let source = "export function onAccount() { return undefined }";
+        let entry = write_plugin(root.path(), "quiet", source);
+        let (_db, runtime) = runtime_with(root.path().join("data").as_path(), &entry, source);
+        runtime.reload().await;
+        assert_eq!(
+            runtime
+                .run_on_account(&info(), &account_candidate(), &MiddlewareState::new())
+                .await,
+            AccountOutcome::Use
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        let source = r#"export function onAccount() { throw new Error("boom") }"#;
+        let entry = write_plugin(root.path(), "angry", source);
+        let (_db, runtime) = runtime_with(root.path().join("data").as_path(), &entry, source);
+        runtime.reload().await;
+        assert_eq!(
+            runtime
+                .run_on_account(&info(), &account_candidate(), &MiddlewareState::new())
+                .await,
+            AccountOutcome::Use
+        );
+    }
+
+    #[tokio::test]
+    async fn account_refs_are_per_middleware_and_hide_the_account_key() {
+        let root = tempfile::tempdir().unwrap();
+        let data_root = root.path().join("data");
+        std::fs::create_dir_all(&data_root).unwrap();
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let source = r#"export function onAccount(account, ctx) {
+            ctx.state.seen = account.ref;
+            return undefined
+        }"#;
+        for (folder, id, spec) in [
+            ("alpha", "plugin-a", "alpha-spec"),
+            ("beta", "plugin-b", "beta-spec"),
+        ] {
+            let entry = write_plugin(root.path(), folder, source);
+            let record = InstalledPluginRecord {
+                id: id.to_string(),
+                spec: spec.to_string(),
+                package_name: spec.to_string(),
+                display_name: spec.to_string(),
+                version: "1.0.0".to_string(),
+                kind: PluginKind::Middleware,
+                enabled: true,
+                source_type: "local".to_string(),
+                local_path: entry.parent().unwrap().to_string_lossy().to_string(),
+                middleware_entry: entry.file_name().unwrap().to_string_lossy().to_string(),
+                ..InstalledPluginRecord::default()
+            };
+            store::upsert_installed_plugin(&db, &record).unwrap();
+        }
+        let paths = PluginPaths::new(&data_root);
+        paths.ensure_dirs().unwrap();
+        let runtime = MiddlewareRuntime::new(db, paths);
+        runtime.reload().await;
+        assert!(runtime.has_on_account_hooks());
+
+        let state = MiddlewareState::new();
+        assert_eq!(
+            runtime
+                .run_on_account(&info(), &account_candidate(), &state)
+                .await,
+            AccountOutcome::Use
+        );
+        let alpha = state.plugin_state("plugin-a")["seen"]
+            .as_str()
+            .expect("alpha ref")
+            .to_string();
+        let beta = state.plugin_state("plugin-b")["seen"]
+            .as_str()
+            .expect("beta ref")
+            .to_string();
+        // The same account is a different ref per middleware, and neither ref
+        // carries the account's own key.
+        assert_ne!(alpha, beta);
+        for reference in [&alpha, &beta] {
+            assert_eq!(reference.len(), 32);
+            assert!(!reference.contains("person"));
+            assert!(!reference.contains("example.com"));
+        }
+    }
+
+    #[tokio::test]
+    async fn account_ref_key_is_created_once_and_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = PluginPaths::new(root.path());
+        paths.ensure_dirs().unwrap();
+        let first = load_or_create_ref_key(&paths).unwrap();
+        assert_eq!(first.len(), 32);
+        let written = std::fs::read_to_string(paths.account_ref_key_path()).unwrap();
+        assert_eq!(written.trim(), hex::encode(&first));
+
+        let second = load_or_create_ref_key(&paths).unwrap();
+        assert_eq!(first, second);
     }
 }

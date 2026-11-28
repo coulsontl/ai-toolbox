@@ -34,6 +34,28 @@ relicensed under AGPL-3.0.
 
 ---
 
+## Magpie plugin host and page bridge
+
+- **Source**: [yetone/magpie](https://github.com/yetone/magpie)
+- **License**: **MIT License** (the upstream repository's `LICENSE` file).
+  Full text: [`licenses/MIT-Magpie.txt`](licenses/MIT-Magpie.txt).
+- **Local paths**:
+  - `tauri/src/plugins/bun_host/assets/host.js`
+  - `tauri/src/plugins/page_bridge.js`
+
+**Modifications** made to the local copies:
+
+1. The Bun host loads plugins from AI Toolbox's persistent plugin directory and
+   keeps account sign-ins in AI Toolbox's `plugin-auth.json` instead of the
+   upstream app's data directory.
+2. Outbound request capture (`wire_request`) is only started when AI Toolbox
+   explicitly asks for it through `captureRequest`, and the captured body is
+   capped before it crosses the host boundary.
+3. The page bridge talks to AI Toolbox's own page server, storage, provider and
+   usage APIs rather than the upstream application's.
+
+---
+
 ## Agent icon assets
 
 Icons under `web/assets/agent-icons/` are third-party marks with their own

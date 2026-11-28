@@ -20,6 +20,7 @@ pub mod page_server;
 pub mod page_storage;
 pub mod paths;
 pub mod store;
+pub mod tools_mcp;
 pub mod types;
 pub mod updater;
 
@@ -110,6 +111,40 @@ impl PluginManager {
     pub async fn http_client(&self) -> Result<reqwest::Client, String> {
         http_client_for(&self.db, 30).await
     }
+
+    /// The proxy URL the Bun host should use for a plugin's own vendor
+    /// requests. Empty when the per-plugin switch is off, the app proxy is
+    /// not a fixed URL (system mode), or no proxy is configured.
+    pub async fn proxy_url(&self) -> Result<String, String> {
+        if !store::get_plugin_settings(&self.db)?.follow_app_proxy {
+            return Ok(String::new());
+        }
+        let (proxy_mode, proxy_url) = http_client::get_proxy_from_settings(&self.db).await?;
+        if proxy_mode != http_client::ProxyMode::Custom {
+            return Ok(String::new());
+        }
+        Ok(normalize_proxy_url(&proxy_url))
+    }
+}
+
+/// Prefix a scheme the way the app's HTTP clients do, and keep only the
+/// proxy kinds Bun's `fetch` accepts (`http` / `https`). Anything else is
+/// treated as "no proxy", matching the gateway's plugin request path.
+fn normalize_proxy_url(proxy_url: &str) -> String {
+    let trimmed = proxy_url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let normalized = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("http://{trimmed}")
+    };
+    if normalized.starts_with("http://") || normalized.starts_with("https://") {
+        normalized
+    } else {
+        String::new()
+    }
 }
 
 /// Plugin HTTP client with an explicit timeout; the Bun download needs a much
@@ -160,6 +195,7 @@ pub fn invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
         commands::plugins_runtime_logs,
         commands::plugins_clear_runtime_logs,
         commands::plugins_middleware_states,
+        commands::plugins_gateway_hook_states,
         commands::plugins_list_providers,
         commands::plugins_refresh_provider_models,
         commands::plugins_login_prompt,
@@ -178,10 +214,18 @@ pub fn invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> bool {
         commands::plugins_set_provider_auto_checkin,
         commands::plugins_account_set_enabled,
         commands::plugins_set_provider_option,
-        // Custom pages (`magpie.page` / `magpie.pages`)
+        // Plugin tools -> central MCP server
+        commands::plugins_list_tools,
+        commands::plugins_sync_tools_mcp_server,
+        // Custom pages, menus and panels (`magpie.page` / `magpie.pages` /
+        // `magpie.actions` / `magpie.panels`)
         commands::plugins_list_pages,
         commands::plugins_open_page,
         commands::plugins_close_page,
+        commands::plugins_list_actions,
+        commands::plugins_list_panels,
+        commands::plugins_open_panel,
+        commands::plugins_close_panel,
         commands::plugins_page_bridge_read,
         commands::plugins_page_bridge_set_options,
         commands::plugins_page_bridge_copy_image,
@@ -207,5 +251,27 @@ mod tests {
         assert_eq!(manager.paths().root(), PathBuf::from("/data/app/plugins"));
         assert!(manager.settings().unwrap().follow_app_proxy);
         assert!(!manager.middleware().has_active_middlewares());
+    }
+
+    #[test]
+    fn the_host_proxy_accepts_http_and_https_urls_only() {
+        assert_eq!(normalize_proxy_url(""), "");
+        assert_eq!(
+            normalize_proxy_url("proxy.example.com:8080"),
+            "http://proxy.example.com:8080"
+        );
+        assert_eq!(
+            normalize_proxy_url("https://proxy.example.com:8443"),
+            "https://proxy.example.com:8443"
+        );
+        // Bun's fetch has no SOCKS proxy option; the host stays direct.
+        assert_eq!(normalize_proxy_url("socks5://proxy.example.com:1080"), "");
+    }
+
+    #[tokio::test]
+    async fn proxy_url_is_empty_without_a_custom_app_proxy() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let manager = PluginManager::new(db, PathBuf::from("/data/app"));
+        assert_eq!(manager.proxy_url().await.unwrap(), "");
     }
 }

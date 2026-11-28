@@ -80,6 +80,7 @@ pub(crate) async fn test_gateway_provider_model_connectivity_with_plugins(
     let options = GatewayRequestOptions {
         provider_override_id: Some(request.provider_id.clone()),
         disable_health_mutation: true,
+        ..GatewayRequestOptions::default()
     };
 
     let mut results = Vec::new();

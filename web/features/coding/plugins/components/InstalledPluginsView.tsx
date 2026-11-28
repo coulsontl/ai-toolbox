@@ -3,7 +3,9 @@ import { App, Checkbox, Dropdown, Input, Modal, Spin, Switch, Tooltip } from 'an
 import {
   ArrowDownAZ,
   ArrowUpAZ,
+  CircleAlert,
   Combine,
+  Copy,
   Download,
   Layers,
   Loader2,
@@ -20,10 +22,13 @@ import {
   Store,
   Trash2,
   Users,
+  Wrench,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
+  listPluginTools,
   setPluginEnabled,
+  syncPluginToolsMcpServer,
   uninstallPlugin,
   updatePlugins,
   type BunRuntimeStatus,
@@ -32,9 +37,12 @@ import {
   type PluginAccountSummary,
   type PluginKind,
   type PluginSettings,
+  type PluginToolDto,
+  type PluginToolsSummaryDto,
   type PluginUpdateItem,
   type PluginUpdateSummary,
 } from '@/services';
+import { copyTextToClipboard } from '@/services/clipboardApi';
 import {
   formatMicroseconds,
   formatPluginError,
@@ -115,7 +123,47 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   const [uninstallTarget, setUninstallTarget] = React.useState<InstalledPluginRecord | null>(null);
   const [purgeData, setPurgeData] = React.useState(false);
   const [uninstallBusy, setUninstallBusy] = React.useState(false);
+  const [toolsSummary, setToolsSummary] = React.useState<PluginToolsSummaryDto | null>(null);
+  const [syncingTools, setSyncingTools] = React.useState(false);
   const chinaMirror = isChinaMirrorRegistry(pluginSettings?.npmRegistry);
+
+  // Tools are optional decoration for this page: a failing backend command
+  // (older build, host not ready) hides the strip instead of blocking the list.
+  const loadTools = React.useCallback(async () => {
+    try {
+      setToolsSummary(await listPluginTools());
+    } catch {
+      setToolsSummary(null);
+    }
+  }, []);
+
+  // Every installed-list refresh — first load, manual refresh, enable/disable,
+  // uninstall, update, `plugins-updated` — hands down a new `plugins` array, so
+  // it doubles as the silent trigger for the tools summary.
+  React.useEffect(() => {
+    if (loading) {
+      return;
+    }
+    void loadTools();
+  }, [loadTools, loading, plugins]);
+
+  const toolsByPlugin = React.useMemo(() => {
+    const grouped = new Map<string, PluginToolDto[]>();
+    for (const tool of toolsSummary?.tools ?? []) {
+      for (const key of [tool.pluginId, tool.pluginSpec]) {
+        if (!key) {
+          continue;
+        }
+        const existing = grouped.get(key);
+        if (existing) {
+          existing.push(tool);
+        } else {
+          grouped.set(key, [tool]);
+        }
+      }
+    }
+    return grouped;
+  }, [toolsSummary]);
 
   const counts = React.useMemo(() => {
     const next = { all: plugins.length, provider: 0, middleware: 0, page: 0 };
@@ -162,6 +210,65 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
 
   const getMiddlewareState = (plugin: InstalledPluginRecord) =>
     middlewareStates.find((state) => state.pluginId === plugin.id);
+
+  const getPluginTools = (plugin: InstalledPluginRecord): PluginToolDto[] =>
+    toolsByPlugin.get(plugin.id) ?? toolsByPlugin.get(plugin.spec) ?? [];
+
+  const handleCopyToolsEndpoint = async () => {
+    if (!toolsSummary) {
+      return;
+    }
+    try {
+      await copyTextToClipboard(toolsSummary.endpointUrl);
+      message.success(t('plugins.installed.tools.copySuccess'));
+    } catch (error) {
+      message.error(
+        t('plugins.installed.tools.copyFailed', { error: formatPluginError(error) }),
+      );
+    }
+  };
+
+  const handleSyncTools = async () => {
+    setSyncingTools(true);
+    try {
+      await syncPluginToolsMcpServer();
+      message.success(t('plugins.installed.tools.syncSuccess'));
+      await loadTools();
+    } catch (error) {
+      message.error(
+        t('plugins.installed.tools.syncFailed', { error: formatPluginError(error) }),
+      );
+    } finally {
+      setSyncingTools(false);
+    }
+  };
+
+  // Tooltip content portals to document.body, outside the --pl-* scope, so it
+  // leans on the tooltip's inherited chrome rather than plugin tokens.
+  const renderToolsTooltip = (tools: PluginToolDto[]) => {
+    const visibleTools = tools.slice(0, 8);
+    return (
+      <div className={styles.toolsTooltip}>
+        <ul className={styles.toolsTooltipList}>
+          {visibleTools.map((tool, index) => (
+            <li key={`${tool.mcpName}-${index}`} className={styles.toolsTooltipItem}>
+              <code className={styles.toolsTooltipName}>{tool.mcpName}</code>
+              {tool.description ? (
+                <span className={styles.toolsTooltipDesc}>{tool.description}</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        {tools.length > visibleTools.length ? (
+          <span className={styles.toolsTooltipMore}>
+            {t('plugins.installed.tools.moreTools', {
+              count: tools.length - visibleTools.length,
+            })}
+          </span>
+        ) : null}
+      </div>
+    );
+  };
 
   const handleToggle = async (plugin: InstalledPluginRecord, enabled: boolean) => {
     setBusyId(plugin.id);
@@ -363,6 +470,21 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
     return t('plugins.source.npm');
   };
 
+  // Literal t() calls per known capability: the i18n scanner only sees static
+  // keys, so a template-built key would be reported as missing.
+  const unsupportedCapabilityLabel = (feature: string) => {
+    if (feature === 'hooks') return t('plugins.installed.capabilities.hooks');
+    if (feature === 'panels') return t('plugins.installed.capabilities.panels');
+    if (feature === 'actions') return t('plugins.installed.capabilities.actions');
+    if (feature === 'replaces') return t('plugins.installed.capabilities.replaces');
+    if (feature === 'agent') return t('plugins.installed.capabilities.agent');
+    if (feature === 'privacyModels') {
+      return t('plugins.installed.capabilities.privacyModels');
+    }
+    if (feature === 'search') return t('plugins.installed.capabilities.search');
+    return feature;
+  };
+
   const filterLabels: Record<PluginFilter, string> = {
     all: t('plugins.installed.filter.all'),
     provider: t('plugins.installed.filter.provider'),
@@ -537,6 +659,60 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
         </div>
       </div>
 
+      {toolsSummary && toolsSummary.tools.length > 0 ? (
+        <div className={styles.toolsBar}>
+          <div className={styles.toolsBarMain}>
+            <span className={styles.toolsBarTitle}>
+              <Wrench size={14} aria-hidden="true" />
+              <span>
+                {t('plugins.installed.tools.title', { count: toolsSummary.tools.length })}
+              </span>
+            </span>
+            {toolsSummary.mcpServerId ? (
+              <span className={styles.toolsSyncedTag}>
+                {t('plugins.installed.tools.synced')}
+              </span>
+            ) : null}
+            <code className={styles.toolsEndpoint} title={toolsSummary.endpointUrl}>
+              {toolsSummary.endpointUrl}
+            </code>
+            {toolsSummary.gatewayRunning ? null : (
+              <span className={styles.toolsGatewayHint}>
+                <CircleAlert size={11} aria-hidden="true" />
+                <span>{t('plugins.installed.tools.gatewayStopped')}</span>
+              </span>
+            )}
+          </div>
+          <div className={styles.toolsBarActions}>
+            <button
+              type="button"
+              className={styles.actionButton}
+              onClick={() => void handleCopyToolsEndpoint()}
+            >
+              <Copy size={14} aria-hidden="true" />
+              <span>{t('plugins.installed.tools.copyEndpoint')}</span>
+            </button>
+            <button
+              type="button"
+              className={styles.actionButton}
+              disabled={syncingTools}
+              onClick={() => void handleSyncTools()}
+            >
+              <RefreshCw
+                size={14}
+                className={syncingTools ? styles.spin : undefined}
+                aria-hidden="true"
+              />
+              <span>
+                {toolsSummary.mcpServerId
+                  ? t('plugins.installed.tools.resync')
+                  : t('plugins.installed.tools.sync')}
+              </span>
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {filteredPlugins.length === 0 ? (
         <div className={styles.empty}>
           <span className={styles.emptyIcon}>
@@ -571,6 +747,8 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
               provider,
               signedIn: accounts.some((account) => account.provider === provider),
             }));
+            const unsupportedFeatures = plugin.contributions?.unsupportedFeatures ?? [];
+            const pluginTools = getPluginTools(plugin);
             const showSourceTag =
               plugin.sourceType === 'github' || plugin.sourceType === 'local';
             const providerList = plugin.providers.join(
@@ -586,7 +764,10 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
               ? ''
               : getPluginSummary(plugin.summary, i18n.language);
             const hasStatusRow =
-              providerStatuses.length > 0 || hasKindStatus || Boolean(summaryFallback);
+              pluginTools.length > 0
+              || providerStatuses.length > 0
+              || hasKindStatus
+              || Boolean(summaryFallback);
             const rowCompact = !hasStatusRow && !plugin.lastError;
 
             return (
@@ -608,6 +789,27 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                       {plugin.displayName || plugin.packageName}
                     </span>
                     <span className={styles.rowVersion}>v{plugin.version || '—'}</span>
+                    {unsupportedFeatures.length > 0 ? (
+                      <Tooltip
+                        title={(
+                          <div className={styles.unsupportedTooltip}>
+                            <span>{t('plugins.installed.unsupportedTooltip')}</span>
+                            <ul className={styles.unsupportedFeatureList}>
+                              {unsupportedFeatures.map((feature, index) => (
+                                <li key={`${feature}-${index}`}>
+                                  {unsupportedCapabilityLabel(feature)}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      >
+                        <span className={styles.unsupportedTag} tabIndex={0}>
+                          <CircleAlert size={11} aria-hidden="true" />
+                          <span>{t('plugins.installed.unsupportedTag')}</span>
+                        </span>
+                      </Tooltip>
+                    ) : null}
                     {updateItem ? (
                       <span className={styles.updateBadge}>
                         {t('plugins.installed.updateAvailable', {
@@ -723,6 +925,15 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
                   </div>
                   {hasStatusRow ? (
                     <div className={styles.rowStatus}>
+                      {pluginTools.length > 0 ? (
+                        <Tooltip title={renderToolsTooltip(pluginTools)}>
+                          <span className={styles.toolCountTag} tabIndex={0}>
+                            {t('plugins.installed.tools.pluginCount', {
+                              count: pluginTools.length,
+                            })}
+                          </span>
+                        </Tooltip>
+                      ) : null}
                       {providerStatuses.length > 0 ? (
                         <>
                           <span className={styles.rowCarries}>

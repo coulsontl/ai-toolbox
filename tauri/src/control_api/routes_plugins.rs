@@ -18,6 +18,41 @@ use crate::plugins::store;
 use crate::plugins::types::PluginSettings;
 use crate::plugins::{commands as plugin_commands, PluginManagerState};
 
+/// Read-only collection routes that would otherwise parse as a plugin id
+/// (`GET /v1/plugins/tools` vs `GET /v1/plugins/<id>`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CollectionRoute {
+    Tools,
+    Actions,
+    Panels,
+    Hooks,
+}
+
+/// `GET /v1/plugins/{tools,actions,panels,hooks}` are collection routes.
+/// `providers`, `accounts`, `logs`, `middleware`, `settings`, `pages`, `bun`
+/// and `host` keep their own arms below; everything else at depth 2 is a
+/// plugin id.
+fn collection_route(method: &Method, segments: &[String]) -> Option<CollectionRoute> {
+    if method != &Method::GET || segments.len() != 2 {
+        return None;
+    }
+    match segments.get(1).map(String::as_str) {
+        Some("tools") => Some(CollectionRoute::Tools),
+        Some("actions") => Some(CollectionRoute::Actions),
+        Some("panels") => Some(CollectionRoute::Panels),
+        Some("hooks") => Some(CollectionRoute::Hooks),
+        _ => None,
+    }
+}
+
+/// `POST /v1/plugins/tools/sync-mcp` exactly; no extra path segments.
+fn is_tools_sync_route(method: &Method, segments: &[String]) -> bool {
+    method == &Method::POST
+        && segments.len() == 3
+        && segments.get(1).map(String::as_str) == Some("tools")
+        && segments.get(2).map(String::as_str) == Some("sync-mcp")
+}
+
 pub async fn dispatch(
     context: &ServerContext,
     method: &Method,
@@ -25,6 +60,9 @@ pub async fn dispatch(
     query: &HashMap<String, String>,
     body: Value,
 ) -> ApiResult<Value> {
+    if let Some(route) = collection_route(method, segments) {
+        return list_collection(context, route).await;
+    }
     let tail = segments.get(1).map(String::as_str).unwrap_or_default();
     match (method, tail) {
         (&Method::GET, "") => {
@@ -35,6 +73,24 @@ pub async fn dispatch(
         (&Method::POST, "install") => install(context, body).await,
         (&Method::POST, "reload") => reload(context, body).await,
         (&Method::POST, "update") if segments.len() == 2 => update(context, &body).await,
+        (&Method::POST, "tools") if is_tools_sync_route(method, segments) => {
+            approve_write(
+                context,
+                RiskLevel::L1,
+                "plugin.tools.sync_mcp",
+                "Sync plugin tools MCP server into MCP manager",
+                None,
+                false,
+            )
+            .await?;
+            let server_id = plugin_commands::plugins_sync_tools_mcp_server(
+                context.app.clone(),
+                manager_state(context),
+            )
+            .await
+            .map_err(ApiError::from)?;
+            Ok(redacted(json!({ "mcpServerId": server_id })))
+        }
         (&Method::GET, "providers") if is_provider_listing(segments) => {
             let listing = plugin_commands::plugins_list_providers(manager_state(context))
                 .await
@@ -149,6 +205,36 @@ pub async fn dispatch(
             Ok(redacted(serde_json::to_value(status)?))
         }
         _ => dispatch_nested(context, method, segments, query, body).await,
+    }
+}
+
+/// Read-only plugin diagnostics. Each route calls the Tauri command the
+/// desktop page uses; no listing logic lives here.
+async fn list_collection(context: &ServerContext, route: CollectionRoute) -> ApiResult<Value> {
+    match route {
+        CollectionRoute::Tools => {
+            let summary =
+                plugin_commands::plugins_list_tools(context.app.clone(), manager_state(context))
+                    .await
+                    .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(summary)?))
+        }
+        CollectionRoute::Actions => {
+            let actions = plugin_commands::plugins_list_actions(manager_state(context))
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(actions)?))
+        }
+        CollectionRoute::Panels => {
+            let panels = plugin_commands::plugins_list_panels(manager_state(context))
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(panels)?))
+        }
+        CollectionRoute::Hooks => {
+            let states = plugin_commands::plugins_gateway_hook_states(manager_state(context))
+                .await
+                .map_err(ApiError::from)?;
+            Ok(redacted(serde_json::to_value(states)?))
+        }
     }
 }
 
@@ -532,10 +618,7 @@ fn validate_link_cli(
     Ok(())
 }
 
-async fn refresh_models(
-    context: &ServerContext,
-    provider: Option<&str>,
-) -> ApiResult<Value> {
+async fn refresh_models(context: &ServerContext, provider: Option<&str>) -> ApiResult<Value> {
     let summary = match provider {
         Some(provider) => format!("Refresh models for plugin provider '{provider}'"),
         None => "Refresh models for every plugin provider".to_string(),
@@ -646,21 +729,19 @@ async fn update(context: &ServerContext, body: &Value) -> ApiResult<Value> {
     }
 
     let manager = manager_state(context);
-    let summary = plugin_commands::update_plugins(
-        manager.inner(),
-        &context.app,
-        id.as_deref(),
-    )
-    .await
-    .map_err(ApiError::from)?;
+    let summary = plugin_commands::update_plugins(manager.inner(), &context.app, id.as_deref())
+        .await
+        .map_err(ApiError::from)?;
     Ok(redacted(serde_json::to_value(summary)?))
 }
 
 fn ensure_plugin_exists(context: &ServerContext, id: &str) -> ApiResult<()> {
-    let installed = store::get_installed_plugin(manager_state(context).db(), id)
-        .map_err(ApiError::from)?;
+    let installed =
+        store::get_installed_plugin(manager_state(context).db(), id).map_err(ApiError::from)?;
     if installed.is_none() {
-        return Err(ApiError::not_found(format!("Plugin '{id}' is not installed")));
+        return Err(ApiError::not_found(format!(
+            "Plugin '{id}' is not installed"
+        )));
     }
     Ok(())
 }
@@ -872,7 +953,12 @@ mod tests {
 
     #[test]
     fn provider_listing_does_not_swallow_nested_provider_routes() {
-        let segments = |parts: &[&str]| parts.iter().map(|part| part.to_string()).collect::<Vec<_>>();
+        let segments = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(|part| part.to_string())
+                .collect::<Vec<_>>()
+        };
         assert!(is_provider_listing(&segments(&["plugins", "providers"])));
         assert!(!is_provider_listing(&segments(&[
             "plugins",
@@ -913,6 +999,80 @@ mod tests {
 
         let mut missing_cli = link_input("demo", "@acme/plugin");
         missing_cli.cli_key = String::new();
-        assert_eq!(validate_link_cli("demo", &missing_cli).unwrap_err().status, 400);
+        assert_eq!(
+            validate_link_cli("demo", &missing_cli).unwrap_err().status,
+            400
+        );
+    }
+
+    fn segments(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| part.to_string()).collect()
+    }
+
+    #[test]
+    fn plugin_collection_routes_are_not_plugin_ids() {
+        for (tail, expected) in [
+            ("tools", CollectionRoute::Tools),
+            ("actions", CollectionRoute::Actions),
+            ("panels", CollectionRoute::Panels),
+            ("hooks", CollectionRoute::Hooks),
+        ] {
+            assert_eq!(
+                collection_route(&Method::GET, &segments(&["plugins", tail])),
+                Some(expected),
+                "GET /v1/plugins/{tail}"
+            );
+            // The same name at another depth stays a plugin-id lookup.
+            assert_eq!(
+                collection_route(&Method::GET, &segments(&["plugins", tail, "extra"])),
+                None,
+                "GET /v1/plugins/{tail}/extra"
+            );
+            assert_eq!(
+                collection_route(&Method::POST, &segments(&["plugins", tail])),
+                None,
+                "POST /v1/plugins/{tail}"
+            );
+        }
+
+        for tail in ["providers", "accounts", "settings", "demo"] {
+            assert_eq!(
+                collection_route(&Method::GET, &segments(&["plugins", tail])),
+                None,
+                "GET /v1/plugins/{tail} keeps its own arm"
+            );
+        }
+    }
+
+    #[test]
+    fn tools_sync_response_keeps_the_server_id_after_redaction() {
+        // The route wraps its response in `redacted(...)`; the server id is
+        // not a credential and must survive the boundary unchanged.
+        let value = redacted(json!({ "mcpServerId": "server-1" }));
+        assert_eq!(value["mcpServerId"], "server-1");
+    }
+
+    #[test]
+    fn tools_sync_route_is_exact() {
+        assert!(is_tools_sync_route(
+            &Method::POST,
+            &segments(&["plugins", "tools", "sync-mcp"])
+        ));
+        assert!(!is_tools_sync_route(
+            &Method::GET,
+            &segments(&["plugins", "tools", "sync-mcp"])
+        ));
+        assert!(!is_tools_sync_route(
+            &Method::POST,
+            &segments(&["plugins", "tools"])
+        ));
+        assert!(!is_tools_sync_route(
+            &Method::POST,
+            &segments(&["plugins", "tools", "sync-mcp", "extra"])
+        ));
+        assert!(!is_tools_sync_route(
+            &Method::POST,
+            &segments(&["plugins", "other", "sync-mcp"])
+        ));
     }
 }

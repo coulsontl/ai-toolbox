@@ -21,7 +21,10 @@ use super::bun_runtime::BunRuntime;
 use super::market;
 use super::paths::PluginPaths;
 use super::store;
-use super::types::{empty_json_object, InstalledPluginRecord, PluginKind, PluginPageManifest};
+use super::types::{
+    empty_json_object, InstalledPluginRecord, PluginActionManifest, PluginContributions,
+    PluginKind, PluginPageManifest, PluginPanelManifest,
+};
 
 /// Single-file middleware entries Magpie accepts, in match order.
 const MIDDLEWARE_FILE_SUFFIXES: [&str; 4] = [
@@ -30,11 +33,29 @@ const MIDDLEWARE_FILE_SUFFIXES: [&str; 4] = [
     ".gateway.js",
     ".gateway.mjs",
 ];
+/// Magpie asynchronous gateway hook entries, run in the Bun host.
+const HOOKS_FILE_SUFFIXES: [&str; 4] = [".hooks.js", ".hooks.mjs", ".hooks.ts", ".hooks.mts"];
+/// How many actions one plugin may add, matching Magpie's `maxActions`.
+const MAX_ACTIONS: usize = 8;
+/// How many panels one plugin may add, matching Magpie's `maxPanels`.
+const MAX_PANELS: usize = 8;
+/// Menus a plugin action can go in (`ActionMenus` in Magpie's page.go).
+const ACTION_MENUS: [&str; 2] = ["provider", "agent"];
+/// Pages a panel can go in (`PanelSlots` in Magpie's page.go).
+const PANEL_SLOTS: [&str; 4] = ["provider", "settings", "usage", "agents"];
 const BUN_ADD_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn middleware_suffix(file_name: &str) -> Option<&'static str> {
+    suffix_of(file_name, &MIDDLEWARE_FILE_SUFFIXES)
+}
+
+fn hooks_suffix(file_name: &str) -> Option<&'static str> {
+    suffix_of(file_name, &HOOKS_FILE_SUFFIXES)
+}
+
+fn suffix_of(file_name: &str, suffixes: &'static [&'static str]) -> Option<&'static str> {
     let lower = file_name.to_ascii_lowercase();
-    MIDDLEWARE_FILE_SUFFIXES
+    suffixes
         .iter()
         .copied()
         .find(|suffix| lower.ends_with(suffix))
@@ -141,6 +162,7 @@ fn looks_like_local_path(spec: &str) -> bool {
         || spec.starts_with('/')
         || spec.starts_with('\\')
         || middleware_suffix(spec).is_some()
+        || hooks_suffix(spec).is_some()
         || is_drive_path(spec)
         || Path::new(spec).is_absolute()
 }
@@ -207,18 +229,23 @@ pub struct PackageInspection {
     pub has_provider_entry: bool,
     pub providers: Vec<String>,
     pub pages: Vec<PluginPageManifest>,
+    pub actions: Vec<PluginActionManifest>,
+    pub panels: Vec<PluginPanelManifest>,
     pub permissions: Vec<String>,
+    pub contributions: PluginContributions,
     pub options: Value,
     pub summary: BTreeMap<String, String>,
     pub icon: String,
 }
 
 impl PackageInspection {
-    /// A package that only contributes pages: no provider entry and no page
-    /// declaring a local service, so installing it must not start Bun.
+    /// A package that only contributes UI (pages/panels): no provider entry,
+    /// no asynchronous gateway hooks, and no page declaring a local service,
+    /// so installing it must not start Bun.
     pub fn is_page_only(&self) -> bool {
         !self.has_provider_entry
-            && !self.pages.is_empty()
+            && !self.contributions.has_hooks
+            && (!self.pages.is_empty() || !self.panels.is_empty())
             && self.pages.iter().all(|page| page.service_port.is_none())
     }
 }
@@ -236,22 +263,42 @@ pub fn inspect_installed_package(path: &Path) -> Result<PackageInspection, Strin
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| format!("Plugin file '{}' has no usable name", path.display()))?;
-        let Some(suffix) = middleware_suffix(file_name) else {
-            return Err(format!(
-                "Single-file plugins must be one of {}: {}",
-                MIDDLEWARE_FILE_SUFFIXES.join(", "),
-                path.display()
-            ));
-        };
-        let package_name = file_name[..file_name.len() - suffix.len()].to_string();
-        return Ok(PackageInspection {
-            package_name: package_name.clone(),
-            display_name: package_name,
-            kind: PluginKind::Middleware,
-            middleware_entry: file_name.to_string(),
-            options: empty_json_object(),
-            ..PackageInspection::default()
-        });
+        if let Some(suffix) = middleware_suffix(file_name) {
+            let package_name = file_name[..file_name.len() - suffix.len()].to_string();
+            return Ok(PackageInspection {
+                package_name: package_name.clone(),
+                display_name: package_name,
+                kind: PluginKind::Middleware,
+                middleware_entry: file_name.to_string(),
+                options: empty_json_object(),
+                ..PackageInspection::default()
+            });
+        }
+        if let Some(suffix) = hooks_suffix(file_name) {
+            // A single `.hooks.*` file is a gateway-hook plugin: the Bun host
+            // imports it directly (`host.js` takes `target` as `gateway`).
+            // `middleware_entry` stays empty so the rquickjs engine never
+            // tries to load it.
+            let package_name = file_name[..file_name.len() - suffix.len()].to_string();
+            return Ok(PackageInspection {
+                package_name: package_name.clone(),
+                display_name: package_name,
+                kind: PluginKind::Middleware,
+                contributions: PluginContributions {
+                    has_hooks: true,
+                    hooks_entry: file_name.to_string(),
+                    ..PluginContributions::default()
+                },
+                options: empty_json_object(),
+                ..PackageInspection::default()
+            });
+        }
+        return Err(format!(
+            "Single-file plugins must be a middleware entry ({}) or a hooks entry ({}): {}",
+            MIDDLEWARE_FILE_SUFFIXES.join(", "),
+            HOOKS_FILE_SUFFIXES.join(", "),
+            path.display()
+        ));
     }
 
     let package_json_path = path.join("package.json");
@@ -274,14 +321,24 @@ pub fn inspect_installed_package(path: &Path) -> Result<PackageInspection, Strin
     // Magpie only attaches a page service when the package has a host part:
     // a page-only package must never expose an arbitrary local port.
     let pages = parse_pages(path, &magpie, has_provider_entry)?;
+    // Actions open the plugin's page, so a package with no page has none.
+    let actions = parse_actions(&magpie, !pages.is_empty());
+    let panels = parse_panels(path, &magpie);
     let permissions = dedupe_strings(magpie_string_array(&magpie, "permissions"));
+    let contributions = package_contributions(&magpie, path);
+    let has_hooks = contributions.has_hooks;
 
-    let kind = match (has_provider_entry, has_middleware) {
-        (true, true) => PluginKind::Both,
-        (true, false) => PluginKind::Provider,
-        (false, true) => PluginKind::Middleware,
-        (false, false) if !pages.is_empty() => PluginKind::Page,
-        (false, false) => PluginKind::Unknown,
+    // A provider package with gateway hooks is `Both` (it serves a provider
+    // and runs async hooks in the same Bun host). Hooks without a provider
+    // are a middleware-kind package: the rquickjs engine ignores it because
+    // `middleware_entry` is empty, and the Bun host picks it up by capability.
+    let kind = match (has_provider_entry, has_middleware, has_hooks) {
+        (true, _, _) if has_middleware || has_hooks => PluginKind::Both,
+        (true, _, _) => PluginKind::Provider,
+        (false, _, true) => PluginKind::Middleware,
+        (false, true, false) => PluginKind::Middleware,
+        (false, false, false) if !pages.is_empty() || !panels.is_empty() => PluginKind::Page,
+        (false, false, false) => PluginKind::Unknown,
     };
 
     let middleware_entry = [middleware_marker, gateway_marker, middleware_file]
@@ -314,7 +371,10 @@ pub fn inspect_installed_package(path: &Path) -> Result<PackageInspection, Strin
         has_provider_entry,
         providers: magpie_string_array(&magpie, "providers"),
         pages,
+        actions,
+        panels,
         permissions,
+        contributions,
         options: magpie
             .get("options")
             .filter(|options| options.is_object())
@@ -355,6 +415,17 @@ fn magpie_entry(magpie: &Value, key: &str) -> Option<String> {
 }
 
 fn find_middleware_file(dir: &Path) -> Option<String> {
+    find_file_with_suffix(dir, middleware_suffix)
+}
+
+fn find_hooks_file(dir: &Path) -> Option<String> {
+    find_file_with_suffix(dir, hooks_suffix)
+}
+
+fn find_file_with_suffix(
+    dir: &Path,
+    suffix_of: fn(&str) -> Option<&'static str>,
+) -> Option<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
         .ok()?
         .filter_map(|entry| entry.ok())
@@ -365,10 +436,96 @@ fn find_middleware_file(dir: &Path) -> Option<String> {
                 .unwrap_or(false)
         })
         .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-        .filter(|name| middleware_suffix(name).is_some())
+        .filter(|name| suffix_of(name).is_some())
         .collect();
     names.sort();
     names.into_iter().next()
+}
+
+/// Resolve every capability a package declares, plus the ones this build does
+/// not consume yet. The order of `unsupported_features` is fixed so the
+/// frontend can render it without sorting.
+fn package_contributions(magpie: &Value, dir: &Path) -> PluginContributions {
+    let hooks_marker = magpie_entry(magpie, "hooks");
+    let hooks_entry = hooks_marker
+        .clone()
+        .filter(|entry| !entry.is_empty())
+        .or_else(|| find_hooks_file(dir))
+        .unwrap_or_default();
+    let has_hooks = hooks_marker.is_some() || !hooks_entry.is_empty();
+
+    let has_panels = non_empty_array(magpie.get("panels"));
+    let has_actions = non_empty_array(magpie.get("actions"));
+    let has_replaces = page_replaces_declared(magpie);
+    let has_agent = agent_declared(magpie.get("agent"));
+    let has_privacy_models = matches!(
+        magpie.get("privacyModels"),
+        Some(Value::Array(models)) if !models.is_empty()
+    ) || matches!(
+        magpie.get("privacyModels"),
+        Some(Value::Object(models)) if !models.is_empty()
+    );
+
+    // `hooks`, `panels` and `actions` are consumed by this build. Only the
+    // capabilities still not wired into the host stay in this list, in a
+    // fixed order the frontend can render without sorting.
+    let mut unsupported_features = Vec::new();
+    if has_replaces {
+        unsupported_features.push("replaces".to_string());
+    }
+    if has_agent {
+        unsupported_features.push("agent".to_string());
+    }
+    if has_privacy_models {
+        unsupported_features.push("privacyModels".to_string());
+    }
+
+    PluginContributions {
+        has_hooks,
+        hooks_entry,
+        has_panels,
+        has_actions,
+        has_replaces,
+        has_agent,
+        has_privacy_models,
+        unsupported_features,
+    }
+}
+
+fn non_empty_array(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty())
+}
+
+/// `magpie.page.replaces` (or any `magpie.pages[].replaces`) names a built-in
+/// page this package replaces.
+fn page_replaces_declared(magpie: &Value) -> bool {
+    fn declared(page: &Value) -> bool {
+        page.get("replaces")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|replaces| !replaces.is_empty())
+    }
+    magpie
+        .get("page")
+        .filter(|page| page.is_object())
+        .is_some_and(declared)
+        || magpie
+            .get("pages")
+            .and_then(Value::as_array)
+            .is_some_and(|pages| pages.iter().any(declared))
+}
+
+/// `magpie.agent` is a string, an object or `true` when the package declares
+/// an agent. Empty values are not a declaration.
+fn agent_declared(agent: Option<&Value>) -> bool {
+    match agent {
+        Some(Value::String(name)) => !name.trim().is_empty(),
+        Some(Value::Object(fields)) => !fields.is_empty(),
+        Some(Value::Bool(declared)) => *declared,
+        _ => false,
+    }
 }
 
 fn magpie_string(magpie: &Value, key: &str) -> Option<String> {
@@ -544,6 +701,138 @@ fn parse_page(
     }))
 }
 
+/// Every action a package declares (`magpie.actions`).
+///
+/// Actions open the plugin's page, so a package without a page has none.
+/// An invalid or repeated id, or an unknown menu, is skipped exactly as
+/// Magpie's `Window` skips it; at most [`MAX_ACTIONS`] entries survive.
+fn parse_actions(magpie: &Value, has_page: bool) -> Vec<PluginActionManifest> {
+    if !has_page {
+        return Vec::new();
+    }
+    let Some(entries) = magpie.get("actions").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+    let mut used_ids = HashSet::new();
+    for entry in entries {
+        if actions.len() >= MAX_ACTIONS {
+            break;
+        }
+        let Some(object) = entry.as_object() else {
+            continue;
+        };
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !is_valid_action_id(id) || !used_ids.insert(id.to_string()) {
+            continue;
+        }
+        let menu = object
+            .get("menu")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !ACTION_MENUS.contains(&menu) {
+            continue;
+        }
+        actions.push(PluginActionManifest {
+            id: id.to_string(),
+            menu: menu.to_string(),
+            title: trimmed_string(object.get("title")),
+            titles: page_titles(object.get("titles")),
+        });
+    }
+    actions
+}
+
+/// An action id: lower-case letters, digits and dashes, starting with a
+/// letter or digit, at most 40 characters (Magpie's `actionID`).
+fn is_valid_action_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    if bytes.is_empty() || bytes.len() > 40 {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        && bytes[0].is_ascii_alphanumeric()
+}
+
+/// Every panel a package declares (`magpie.panels`).
+///
+/// A panel in a slot the host does not have, or whose file is not an
+/// existing HTML file inside the package, is left out (Magpie's `Window`
+/// does the same). At most [`MAX_PANELS`] entries survive; each gets an id,
+/// either the declared one (sanitized) or `<slot>-<position>`.
+fn parse_panels(root: &Path, magpie: &Value) -> Vec<PluginPanelManifest> {
+    let Some(entries) = magpie.get("panels").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut panels = Vec::new();
+    let mut used_ids = HashSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if panels.len() >= MAX_PANELS {
+            break;
+        }
+        let Some(object) = entry.as_object() else {
+            continue;
+        };
+        let slot = object
+            .get("slot")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !PANEL_SLOTS.contains(&slot) {
+            continue;
+        }
+        let Some(file) = object
+            .get("file")
+            .or_else(|| object.get("entry"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        let entry_file = normalize_relative_path(file);
+        // Defence in depth: a panel must never make the page server read
+        // outside the plugin folder or serve a non-HTML file.
+        if resolve_page_entry(root, &entry_file).is_err() {
+            continue;
+        }
+        let explicit_id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .map(sanitize_page_id)
+            .unwrap_or_default();
+        let base = if explicit_id.is_empty() {
+            format!("{slot}-{}", index + 1)
+        } else {
+            explicit_id
+        };
+        let id = unique_page_id(&base, &mut used_ids);
+        panels.push(PluginPanelManifest {
+            id,
+            slot: slot.to_string(),
+            title: trimmed_string(object.get("title")),
+            titles: page_titles(object.get("titles")),
+            entry_file,
+        });
+    }
+    panels
+}
+
+fn trimmed_string(value: Option<&Value>) -> String {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn page_titles(raw: Option<&Value>) -> BTreeMap<String, String> {
     let mut titles = BTreeMap::new();
     let Some(object) = raw.and_then(Value::as_object) else {
@@ -608,6 +897,22 @@ pub fn resolve_page_entry(plugin_root: &Path, entry_file: &str) -> Result<PathBu
         return Err("its entry must be an .html or .htm file".to_string());
     }
     let resolved = resolve_inside_plugin(plugin_root, &entry_file)?;
+    let metadata = fs::metadata(&resolved)
+        .map_err(|error| format!("Failed to read '{}': {error}", resolved.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("'{}' is not a file", resolved.display()));
+    }
+    Ok(resolved)
+}
+
+/// Resolve `magpie.hooks` to a canonical file inside `plugin_root`.
+///
+/// Unlike a page entry, a hook file may be JavaScript or TypeScript, but it
+/// still has to stay inside the package: absolute paths, `..`, backslashes
+/// and links that leave the folder are refused.
+pub fn resolve_hooks_entry(plugin_root: &Path, hooks_entry: &str) -> Result<PathBuf, String> {
+    let resolved = resolve_inside_plugin(plugin_root, hooks_entry)
+        .map_err(|error| format!("plugin hooks '{hooks_entry}': {error}"))?;
     let metadata = fs::metadata(&resolved)
         .map_err(|error| format!("Failed to read '{}': {error}", resolved.display()))?;
     if !metadata.is_file() {
@@ -911,11 +1216,30 @@ fn record_from_inspection(
         has_provider_entry: inspection.has_provider_entry,
         providers: inspection.providers,
         pages: inspection.pages,
+        actions: inspection.actions,
+        panels: inspection.panels,
         permissions: inspection.permissions,
+        contributions: inspection.contributions,
         options: inspection.options,
         summary: inspection.summary,
         icon: inspection.icon,
         ..InstalledPluginRecord::default()
+    }
+}
+
+/// Why an installed package cannot be used, naming the capabilities it does
+/// declare instead of the generic "not a plugin" message.
+fn unknown_plugin_error(label: &str, inspection: &PackageInspection) -> String {
+    let unsupported = &inspection.contributions.unsupported_features;
+    if unsupported.is_empty() {
+        format!(
+            "{label} is not a plugin: its package.json names no main/exports and it has no middleware file"
+        )
+    } else {
+        format!(
+            "{label} only declares plugin capabilities this version does not support yet: {}",
+            unsupported.join(", ")
+        )
     }
 }
 
@@ -935,10 +1259,8 @@ pub async fn install_plugin(
         PluginSource::Local { path, .. } => {
             let inspection = inspect_installed_package(path)?;
             if inspection.kind == PluginKind::Unknown {
-                return Err(format!(
-                    "{} is not a plugin: its package.json names no main/exports and it has no middleware file",
-                    path.display()
-                ));
+                let label = path.display().to_string();
+                return Err(unknown_plugin_error(&label, &inspection));
             }
             (
                 path.to_string_lossy().to_string(),
@@ -959,9 +1281,7 @@ pub async fn install_plugin(
                 .join(&package_name);
             let inspection = inspect_installed_package(&target)?;
             if inspection.kind == PluginKind::Unknown {
-                return Err(format!(
-                    "{package_name} is not a plugin: its package.json names no main/exports and it has no middleware file"
-                ));
+                return Err(unknown_plugin_error(&package_name, &inspection));
             }
             (
                 package_name,
@@ -996,7 +1316,11 @@ pub async fn install_plugin(
         HashMap::new()
     };
     let market_key = record.package_name.clone();
-    fill_missing_metadata(&mut record, existing.as_ref(), market_index.get(&market_key));
+    fill_missing_metadata(
+        &mut record,
+        existing.as_ref(),
+        market_index.get(&market_key),
+    );
 
     store::upsert_installed_plugin(db, &record)
 }
@@ -1074,7 +1398,10 @@ pub fn refresh_installed_plugins(
                     has_provider_entry: inspection.has_provider_entry,
                     providers: inspection.providers,
                     pages: inspection.pages,
+                    actions: inspection.actions,
+                    panels: inspection.panels,
                     permissions: inspection.permissions,
+                    contributions: inspection.contributions,
                     summary: inspection.summary,
                     icon: inspection.icon,
                     last_error: None,
@@ -1218,6 +1545,139 @@ mod tests {
     }
 
     #[test]
+    fn detects_every_declared_capability_in_a_stable_order() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("kitchen-sink");
+        fs::create_dir_all(dir.join("page")).unwrap();
+        fs::write(dir.join("index.js"), "export default {}").unwrap();
+        fs::write(dir.join("page").join("index.html"), "<html></html>").unwrap();
+        write_package(
+            &dir,
+            r##"{
+                "name": "kitchen-sink",
+                "main": "index.js",
+                "magpie": {
+                    "hooks": "index.hooks.ts",
+                    "panels": [{ "id": "panel" }],
+                    "actions": [{ "id": "action" }],
+                    "page": { "file": "page/index.html", "replaces": "settings" },
+                    "agent": { "name": "demo" },
+                    "privacyModels": ["private-model"]
+                }
+            }"##,
+        );
+
+        let inspection = inspect_installed_package(&dir).unwrap();
+        // A provider package that also declares asynchronous hooks is `Both`.
+        assert_eq!(inspection.kind, PluginKind::Both);
+        let contributions = &inspection.contributions;
+        assert!(contributions.has_hooks);
+        assert_eq!(contributions.hooks_entry, "index.hooks.ts");
+        assert!(contributions.has_panels);
+        assert!(contributions.has_actions);
+        assert!(contributions.has_replaces);
+        assert!(contributions.has_agent);
+        assert!(contributions.has_privacy_models);
+        // Hooks, panels and actions are wired now; only the rest is reported.
+        assert_eq!(
+            contributions.unsupported_features,
+            vec!["replaces", "agent", "privacyModels"]
+        );
+    }
+
+    #[test]
+    fn hooks_only_packages_and_files_install_as_middleware_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("hooks-only");
+        write_package(&dir, r#"{"name":"hooks-only","version":"1.0.0"}"#);
+        fs::write(
+            dir.join("index.hooks.mjs"),
+            "export function onRequest() {}",
+        )
+        .unwrap();
+
+        let inspection = inspect_installed_package(&dir).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Middleware);
+        assert!(inspection.contributions.has_hooks);
+        assert_eq!(inspection.contributions.hooks_entry, "index.hooks.mjs");
+        // The rquickjs engine must never load a Bun hook file.
+        assert!(inspection.middleware_entry.is_empty());
+        assert!(inspection.contributions.unsupported_features.is_empty());
+        assert!(!inspection.is_page_only());
+
+        // A single hooks file is a complete plugin of its own.
+        let file = root.path().join("solo.hooks.ts");
+        fs::write(&file, "export function onRequest() {}").unwrap();
+        let inspection = inspect_installed_package(&file).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Middleware);
+        assert_eq!(inspection.package_name, "solo");
+        assert_eq!(inspection.contributions.hooks_entry, "solo.hooks.ts");
+        assert!(inspection.middleware_entry.is_empty());
+        assert!(inspection.contributions.unsupported_features.is_empty());
+    }
+
+    #[test]
+    fn a_package_with_magpie_hooks_and_no_provider_entry_is_hooks_only() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("declared-hooks");
+        write_package(
+            &dir,
+            r#"{"name":"declared-hooks","version":"1.0.0","magpie":{"hooks":"src/gateway.ts"}}"#,
+        );
+        write_page(&dir, "src/gateway.ts", "export function onRequest() {}");
+
+        let inspection = inspect_installed_package(&dir).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Middleware);
+        assert!(inspection.contributions.has_hooks);
+        assert_eq!(inspection.contributions.hooks_entry, "src/gateway.ts");
+        assert!(inspection.middleware_entry.is_empty());
+        // The Bun host can resolve the declared file.
+        let resolved = resolve_hooks_entry(&dir, &inspection.contributions.hooks_entry).unwrap();
+        assert_eq!(
+            fs::canonicalize(dir.join("src/gateway.ts")).unwrap(),
+            resolved
+        );
+    }
+
+    #[test]
+    fn provider_packages_without_hooks_stay_provider_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("plain");
+        write_package(&dir, r#"{"name":"plain","main":"index.js"}"#);
+
+        let inspection = inspect_installed_package(&dir).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Provider);
+        assert!(!inspection.contributions.has_hooks);
+    }
+
+    #[test]
+    fn unrelated_capability_objects_do_not_count_as_declarations() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("empty-declarations");
+        write_package(
+            &dir,
+            r#"{
+                "name": "empty-declarations",
+                "main": "index.js",
+                "magpie": {
+                    "hooks": false,
+                    "panels": [],
+                    "actions": [],
+                    "agent": "",
+                    "privacyModels": {},
+                    "page": { "file": "page/index.html" }
+                }
+            }"#,
+        );
+        fs::create_dir_all(dir.join("page")).unwrap();
+        fs::write(dir.join("page").join("index.html"), "<html></html>").unwrap();
+        fs::write(dir.join("index.js"), "export default {}").unwrap();
+
+        let inspection = inspect_installed_package(&dir).unwrap();
+        assert_eq!(inspection.contributions, PluginContributions::default());
+    }
+
+    #[test]
     fn mend_package_json_cuts_trailing_dirty_bytes_and_keeps_a_backup() {
         let root = tempfile::tempdir().unwrap();
         let packages = root.path();
@@ -1280,6 +1740,12 @@ mod tests {
         let local = parse_source(file.to_str().unwrap()).unwrap();
         assert_eq!(local.source_type(), "local");
         assert_eq!(local.spec(), file.to_str().unwrap());
+
+        // A hooks file is a local plugin too, never an npm name.
+        let hooks = root.path().join("solo.hooks.ts");
+        fs::write(&hooks, "export function onRequest() {}").unwrap();
+        let local = parse_source(hooks.to_str().unwrap()).unwrap();
+        assert_eq!(local.source_type(), "local");
 
         assert!(parse_source("").is_err());
         assert!(parse_source("Not A Package").is_err());
@@ -1371,6 +1837,174 @@ mod tests {
         assert!(inspection.is_page_only());
         assert_eq!(inspection.pages[0].service_port, None);
         assert_eq!(inspection.pages[0].service_option, None);
+    }
+
+    #[test]
+    fn actions_need_a_page_valid_ids_and_a_known_menu() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("actions");
+        write_package(
+            &plugin,
+            r##"{
+                "name": "actions",
+                "magpie": {
+                    "page": { "file": "index.html" },
+                    "actions": [
+                        { "id": "refresh", "menu": "provider", "title": "Refresh", "titles": { "zh": "刷新" } },
+                        { "id": "Refreshed!", "menu": "provider" },
+                        { "id": "refresh", "menu": "agent" },
+                        { "id": "bad-menu", "menu": "settings" },
+                        { "id": "agent-tool", "menu": "agent" },
+                        { "id": "1st", "menu": "provider" },
+                        { "id": "-nope", "menu": "provider" }
+                    ]
+                }
+            }"##,
+        );
+        write_page(&plugin, "index.html", "<html></html>");
+
+        let inspection = inspect_installed_package(&plugin).unwrap();
+        let ids: Vec<&str> = inspection.actions.iter().map(|a| a.id.as_str()).collect();
+        // Invalid ids, an unknown menu and the repeated id are skipped, and a
+        // repeated id does not consume one of the eight slots.
+        assert_eq!(ids, vec!["refresh", "agent-tool", "1st"]);
+        assert_eq!(inspection.actions[0].menu, "provider");
+        assert_eq!(
+            inspection.actions[0].titles.get("zh").map(String::as_str),
+            Some("刷新")
+        );
+        assert!(inspection.contributions.has_actions);
+
+        // Without a page an action has nothing to open, so none is kept.
+        let no_page = root.path().join("no-page-actions");
+        write_package(
+            &no_page,
+            r#"{"name":"no-page-actions","magpie":{"actions":[{"id":"refresh","menu":"provider"}]}}"#,
+        );
+        let inspection = inspect_installed_package(&no_page).unwrap();
+        assert!(inspection.actions.is_empty());
+        assert_eq!(inspection.kind, PluginKind::Unknown);
+    }
+
+    #[test]
+    fn actions_are_capped_at_eight_per_plugin() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("many-actions");
+        let actions = (0..12)
+            .map(|index| format!(r#"{{"id":"action-{index}","menu":"agent"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        write_package(
+            &plugin,
+            &format!(
+                r#"{{"name":"many-actions","magpie":{{"page":{{"file":"index.html"}},"actions":[{actions}]}}}}"#
+            ),
+        );
+        write_page(&plugin, "index.html", "<html></html>");
+
+        let inspection = inspect_installed_package(&plugin).unwrap();
+        assert_eq!(inspection.actions.len(), MAX_ACTIONS);
+        assert_eq!(inspection.actions[7].id, "action-7");
+    }
+
+    #[test]
+    fn panels_need_a_known_slot_and_an_html_file_inside_the_package() {
+        let root = tempfile::tempdir().unwrap();
+        write_page(root.path(), "outside.html", "<html></html>");
+        let plugin = root.path().join("panels");
+        write_package(
+            &plugin,
+            r#"{
+                "name": "panels",
+                "magpie": {
+                    "panels": [
+                        { "slot": "settings", "title": "Settings", "file": "panel/settings.html" },
+                        { "slot": "provider", "file": "panel/provider.html", "id": "Provider Panel" },
+                        { "slot": "nowhere", "file": "panel/settings.html" },
+                        { "slot": "usage", "file": "panel/settings.js" },
+                        { "slot": "agents", "file": "../outside.html" },
+                        { "slot": "usage", "file": "missing.html" }
+                    ]
+                }
+            }"#,
+        );
+        write_page(&plugin, "panel/settings.html", "<html></html>");
+        write_page(&plugin, "panel/provider.html", "<html></html>");
+        write_page(&plugin, "panel/settings.js", "console.log(1)");
+
+        let inspection = inspect_installed_package(&plugin).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Page);
+        assert!(inspection.is_page_only());
+        let ids: Vec<&str> = inspection.panels.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["settings-1", "provider-panel"]);
+        assert_eq!(inspection.panels[0].slot, "settings");
+        assert_eq!(inspection.panels[0].entry_file, "panel/settings.html");
+        assert_eq!(inspection.panels[1].slot, "provider");
+        assert_eq!(inspection.panels[1].id, "provider-panel");
+    }
+
+    #[test]
+    fn panel_only_packages_are_page_kind_and_never_need_bun() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("panel-only");
+        write_package(
+            &plugin,
+            r#"{
+                "name": "panel-only",
+                "magpie": { "panels": [{ "slot": "settings", "file": "panel.html" }] }
+            }"#,
+        );
+        write_page(&plugin, "panel.html", "<html></html>");
+
+        let inspection = inspect_installed_package(&plugin).unwrap();
+        assert_eq!(inspection.kind, PluginKind::Page);
+        assert!(inspection.is_page_only());
+        assert_eq!(inspection.panels.len(), 1);
+        assert_eq!(inspection.panels[0].id, "settings-1");
+    }
+
+    #[test]
+    fn panels_are_capped_at_eight_per_plugin() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("many-panels");
+        let panels = (0..12)
+            .map(|_| r#"{"slot":"usage","file":"panel.html"}"#)
+            .collect::<Vec<_>>()
+            .join(",");
+        write_package(
+            &plugin,
+            &format!(r#"{{"name":"many-panels","magpie":{{"panels":[{panels}]}}}}"#),
+        );
+        write_page(&plugin, "panel.html", "<html></html>");
+
+        let inspection = inspect_installed_package(&plugin).unwrap();
+        assert_eq!(inspection.panels.len(), MAX_PANELS);
+        assert_eq!(inspection.panels[7].id, "usage-8");
+    }
+
+    #[test]
+    fn hooks_entries_must_stay_inside_the_plugin_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("hook-paths");
+        write_page(&plugin, "hooks/index.js", "export function onRequest() {}");
+        write_page(
+            root.path(),
+            "outside.hooks.js",
+            "export function onRequest() {}",
+        );
+
+        assert!(resolve_hooks_entry(&plugin, "hooks/index.js").is_ok());
+        for escape in [
+            "../outside.hooks.js",
+            "hooks/../../outside.hooks.js",
+            "C:/outside.hooks.js",
+        ] {
+            assert!(
+                resolve_hooks_entry(&plugin, escape).is_err(),
+                "{escape} must be refused"
+            );
+        }
+        assert!(resolve_hooks_entry(&plugin, "hooks/missing.js").is_err());
     }
 
     #[test]
@@ -1466,7 +2100,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_rediscovers_pages_and_permissions() {
+    fn refresh_rediscovers_pages_permissions_actions_and_panels() {
         use serde_json::json;
 
         let db = SqliteDbState::in_memory_for_test().unwrap();
@@ -1478,6 +2112,7 @@ mod tests {
             r#"{"name":"local-page","magpie":{"page":{"file":"index.html"},"permissions":["usage:summary"]}}"#,
         );
         write_page(&plugin, "index.html", "<html></html>");
+        write_page(&plugin, "panel.html", "<html></html>");
 
         store::upsert_installed_plugin(
             &db,
@@ -1501,12 +2136,16 @@ mod tests {
 
         write_package(
             &plugin,
-            r#"{"name":"local-page","magpie":{"pages":[{"file":"index.html"},{"file":"other.html"}],"permissions":["usage:day"]}}"#,
+            r#"{"name":"local-page","magpie":{"pages":[{"file":"index.html"},{"file":"other.html"}],"permissions":["usage:day"],"actions":[{"id":"refresh","menu":"provider"}],"panels":[{"slot":"settings","file":"panel.html"}]}}"#,
         );
         write_page(&plugin, "other.html", "<html></html>");
         let refreshed = refresh_installed_plugins(&db, &paths).unwrap();
         assert_eq!(refreshed[0].pages.len(), 2);
         assert_eq!(refreshed[0].permissions, vec!["usage:day"]);
+        assert_eq!(refreshed[0].actions.len(), 1);
+        assert_eq!(refreshed[0].actions[0].id, "refresh");
+        assert_eq!(refreshed[0].panels.len(), 1);
+        assert_eq!(refreshed[0].panels[0].id, "settings-1");
 
         // A broken package keeps its last known pages and gains lastError.
         write_package(

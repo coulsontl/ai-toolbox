@@ -43,6 +43,12 @@ impl PluginPaths {
         self.root().join("plugin-auth.json.lock")
     }
 
+    /// `<app_data>/plugins/account-ref.key` — the HMAC key gateway middleware
+    /// `onAccount` refs are made with. Created once and never overwritten.
+    pub fn account_ref_key_path(&self) -> PathBuf {
+        self.root().join("account-ref.key")
+    }
+
     /// `<app_data>/plugins/cache/markets`.
     pub fn market_cache_dir(&self) -> PathBuf {
         self.root().join("cache").join("markets")
@@ -168,6 +174,7 @@ mod tests {
         assert_eq!(paths.packages_dir(), root.join("packages"));
         assert_eq!(paths.auth_path(), root.join("plugin-auth.json"));
         assert_eq!(paths.auth_lock_path(), root.join("plugin-auth.json.lock"));
+        assert_eq!(paths.account_ref_key_path(), root.join("account-ref.key"));
         assert_eq!(paths.market_cache_dir(), root.join("cache").join("markets"));
         assert_eq!(
             paths.market_cache_path("magpie-community"),

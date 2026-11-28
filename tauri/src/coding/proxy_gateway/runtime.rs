@@ -46,8 +46,8 @@ use self::providers::json_object_string;
 use self::routes::{build_target_url, match_gateway_route};
 #[cfg(test)]
 use self::upstream::build_upstream_headers;
-use self::upstream::route_request;
 #[cfg(test)]
+use self::upstream::route_request;
 use self::upstream::{route_request_with_options, GatewayRequestOptions};
 use super::listen::bind_gateway_listener;
 use super::model_health::ModelHealthRegistry;
@@ -69,7 +69,7 @@ use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -873,6 +873,21 @@ async fn handle_connection(
     handle_connection_with_body_limit(stream, context, MAX_REQUEST_BODY_BYTES).await
 }
 
+/// Whether a gateway connection came from this machine. `Ipv4Addr::is_loopback`
+/// does not see the IPv4-mapped IPv6 form (`::ffff:127.0.0.1`), so check both.
+fn peer_is_loopback(stream: &TokioTcpStream) -> bool {
+    stream
+        .peer_addr()
+        .map(|addr| match addr.ip() {
+            IpAddr::V4(ip) => ip.is_loopback(),
+            IpAddr::V6(ip) => {
+                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+            }
+        })
+        // A peer address that cannot be read is not proven local.
+        .unwrap_or(false)
+}
+
 async fn handle_connection_with_body_limit(
     stream: &mut TokioTcpStream,
     context: &GatewayRuntimeContext,
@@ -992,10 +1007,16 @@ async fn handle_connection_with_body_limit(
             .await;
     }
 
+    // The plugin tools MCP endpoint executes local tools, so routing needs to
+    // know whether this connection really came from this machine.
+    let gateway_options = GatewayRequestOptions {
+        is_loopback_peer: peer_is_loopback(stream),
+        ..GatewayRequestOptions::default()
+    };
     // Codex Desktop official-login clients may send zstd-compressed JSON bodies.
     // Decode before routing/JSON parsing so passthrough and conversion both see plain JSON.
     let mut response = match decode_inbound_request_body_with_limit(&mut request, max_body_bytes) {
-        Ok(()) => route_request(&request, context).await,
+        Ok(()) => route_request_with_options(&request, context, &gateway_options).await,
         Err(InboundBodyDecodeError::TooLarge {
             encoding,
             compressed_bytes,
@@ -3437,6 +3458,7 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             &GatewayRequestOptions {
                 provider_override_id: Some(provider_id),
                 disable_health_mutation: true,
+                is_loopback_peer: true,
             },
         ));
 
@@ -3955,10 +3977,12 @@ data: {"type":"response.completed","response":{"id":"resp_stream","status":"comp
             base_url: "https://api.example.com".to_string(),
             npm: "@ai-sdk/openai-compatible".to_string(),
             target_protocol: crate::coding::proxy_gateway::transformer::AiProtocol::OpenAiChat,
+            upstream_model_id: None,
             models: vec![crate::plugins::gateway_bridge::PluginModelInfo {
                 id: "demo-model".to_string(),
                 name: "Demo Model".to_string(),
                 npm: String::new(),
+                ..Default::default()
             }],
         };
         let response = plugin_models_response(&endpoint);

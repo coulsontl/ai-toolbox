@@ -156,6 +156,16 @@ pub enum PluginCommand {
     HostRestart,
     /// List custom pages of enabled plugins
     Pages,
+    /// List the tools enabled provider plugins export, plus the MCP endpoint
+    Tools,
+    /// Create or refresh the central MCP server that exposes plugin tools
+    SyncToolsMcp,
+    /// List menu actions contributed by enabled plugins
+    Actions,
+    /// List inline panels contributed by enabled plugins
+    Panels,
+    /// Show asynchronous gateway hook diagnostics
+    Hooks,
     /// Refresh the model list of every plugin provider
     RefreshModels,
     /// Add a plugin provider to a coding CLI (native input JSON)
@@ -705,6 +715,49 @@ mod tests {
                 "{expected} must parse under `plugin`"
             );
         }
+    }
+
+    #[test]
+    fn parses_plugin_tool_and_extension_diagnostics() {
+        let tools = Cli::try_parse_from(["aitoolbox", "plugin", "tools"]).unwrap();
+        assert!(matches!(
+            tools.command,
+            Command::Plugin {
+                command: PluginCommand::Tools
+            }
+        ));
+
+        let sync = Cli::try_parse_from(["aitoolbox", "plugin", "sync-tools-mcp"]).unwrap();
+        assert!(matches!(
+            sync.command,
+            Command::Plugin {
+                command: PluginCommand::SyncToolsMcp
+            }
+        ));
+
+        let actions = Cli::try_parse_from(["aitoolbox", "plugin", "actions"]).unwrap();
+        assert!(matches!(
+            actions.command,
+            Command::Plugin {
+                command: PluginCommand::Actions
+            }
+        ));
+
+        let panels = Cli::try_parse_from(["aitoolbox", "plugin", "panels"]).unwrap();
+        assert!(matches!(
+            panels.command,
+            Command::Plugin {
+                command: PluginCommand::Panels
+            }
+        ));
+
+        let hooks = Cli::try_parse_from(["aitoolbox", "plugin", "hooks"]).unwrap();
+        assert!(matches!(
+            hooks.command,
+            Command::Plugin {
+                command: PluginCommand::Hooks
+            }
+        ));
     }
 
     #[test]

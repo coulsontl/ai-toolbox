@@ -261,6 +261,13 @@
   gap: 6px;
 }
 
+/* Disabled buttons swallow pointer events; this wrapper keeps the tooltip
+   that explains the single-account lock hoverable. */
+.actionTooltipWrap {
+  display: inline-flex;
+  min-width: 0;
+}
+
 .autoCheckinControl {
   display: inline-flex;
   height: 32px;

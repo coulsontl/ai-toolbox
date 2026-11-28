@@ -1,9 +1,10 @@
 import React from 'react';
-import { App, Input, Switch, Tooltip, Spin } from 'antd';
+import { App, Dropdown, Input, Switch, Tooltip, Spin } from 'antd';
 import {
   Brain,
   CalendarCheck,
   CheckCircle2,
+  ChevronDown,
   Circle,
   CircleAlert,
   Eye,
@@ -12,6 +13,7 @@ import {
   LogOut,
   Loader2,
   PlugZap,
+  Puzzle,
   RefreshCw,
   Search,
   Send,
@@ -37,6 +39,8 @@ import {
   type PluginProviderOptionDeclaration,
   type PluginProviderRow,
   type PluginUsage,
+  type RegisteredPluginAction,
+  type RegisteredPluginPanel,
 } from '@/services';
 import { copyTextToClipboard } from '@/services/clipboardApi';
 import {
@@ -45,21 +49,34 @@ import {
   formatDateTime,
   formatPluginError,
   getCountdownParts,
+  getPluginPageTitle,
   getProviderHealth,
   getProtocolLabel,
   isMeaningfulExpiryDate,
   pickLocalizedText,
   type PluginQuotaRow,
 } from '../utils/pluginFormatters';
+import { usePluginBridgeTheme } from '../utils/pluginPageTheme';
 import AddPluginToCliModal from './AddPluginToCliModal';
 import PluginIcon from './PluginIcon';
 import PluginLoginModal from './PluginLoginModal';
+import PluginPanelSlot from './PluginPanelSlot';
 import styles from './PluginAccountsView.module.less';
 
 interface PluginAccountsViewProps {
   active: boolean;
   refreshKey: number;
   installedPlugins: InstalledPluginRecord[];
+  /** Actions available from the selected channel's header menu. */
+  providerActions?: RegisteredPluginAction[];
+  onTriggerAction?: (
+    action: RegisteredPluginAction,
+    provider: { id: string; name: string },
+  ) => void;
+  /** Inline panels the host exposes for the selected channel. */
+  panels?: RegisteredPluginPanel[];
+  onPanelOptionsChanged?: (pluginId: string, options: Record<string, unknown>) => void;
+  onOpenInstall?: (packageName: string) => void;
   onDataChanged: () => Promise<void>;
   onBrowseMarket: () => void;
   onOpenRuntime: () => void;
@@ -69,6 +86,11 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
   active,
   refreshKey,
   installedPlugins,
+  providerActions,
+  onTriggerAction,
+  panels,
+  onPanelOptionsChanged,
+  onOpenInstall,
   onDataChanged,
   onBrowseMarket,
   onOpenRuntime,
@@ -76,6 +98,7 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
   const { t, i18n } = useTranslation();
   const { message, modal } = App.useApp();
   const [searchParams, setSearchParams] = useSearchParams();
+  const bridgeTheme = usePluginBridgeTheme();
 
   const [providers, setProviders] = React.useState<PluginProviderRow[]>([]);
   const [accounts, setAccounts] = React.useState<PluginAccountSummary[]>([]);
@@ -174,6 +197,23 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
     ?? providers[0]
     ?? null;
 
+  const providerMenuActions = React.useMemo(
+    () => (providerActions ?? []).filter((action) => action.menu === 'provider'),
+    [providerActions],
+  );
+
+  const panelContextExtra = React.useMemo(
+    () => (selectedProvider
+      ? {
+        provider: {
+          id: selectedProvider.id,
+          name: selectedProvider.name || selectedProvider.id,
+        },
+      }
+      : {}),
+    [selectedProvider],
+  );
+
   const filteredProviders = React.useMemo(() => {
     const needle = providerSearch.trim().toLowerCase();
     if (!needle) {
@@ -194,6 +234,9 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
     if (!selectedProvider) return [];
     return accounts.filter((account) => account.provider === selectedProvider.id);
   }, [accounts, selectedProvider]);
+
+  // A single-account channel locks its add-account entry once one exists.
+  const singleAccountLocked = Boolean(selectedProvider?.single) && providerAccounts.length > 0;
 
   const quotaRowsByAccount = React.useMemo(() => {
     const next: Record<string, PluginQuotaRow[]> = {};
@@ -755,14 +798,25 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                 </div>
               </div>
               <div className={styles.detailActions}>
-                <button
-                  type="button"
-                  className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
-                  onClick={() => setLoginProvider(selectedProvider)}
+                {/* Disabled native buttons swallow pointer events, so the
+                    tooltip needs a wrapper span to explain the lock. */}
+                <Tooltip
+                  title={
+                    singleAccountLocked ? t('plugins.accounts.singleAccountHint') : ''
+                  }
                 >
-                  <LogIn size={15} aria-hidden="true" />
-                  <span>{t('plugins.accounts.login')}</span>
-                </button>
+                  <span className={styles.actionTooltipWrap}>
+                    <button
+                      type="button"
+                      className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
+                      disabled={singleAccountLocked}
+                      onClick={() => setLoginProvider(selectedProvider)}
+                    >
+                      <LogIn size={15} aria-hidden="true" />
+                      <span>{t('plugins.accounts.login')}</span>
+                    </button>
+                  </span>
+                </Tooltip>
                 <button
                   type="button"
                   className={styles.actionButton}
@@ -832,6 +886,41 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                       />
                     </label>
                   </Tooltip>
+                ) : null}
+                {providerMenuActions.length > 0 && onTriggerAction ? (
+                  <Dropdown
+                    trigger={['click']}
+                    menu={{
+                      items: providerMenuActions.map((action) => ({
+                        key: `${action.pluginId}:${action.pageId}:${action.id}`,
+                        label: getPluginPageTitle(
+                          {
+                            title: action.title || action.pluginName,
+                            titles: action.titles ?? {},
+                          },
+                          i18n.language,
+                        ),
+                      })),
+                      onClick: ({ key }) => {
+                        const action = providerMenuActions.find(
+                          (entry) => `${entry.pluginId}:${entry.pageId}:${entry.id}` === key,
+                        );
+                        if (!action) {
+                          return;
+                        }
+                        onTriggerAction(action, {
+                          id: selectedProvider.id,
+                          name: selectedProvider.name || selectedProvider.id,
+                        });
+                      },
+                    }}
+                  >
+                    <button type="button" className={styles.actionButton}>
+                      <Puzzle size={15} aria-hidden="true" />
+                      <span>{t('plugins.accounts.pluginActions')}</span>
+                      <ChevronDown size={13} aria-hidden="true" />
+                    </button>
+                  </Dropdown>
                 ) : null}
               </div>
             </div>
@@ -1207,6 +1296,13 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                       model.image ? t('plugins.accounts.modelFlags.vision') : '',
                       model.fast ? t('plugins.accounts.modelFlags.fast') : '',
                     ].filter(Boolean);
+                    // Gateway takeover and Coding CLI sync only carry chat
+                    // models; anything that declares outputs without text is
+                    // flagged rather than silently dropped.
+                    const nonChatModel = Boolean(model.outputsSaid)
+                      && !(model.outputs ?? []).some(
+                        (output) => output.toLowerCase() === 'text',
+                      );
                     return (
                       <Tooltip
                         key={model.id}
@@ -1235,6 +1331,11 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                                 })
                                 : t('plugins.accounts.modelTooltipNone')}
                             </span>
+                            {nonChatModel ? (
+                              <span className={styles.modelTooltipHint}>
+                                {t('plugins.accounts.nonChatHint')}
+                              </span>
+                            ) : null}
                             <span className={styles.modelTooltipHint}>
                               {t('plugins.accounts.modelIdCopyHint')}
                             </span>
@@ -1249,6 +1350,11 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                           <span className={styles.modelPillName}>
                             {model.name || model.id}
                           </span>
+                          {nonChatModel ? (
+                            <span className={styles.modelBadge}>
+                              {t('plugins.accounts.nonChatTag')}
+                            </span>
+                          ) : null}
                           {model.reasoning ? (
                             <span
                               className={styles.modelCapability}
@@ -1332,6 +1438,17 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                 </div>
               </section>
             ) : null}
+
+            <PluginPanelSlot
+              slot="provider"
+              panels={panels ?? []}
+              active={active}
+              theme={bridgeTheme}
+              contextExtra={panelContextExtra}
+              installedPlugins={installedPlugins}
+              onOptionsChanged={onPanelOptionsChanged}
+              onOpenInstall={onOpenInstall}
+            />
           </>
         ) : (
           <div className={styles.empty}>

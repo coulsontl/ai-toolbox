@@ -6639,6 +6639,31 @@
       "providerSignedOut": "Not signed in",
       "middlewareSummary": "{{hooks}} · {{calls}} calls · {{avg}} avg",
       "pageSummary": "{{pages}} pages · {{permissions}} permissions",
+      "tools": {
+        "title": "Plugin tools MCP · {{count}} tools",
+        "pluginCount": "{{count}} tools",
+        "copyEndpoint": "Copy address",
+        "copySuccess": "MCP address copied",
+        "copyFailed": "Failed to copy address: {{error}}",
+        "sync": "Sync to MCP management",
+        "resync": "Update MCP config",
+        "syncSuccess": "Plugin tools synced to MCP management",
+        "syncFailed": "Failed to sync to MCP management: {{error}}",
+        "synced": "Synced",
+        "gatewayStopped": "Gateway is not running; the tools endpoint is unavailable",
+        "moreTools": "…and {{count}} more"
+      },
+      "unsupportedTag": "Partial support",
+      "unsupportedTooltip": "Everything else works normally. These declared capabilities are not wired up in this version yet:",
+      "capabilities": {
+        "hooks": "Middleware hooks",
+        "panels": "Interface panels",
+        "actions": "Quick actions",
+        "replaces": "Provider replacement",
+        "agent": "Agent capability",
+        "privacyModels": "Privacy models",
+        "search": "Search"
+      },
       "bunReady": "Plugins run on Bun {{version}}",
       "bunMissing": "Bun runtime is not ready",
       "viewRuntime": "View runtime",
@@ -6670,6 +6695,7 @@
       "accountsHint": "Credentials stay on this machine.",
       "noAccountsDesc": "Sign in to use this channel through the gateway.",
       "login": "Sign in",
+      "pluginActions": "Plugin actions",
       "refreshModels": "Refresh models",
       "refreshUsageAll": "Refresh usage",
       "checkinAll": "Check in all",
@@ -6734,11 +6760,13 @@
         "rate": "×{{rate}}",
         "fast": "Fast"
       },
+      "nonChatTag": "Non-chat",
       "optionsTitle": "Plugin switches",
       "optionsHint": "Declared by the plugin; changes take effect immediately.",
       "optionConfirmTitle": "Toggle {{label}}",
       "optionSaveFailed": "Failed to save plugin switch: {{error}}",
       "signedInCount": "{{count}} signed in",
+      "singleAccountHint": "This channel plugin supports a single account",
       "providerSearch": "Search channels",
       "providerSearchEmpty": "No matching channels",
       "autoCheckin": "Auto check-in",
@@ -6763,6 +6791,7 @@
       "modelTooltipContext": "Context: {{context}}",
       "modelTooltipCapabilities": "Capabilities: {{capabilities}}",
       "modelTooltipNone": "Capabilities: none declared",
+      "nonChatHint": "The gateway proxy and Coding CLIs only support chat models, so this model is not synced.",
       "modelIdCopyHint": "Click to copy the model ID"
     },
     "market": {
@@ -6956,6 +6985,15 @@
       "middlewareTitle": "Middleware performance",
       "middlewareCount": "{{count}} middleware",
       "middlewareEmpty": "No middleware plugins are loaded",
+      "hooksTitle": "Async gateway hooks",
+      "hooksCount": "{{count}} hooks",
+      "hookColumns": {
+        "name": "Plugin",
+        "calls": "Calls",
+        "failures": "Failures",
+        "avg": "Avg time (ms)",
+        "lastOutcome": "Last outcome"
+      },
       "columns": {
         "name": "Name",
         "hooks": "Hooks",
@@ -7090,6 +7128,9 @@
       "retry": "Retry",
       "navigationBlockedTitle": "Page navigated away",
       "navigationBlockedDetail": "The page navigated away from the plugin entry point. The bridge was disconnected to protect your data; reload to return to the original page."
+    },
+    "panels": {
+      "loadFailed": "Failed to load the panel"
     },
     "sidebar": {
       "expand": "Expand menu",

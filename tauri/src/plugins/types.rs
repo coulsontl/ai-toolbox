@@ -75,6 +75,81 @@ pub struct PluginPageManifest {
     pub service_option: Option<String>,
 }
 
+/// One item a plugin adds to one of the host's menus (`magpie.actions`).
+///
+/// Actions are stored on the installed record; a registered action adds the
+/// owning plugin and the page it opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginActionManifest {
+    /// Lower-case letters, digits and dashes (`^[a-z0-9][a-z0-9-]{0,39}$`).
+    pub id: String,
+    /// `provider` or `agent`.
+    pub menu: String,
+    pub title: String,
+    #[serde(default)]
+    pub titles: BTreeMap<String, String>,
+}
+
+/// One panel a plugin adds to one of the host's own pages (`magpie.panels`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginPanelManifest {
+    pub id: String,
+    /// `provider`, `settings`, `usage` or `agents`.
+    pub slot: String,
+    pub title: String,
+    #[serde(default)]
+    pub titles: BTreeMap<String, String>,
+    /// Panel HTML file, relative to the package root with forward slashes.
+    pub entry_file: String,
+}
+
+/// One action of an enabled plugin, ready for the host's menus.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredPluginAction {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    /// The plugin page picking this action opens.
+    pub page_id: String,
+    pub id: String,
+    pub menu: String,
+    pub title: String,
+    #[serde(default)]
+    pub titles: BTreeMap<String, String>,
+}
+
+/// One panel of an enabled plugin, ready for the host's own pages.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredPluginPanel {
+    pub plugin_id: String,
+    pub plugin_name: String,
+    pub panel_id: String,
+    pub slot: String,
+    pub title: String,
+    #[serde(default)]
+    pub titles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+/// One asynchronous gateway hook's aggregate diagnostics, as the Bun host
+/// reports them and the plugins page shows them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayHookStateDto {
+    pub plugin_id: String,
+    pub plugin_spec: String,
+    pub plugin_name: String,
+    pub calls: u64,
+    pub failures: u64,
+    pub avg_millis: f64,
+    pub last_outcome: String,
+    pub last_bytes: u64,
+}
+
 /// One page of an enabled plugin, ready for the frontend's page sidebar.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -122,6 +197,32 @@ pub struct PluginPageSession {
     pub keep_alive: bool,
 }
 
+/// What a plugin package declares beyond its provider entry.
+///
+/// The installer resolves these from the package manifest. `unsupported`
+/// lists the declarations this build does not consume yet, so the UI can say
+/// so instead of pretending the whole package works.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginContributions {
+    #[serde(default)]
+    pub has_hooks: bool,
+    #[serde(default)]
+    pub hooks_entry: String,
+    #[serde(default)]
+    pub has_panels: bool,
+    #[serde(default)]
+    pub has_actions: bool,
+    #[serde(default)]
+    pub has_replaces: bool,
+    #[serde(default)]
+    pub has_agent: bool,
+    #[serde(default)]
+    pub has_privacy_models: bool,
+    #[serde(default)]
+    pub unsupported_features: Vec<String>,
+}
+
 /// One installed plugin package.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -148,9 +249,18 @@ pub struct InstalledPluginRecord {
     /// Custom pages the package declares (`magpie.page` / `magpie.pages`).
     #[serde(default)]
     pub pages: Vec<PluginPageManifest>,
+    /// Items the package adds to the host's menus (`magpie.actions`).
+    #[serde(default)]
+    pub actions: Vec<PluginActionManifest>,
+    /// Panels the package adds to the host's own pages (`magpie.panels`).
+    #[serde(default)]
+    pub panels: Vec<PluginPanelManifest>,
     /// Reads the package asks its pages to be granted (`magpie.permissions`).
     #[serde(default)]
     pub permissions: Vec<String>,
+    /// Capability matrix resolved from the package manifest.
+    #[serde(default)]
+    pub contributions: PluginContributions,
     #[serde(default = "empty_json_object")]
     pub options: Value,
     #[serde(default)]
@@ -166,13 +276,40 @@ pub struct InstalledPluginRecord {
 }
 
 impl InstalledPluginRecord {
-    /// A package that is only a page: it has no provider entry and no page
-    /// declares a local service, so nothing of it belongs in the Bun host.
+    /// A package that is only UI: it has no provider entry, no asynchronous
+    /// gateway hooks and no page declares a local service, so nothing of it
+    /// belongs in the Bun host.
     pub fn is_page_only(&self) -> bool {
         !self.has_provider_entry
-            && !self.pages.is_empty()
+            && !self.contributions.has_hooks
+            && (!self.pages.is_empty() || !self.panels.is_empty())
             && self.pages.iter().all(|page| page.service_port.is_none())
     }
+}
+
+/// One plugin tool as the tools MCP server and the plugins page name it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginToolDto {
+    pub plugin_id: String,
+    pub plugin_spec: String,
+    pub plugin_name: String,
+    pub tool_name: String,
+    pub mcp_name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+/// Every tool the enabled provider plugins offer, plus where the gateway
+/// serves them as a Streamable HTTP MCP server.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginToolsSummaryDto {
+    pub endpoint_url: String,
+    pub alias_url: String,
+    pub gateway_running: bool,
+    pub mcp_server_id: Option<String>,
+    pub tools: Vec<PluginToolDto>,
 }
 
 /// One configured market registry.
@@ -242,7 +379,8 @@ pub struct PluginSettings {
     pub bun_manual_path: String,
     #[serde(default = "default_npm_registry")]
     pub npm_registry: String,
-    /// Whether market and npm requests go through the app proxy.
+    /// Whether market/npm requests and the plugin host's vendor calls go
+    /// through the app proxy.
     #[serde(default = "default_true")]
     pub follow_app_proxy: bool,
     /// Explicit per-provider auto check-in switches, keyed by provider id.
@@ -432,6 +570,16 @@ mod tests {
 
         record.pages.clear();
         assert!(!record.is_page_only());
+
+        // A panel-only package is UI too, unless it also contributes hooks.
+        record.panels.push(PluginPanelManifest {
+            id: "main".to_string(),
+            entry_file: "panel/index.html".to_string(),
+            ..PluginPanelManifest::default()
+        });
+        assert!(record.is_page_only());
+        record.contributions.has_hooks = true;
+        assert!(!record.is_page_only());
     }
 
     #[test]
@@ -448,7 +596,88 @@ mod tests {
         }))
         .unwrap();
         assert!(record.pages.is_empty());
+        assert!(record.panels.is_empty());
+        assert!(record.actions.is_empty());
         assert!(record.permissions.is_empty());
+        assert_eq!(record.contributions, PluginContributions::default());
+    }
+
+    #[test]
+    fn contributions_use_the_frontend_camel_case_shape() {
+        let contributions = PluginContributions {
+            has_hooks: true,
+            hooks_entry: "index.hooks.ts".to_string(),
+            has_panels: true,
+            has_actions: false,
+            has_replaces: true,
+            has_agent: false,
+            has_privacy_models: true,
+            unsupported_features: vec![
+                "replaces".to_string(),
+                "agent".to_string(),
+                "privacyModels".to_string(),
+            ],
+        };
+        let value = serde_json::to_value(&contributions).unwrap();
+        assert_eq!(value["hasHooks"], true);
+        assert_eq!(value["hooksEntry"], "index.hooks.ts");
+        assert_eq!(value["hasPanels"], true);
+        assert_eq!(value["hasActions"], false);
+        assert_eq!(value["hasReplaces"], true);
+        assert_eq!(value["hasAgent"], false);
+        assert_eq!(value["hasPrivacyModels"], true);
+        assert_eq!(value["unsupportedFeatures"][2], "privacyModels");
+        assert!(value.get("has_hooks").is_none());
+    }
+
+    #[test]
+    fn action_panel_and_hook_state_dtos_use_the_frontend_camel_case_shape() {
+        let action = RegisteredPluginAction {
+            plugin_id: "demo".to_string(),
+            plugin_name: "Demo".to_string(),
+            page_id: "default".to_string(),
+            id: "refresh".to_string(),
+            menu: "provider".to_string(),
+            title: "Refresh".to_string(),
+            titles: BTreeMap::from([("zh".to_string(), "刷新".to_string())]),
+        };
+        let value = serde_json::to_value(&action).unwrap();
+        assert_eq!(value["pluginId"], "demo");
+        assert_eq!(value["pluginName"], "Demo");
+        assert_eq!(value["pageId"], "default");
+        assert_eq!(value["menu"], "provider");
+        assert_eq!(value["titles"]["zh"], "刷新");
+        assert!(value.get("plugin_id").is_none());
+
+        let panel = RegisteredPluginPanel {
+            plugin_id: "demo".to_string(),
+            plugin_name: "Demo".to_string(),
+            panel_id: "settings-1".to_string(),
+            slot: "settings".to_string(),
+            title: "Panel".to_string(),
+            titles: BTreeMap::new(),
+            permissions: vec!["usage:summary".to_string()],
+        };
+        let value = serde_json::to_value(&panel).unwrap();
+        assert_eq!(value["panelId"], "settings-1");
+        assert_eq!(value["slot"], "settings");
+        assert_eq!(value["permissions"][0], "usage:summary");
+
+        let state = GatewayHookStateDto {
+            plugin_id: "demo".to_string(),
+            plugin_spec: "demo".to_string(),
+            plugin_name: "Demo".to_string(),
+            calls: 3,
+            failures: 1,
+            avg_millis: 12.5,
+            last_outcome: "ready".to_string(),
+            last_bytes: 64,
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["pluginSpec"], "demo");
+        assert_eq!(value["avgMillis"], 12.5);
+        assert_eq!(value["lastOutcome"], "ready");
+        assert_eq!(value["lastBytes"], 64);
     }
 
     #[test]
@@ -468,7 +697,10 @@ mod tests {
             has_provider_entry: true,
             providers: vec!["demo".to_string()],
             pages: Vec::new(),
+            actions: Vec::new(),
+            panels: Vec::new(),
             permissions: Vec::new(),
+            contributions: PluginContributions::default(),
             options: json!({ "region": "global" }),
             summary: BTreeMap::new(),
             icon: "demo".to_string(),

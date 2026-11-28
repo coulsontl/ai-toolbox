@@ -15,12 +15,17 @@ use tauri::{AppHandle, Emitter};
 use crate::db::SqliteDbState;
 
 use super::bun_host::auth::{self, PluginAccountSummary};
+use super::gateway_bridge::PluginProviderRow;
 use super::store;
 use super::types::{InstalledPluginRecord, PluginAccountMetaRecord};
 use super::{updater, PluginManager, PluginManagerState};
 
 /// Refresh an OAuth token once it is this close to expiry (or already past).
 pub const REFRESH_LEAD_MS: i64 = 15 * 60 * 1000;
+/// Bounds a plugin's declared `renewLead`, so a broken manifest can neither
+/// renew every minute nor defer renewal for days.
+pub const MIN_REFRESH_LEAD_MS: i64 = 60_000;
+pub const MAX_REFRESH_LEAD_MS: i64 = 86_400_000;
 /// A failed check-in is retried after this long, within the same Beijing day.
 pub const CHECKIN_RETRY_MINUTES: i64 = 30;
 
@@ -39,10 +44,7 @@ fn beijing_day(now: DateTime<FixedOffset>) -> String {
 /// One startup/interval pass: renew due OAuth tokens, run due check-ins, and
 /// run a due plugin update check. The account portion may be empty; the update
 /// check is independent of plugin accounts.
-pub async fn run_plugin_background_pass(
-    manager: &PluginManagerState,
-    app: Option<&AppHandle>,
-) {
+pub async fn run_plugin_background_pass(manager: &PluginManagerState, app: Option<&AppHandle>) {
     let accounts = match auth::list_accounts(manager.db(), manager.paths()) {
         Ok(accounts) => accounts,
         Err(error) => {
@@ -64,6 +66,13 @@ pub async fn run_plugin_background_pass(
         let meta_by_account: HashMap<&str, &PluginAccountMetaRecord> =
             metas.iter().map(|meta| (meta.id.as_str(), meta)).collect();
         let now = beijing_now();
+        // Reading the proxy only touches SQLite; the host is still started
+        // lazily by the first RPC that actually needs it.
+        let proxy = manager.proxy_url().await.unwrap_or_default();
+        // Renewal leads come from the last provider listing when one is
+        // cached. Never ask the host for a listing here: that would start Bun
+        // before any account is due.
+        let provider_rows = manager.gateway().cached_provider_rows();
 
         refresh_due_accounts(
             manager,
@@ -71,6 +80,8 @@ pub async fn run_plugin_background_pass(
             &meta_by_account,
             &provider_plugins,
             &enabled_plugins,
+            &provider_rows,
+            &proxy,
             now,
         )
         .await;
@@ -81,6 +92,7 @@ pub async fn run_plugin_background_pass(
             &provider_auto_checkin,
             &provider_plugins,
             &enabled_plugins,
+            &proxy,
             now,
         )
         .await;
@@ -91,10 +103,7 @@ pub async fn run_plugin_background_pass(
 
 /// Run one due auto-update check. Disabled, not-due, or candidate-free passes
 /// return before any HTTP request or Bun start.
-async fn maybe_auto_update_plugins(
-    manager: &PluginManagerState,
-    app: Option<&AppHandle>,
-) {
+async fn maybe_auto_update_plugins(manager: &PluginManagerState, app: Option<&AppHandle>) {
     let settings = match store::get_plugin_settings(manager.db()) {
         Ok(settings) => settings,
         Err(error) => {
@@ -155,17 +164,21 @@ async fn maybe_auto_update_plugins(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn refresh_due_accounts(
     manager: &PluginManager,
     accounts: &[PluginAccountSummary],
     meta_by_account: &HashMap<&str, &PluginAccountMetaRecord>,
     provider_plugins: &HashMap<String, String>,
     enabled_plugins: &HashSet<String>,
+    provider_rows: &[PluginProviderRow],
+    proxy: &str,
     now: DateTime<FixedOffset>,
 ) {
     let now_ms = now.timestamp_millis();
     for account in accounts {
-        if !refresh_due(account, now_ms) {
+        let lead_ms = renew_lead_ms_for(&account.provider, provider_rows);
+        if !refresh_due(account, now_ms, lead_ms) {
             continue;
         }
         let meta = meta_by_account.get(account.account.as_str()).copied();
@@ -175,6 +188,7 @@ async fn refresh_due_accounts(
         let params = json!({
             "provider": account.provider,
             "account": account.account,
+            "proxy": proxy,
         });
         // The host honours `auth.keepAlive !== false` and does nothing when the
         // token is not actually due for the plugin's own lead window.
@@ -195,6 +209,7 @@ async fn refresh_due_accounts(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn checkin_due_accounts(
     manager: &PluginManager,
     accounts: &[PluginAccountSummary],
@@ -202,6 +217,7 @@ async fn checkin_due_accounts(
     provider_auto_checkin: &HashMap<String, bool>,
     provider_plugins: &HashMap<String, String>,
     enabled_plugins: &HashSet<String>,
+    proxy: &str,
     now: DateTime<FixedOffset>,
 ) {
     for (provider, account_key) in due_checkin_accounts(
@@ -212,7 +228,7 @@ async fn checkin_due_accounts(
         enabled_plugins,
         now,
     ) {
-        let params = json!({ "provider": provider, "account": account_key });
+        let params = json!({ "provider": provider, "account": account_key, "proxy": proxy });
         match manager.host().checkin(params).await {
             Ok(result) => {
                 if let Err(error) =
@@ -322,14 +338,26 @@ fn provider_plugin_ids(records: &[InstalledPluginRecord]) -> HashMap<String, Str
 }
 
 /// An enabled OAuth account with an expiry that is due for renewal.
-fn refresh_due(account: &PluginAccountSummary, now_ms: i64) -> bool {
+fn refresh_due(account: &PluginAccountSummary, now_ms: i64, lead_ms: i64) -> bool {
     account.enabled
         && account.auth_type == "oauth"
         && account.has_refresh
         && account
             .expires_at
             .filter(|expires| *expires > 0)
-            .is_some_and(|expires| expires - now_ms <= REFRESH_LEAD_MS)
+            .is_some_and(|expires| expires - now_ms <= lead_ms)
+}
+
+/// The renewal lead a provider declared in the last cached listing, clamped
+/// to a sane range. No cached row (or a plugin that does not renew through
+/// the host) keeps the historical 15-minute lead.
+fn renew_lead_ms_for(provider: &str, rows: &[PluginProviderRow]) -> i64 {
+    rows.iter()
+        .find(|row| row.id == provider)
+        .filter(|row| row.renews)
+        .and_then(|row| row.renew_lead_ms)
+        .map(|lead| lead.clamp(MIN_REFRESH_LEAD_MS, MAX_REFRESH_LEAD_MS))
+        .unwrap_or(REFRESH_LEAD_MS)
 }
 
 /// Whether the daily check-in still has to be asked for in this Beijing day.
@@ -482,27 +510,89 @@ mod tests {
             enabled: true,
             ..PluginAccountSummary::default()
         };
-        assert!(refresh_due(&account, now_ms));
+        assert!(refresh_due(&account, now_ms, REFRESH_LEAD_MS));
 
         let mut later = account.clone();
         later.expires_at = Some(now_ms + 60 * 60 * 1000);
-        assert!(!refresh_due(&later, now_ms));
+        assert!(!refresh_due(&later, now_ms, REFRESH_LEAD_MS));
 
         let mut expired = account.clone();
         expired.expires_at = Some(now_ms - 60 * 60 * 1000);
-        assert!(refresh_due(&expired, now_ms));
+        assert!(refresh_due(&expired, now_ms, REFRESH_LEAD_MS));
 
         let mut no_refresh = account.clone();
         no_refresh.has_refresh = false;
-        assert!(!refresh_due(&no_refresh, now_ms));
+        assert!(!refresh_due(&no_refresh, now_ms, REFRESH_LEAD_MS));
 
         let mut disabled = account.clone();
         disabled.enabled = false;
-        assert!(!refresh_due(&disabled, now_ms));
+        assert!(!refresh_due(&disabled, now_ms, REFRESH_LEAD_MS));
 
         let mut api_key = account;
         api_key.auth_type = "api".to_string();
-        assert!(!refresh_due(&api_key, now_ms));
+        assert!(!refresh_due(&api_key, now_ms, REFRESH_LEAD_MS));
+    }
+
+    #[test]
+    fn a_declared_renew_lead_moves_the_renewal_window() {
+        let now_ms = 1_800_000_000_000i64;
+        let mut account = PluginAccountSummary {
+            account: "demo".to_string(),
+            provider: "demo".to_string(),
+            auth_type: "oauth".to_string(),
+            has_access: true,
+            has_refresh: true,
+            expires_at: Some(now_ms + 20 * 60 * 1000),
+            enabled: true,
+            ..PluginAccountSummary::default()
+        };
+
+        // 20 minutes out: not due under the default 15-minute lead.
+        assert!(!refresh_due(
+            &account,
+            now_ms,
+            renew_lead_ms_for("demo", &[])
+        ));
+
+        // A plugin that asks for a 30-minute lead is due now.
+        let rows = vec![PluginProviderRow {
+            id: "demo".to_string(),
+            renews: true,
+            renew_lead_ms: Some(30 * 60 * 1000),
+            ..PluginProviderRow::default()
+        }];
+        assert_eq!(renew_lead_ms_for("demo", &rows), 30 * 60 * 1000);
+        assert!(refresh_due(
+            &account,
+            now_ms,
+            renew_lead_ms_for("demo", &rows)
+        ));
+
+        // The window is clamped, and a provider without a cached row keeps
+        // the historical default.
+        let clamped = vec![PluginProviderRow {
+            id: "demo".to_string(),
+            renews: true,
+            renew_lead_ms: Some(25 * 60 * 60 * 1000),
+            ..PluginProviderRow::default()
+        }];
+        assert_eq!(renew_lead_ms_for("demo", &clamped), MAX_REFRESH_LEAD_MS);
+        assert_eq!(renew_lead_ms_for("other", &rows), REFRESH_LEAD_MS);
+        assert_eq!(
+            renew_lead_ms_for(
+                "demo",
+                &[PluginProviderRow {
+                    id: "demo".to_string(),
+                    renews: false,
+                    renew_lead_ms: Some(30 * 60 * 1000),
+                    ..PluginProviderRow::default()
+                }]
+            ),
+            REFRESH_LEAD_MS
+        );
+
+        account.expires_at = Some(now_ms + 60 * 60 * 1000);
+        assert!(!refresh_due(&account, now_ms, 30 * 60 * 1000));
     }
 
     #[test]

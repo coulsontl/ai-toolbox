@@ -12,48 +12,31 @@ import {
   type PluginPageSession,
   type RegisteredPluginPage,
 } from '@/services';
+import {
+  isPluginBridgeRecord,
+  readPluginBridgeImagePayload,
+  requirePluginBridgeString,
+  type PluginBridgeResponse,
+} from '../utils/pluginBridge';
 import { formatPluginError, getPluginPageTitle } from '../utils/pluginFormatters';
 import type { PluginBridgeTheme } from '../utils/pluginPageTheme';
 import PluginPageGlyph from './PluginPageGlyph';
 import styles from './PluginPageFrame.module.less';
 
 const HELLO_TIMEOUT_MS = 10_000;
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
 interface BridgeError {
   kind: 'timeout' | 'page' | 'navigation';
   detail: string;
 }
 
-/**
- * Accept the documented base64/data-URL string, and a `Blob` as a defensive
- * second shape because structured cloning lets pages push binary data through
- * the bridge without an encode step.
- */
-const readImagePayload = (value: unknown): Promise<string | null> => {
-  if (typeof value === 'string') {
-    return Promise.resolve(value || null);
-  }
-  if (!(value instanceof Blob)) {
-    return Promise.resolve(null);
-  }
-  if (value.size > MAX_IMAGE_BYTES) {
-    return Promise.reject(new Error('image payload exceeds 20 MiB'));
-  }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      resolve(result || null);
-    };
-    reader.onerror = () => reject(reader.error ?? new Error('failed to read image blob'));
-    reader.readAsDataURL(value);
-  });
-};
-
-type BridgeResponse =
-  | { ok: true; result?: unknown }
-  | { ok: false; error: string };
+/** One `magpie.actions` dispatch waiting for this page's bridge handshake. */
+export interface PluginPagePendingAction {
+  seq: number;
+  id: string;
+  provider?: { id: string; name: string };
+  agent?: { id: string; name: string };
+}
 
 interface PluginPageFrameProps {
   page: RegisteredPluginPage;
@@ -63,17 +46,15 @@ interface PluginPageFrameProps {
   visible: boolean;
   theme: PluginBridgeTheme;
   options: Record<string, unknown> | null;
+  /** A `magpie.actions` event to hand to this page once it is ready. */
+  pendingAction?: PluginPagePendingAction | null;
   onRetrySession: () => void;
   onOptionsChanged: (pluginId: string, options: Record<string, unknown>) => void;
   onOpenOptions: (pluginId: string) => void;
   onOpenInstall: (packageName: string) => void;
+  /** Confirms the latest queued action reached the page's bridge. */
+  onActionDelivered?: (seq: number) => void;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-
-const requiredString = (value: unknown): string | null =>
-  typeof value === 'string' && value.trim() ? value : null;
 
 /**
  * One sandboxed plugin page. It owns the Magpie Bridge v1 endpoint of its
@@ -88,10 +69,12 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
   visible,
   theme,
   options,
+  pendingAction,
   onRetrySession,
   onOptionsChanged,
   onOpenOptions,
   onOpenInstall,
+  onActionDelivered,
 }) => {
   const { t, i18n } = useTranslation();
   const title = getPluginPageTitle(page, i18n.language);
@@ -101,6 +84,9 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
   // Counts loads of the same iframe URL. A second load without a frame/session
   // change means the page navigated itself away from the trusted entry point.
   const loadCountRef = React.useRef(0);
+  // The latest action seq this frame handed to the page; the same action must
+  // not be dispatched twice when the prop object changes identity.
+  const deliveredActionSeqRef = React.useRef(0);
   const [frameKey, setFrameKey] = React.useState(0);
   const [handshakeDone, setHandshakeDone] = React.useState(false);
   const [bridgeError, setBridgeError] = React.useState<BridgeError | null>(null);
@@ -143,6 +129,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
   React.useLayoutEffect(() => {
     handshakeRef.current = false;
     loadCountRef.current = 0;
+    deliveredActionSeqRef.current = 0;
     setHandshakeDone(false);
     setBridgeError(null);
   }, [frameKey, sessionUrl]);
@@ -207,6 +194,38 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
     );
   }, [handshakeDone, session, visible]);
 
+  // Hand one `magpie.actions` event to a page that has completed its
+  // handshake. The bridge buffers it until the page registers `onAction`.
+  React.useEffect(() => {
+    if (!session || !handshakeDone || !pendingAction) {
+      return;
+    }
+    if (deliveredActionSeqRef.current === pendingAction.seq) {
+      return;
+    }
+    const frameWindow = iframeRef.current?.contentWindow;
+    if (!frameWindow) {
+      // The frame is between reloads (or unmounted by an error boundary); keep
+      // the action queued so the next live handshake still receives it.
+      return;
+    }
+    deliveredActionSeqRef.current = pendingAction.seq;
+    frameWindow.postMessage(
+      {
+        magpie: 1,
+        nonce: bridgeNonce,
+        event: 'action',
+        data: {
+          id: pendingAction.id,
+          ...(pendingAction.provider ? { provider: pendingAction.provider } : {}),
+          ...(pendingAction.agent ? { agent: pendingAction.agent } : {}),
+        },
+      },
+      '*',
+    );
+    onActionDelivered?.(pendingAction.seq);
+  }, [bridgeNonce, handshakeDone, onActionDelivered, pendingAction, session]);
+
   // Attach before the parent paints: an iframe served from the local page
   // server can start talking as soon as it is in the DOM.
   React.useLayoutEffect(() => {
@@ -230,6 +249,11 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
       if (!message || message.magpie !== 1) {
         return;
       }
+      // A panel reports its content height; a full page frame fills its view,
+      // so `size` is acknowledged and ignored rather than treated as a request.
+      if (message.method === 'size') {
+        return;
+      }
       if (!bridgeNonce || message.nonce !== bridgeNonce) {
         return;
       }
@@ -251,14 +275,14 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
         return;
       }
 
-      const respond = (payload: BridgeResponse) => {
+      const respond = (payload: PluginBridgeResponse) => {
         iframe.contentWindow?.postMessage(
           { magpie: 1, id: requestId, ...payload },
           '*',
         );
       };
 
-      const handleRequest = async (): Promise<BridgeResponse> => {
+      const handleRequest = async (): Promise<PluginBridgeResponse> => {
         const params = message.params ?? {};
         if (message.method !== 'hello' && !handshakeRef.current) {
           return { ok: false, error: 'hello required before bridge requests' };
@@ -288,7 +312,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
           case 'options.get':
             return { ok: true, result: liveRef.current.options ?? {} };
           case 'options.set': {
-            const nextOptions = isRecord(params.options) ? params.options : params;
+            const nextOptions = isPluginBridgeRecord(params.options) ? params.options : params;
             const stored = await setPluginPageBridgeOptions(
               page.pluginId,
               nextOptions,
@@ -309,12 +333,12 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             const result = await readPluginPageBridge(
               page.pluginId,
               scope,
-              isRecord(params.params) ? params.params : {},
+              isPluginBridgeRecord(params.params) ? params.params : {},
             );
             return { ok: true, result };
           }
           case 'storage.get': {
-            const key = requiredString(params.key);
+            const key = requirePluginBridgeString(params.key);
             if (!key) {
               return { ok: false, error: 'storage.get requires a non-empty key' };
             }
@@ -326,7 +350,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result: result ?? null };
           }
           case 'storage.set': {
-            const key = requiredString(params.key);
+            const key = requirePluginBridgeString(params.key);
             if (!key) {
               return { ok: false, error: 'storage.set requires a non-empty key' };
             }
@@ -342,7 +366,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result: { ok: true } };
           }
           case 'storage.delete': {
-            const key = requiredString(params.key);
+            const key = requirePluginBridgeString(params.key);
             if (!key) {
               return { ok: false, error: 'storage.delete requires a non-empty key' };
             }
@@ -369,7 +393,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result: { ok: true } };
           }
           case 'files.readText': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.readText requires a non-empty path' };
             }
@@ -381,7 +405,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'files.writeText': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.writeText requires a non-empty path' };
             }
@@ -397,7 +421,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'files.readBytes': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.readBytes requires a non-empty path' };
             }
@@ -409,7 +433,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'files.writeBytes': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.writeBytes requires a non-empty path' };
             }
@@ -426,7 +450,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'files.list': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.list requires a non-empty path' };
             }
@@ -438,7 +462,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'files.stat': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.stat requires a non-empty path' };
             }
@@ -450,7 +474,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'files.delete': {
-            const path = requiredString(params.path);
+            const path = requirePluginBridgeString(params.path);
             if (!path) {
               return { ok: false, error: 'files.delete requires a non-empty path' };
             }
@@ -462,7 +486,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result };
           }
           case 'image.copy': {
-            const data = await readImagePayload(params.data ?? params.png);
+            const data = await readPluginBridgeImagePayload(params.data ?? params.png);
             if (!data) {
               return { ok: false, error: 'image.copy requires base64 data or a Blob' };
             }
@@ -470,7 +494,7 @@ const PluginPageFrame: React.FC<PluginPageFrameProps> = ({
             return { ok: true, result: true };
           }
           case 'image.save': {
-            const data = await readImagePayload(params.data ?? params.png);
+            const data = await readPluginBridgeImagePayload(params.data ?? params.png);
             if (!data) {
               return { ok: false, error: 'image.save requires base64 data or a Blob' };
             }

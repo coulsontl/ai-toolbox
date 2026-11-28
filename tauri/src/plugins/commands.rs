@@ -3,26 +3,29 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::db::SqliteDbState;
 
 use super::bun_host::auth::{self, PluginAccountSummary};
 use super::bun_host::{BunHostStatus, RuntimeLogEntry};
 use super::bun_runtime::{BunPathProbe, BunRuntimeStatus};
+use super::gateway_bridge;
 use super::installer;
 use super::market;
 use super::middleware_rt::stats::MiddlewareStateView;
 use super::page_bridge;
 use super::page_storage;
 use super::store;
+use super::tools_mcp;
 use super::types::{
-    empty_json_object, InstalledPluginRecord, MarketPluginListing, MarketSourceRecord,
-    PluginAccountMetaRecord, PluginPageSession, PluginProviderOptionValue, PluginSettings,
-    RegisteredPluginPage,
+    empty_json_object, GatewayHookStateDto, InstalledPluginRecord, MarketPluginListing,
+    MarketSourceRecord, PluginAccountMetaRecord, PluginPageSession, PluginProviderOptionValue,
+    PluginSettings, PluginToolDto, PluginToolsSummaryDto, RegisteredPluginAction,
+    RegisteredPluginPage, RegisteredPluginPanel,
 };
 use super::updater::{self, PluginUpdateSummary};
-use super::PluginManagerState;
+use super::{PluginManager, PluginManagerState};
 
 fn now_rfc3339() -> String {
     chrono::Local::now().to_rfc3339()
@@ -198,7 +201,11 @@ pub async fn plugins_update_plugins(
 pub fn plugins_list_installed(
     manager: State<'_, PluginManagerState>,
 ) -> Result<Vec<InstalledPluginRecord>, String> {
-    installer::refresh_installed_plugins(manager.db(), manager.paths())
+    let installed = installer::refresh_installed_plugins(manager.db(), manager.paths())?;
+    // The manifest refresh may have added or removed `magpie.hooks`, and the
+    // gateway reads the cached flag on every request.
+    manager.host().refresh_gateway_hooks_flag();
+    Ok(installed)
 }
 
 #[tauri::command]
@@ -337,6 +344,208 @@ pub async fn plugins_close_page(
         .page_server()
         .revoke_plugin_page(&plugin_id, &page_id);
     Ok(())
+}
+
+// ---- plugin menus and panels (`magpie.actions` / `magpie.panels`) -----------
+
+/// Every action of an enabled plugin, in install order. The action opens the
+/// plugin's first page, mirroring Magpie where a package has one page.
+fn registered_actions(records: &[InstalledPluginRecord]) -> Vec<RegisteredPluginAction> {
+    let mut actions = Vec::new();
+    for record in records {
+        if !record.enabled || record.actions.is_empty() {
+            continue;
+        }
+        let Some(page) = record.pages.first() else {
+            continue;
+        };
+        for action in &record.actions {
+            let title = if action.title.trim().is_empty() {
+                if page.title.trim().is_empty() {
+                    plugin_display_name(record)
+                } else {
+                    page.title.clone()
+                }
+            } else {
+                action.title.clone()
+            };
+            actions.push(RegisteredPluginAction {
+                plugin_id: record.id.clone(),
+                plugin_name: plugin_display_name(record),
+                page_id: page.id.clone(),
+                id: action.id.clone(),
+                menu: action.menu.clone(),
+                title,
+                titles: action.titles.clone(),
+            });
+        }
+    }
+    actions
+}
+
+/// Every panel of an enabled plugin, in install order.
+fn registered_panels(records: &[InstalledPluginRecord]) -> Vec<RegisteredPluginPanel> {
+    let mut panels = Vec::new();
+    for record in records {
+        if !record.enabled || record.panels.is_empty() {
+            continue;
+        }
+        for panel in &record.panels {
+            let title = if panel.title.trim().is_empty() {
+                plugin_display_name(record)
+            } else {
+                panel.title.clone()
+            };
+            panels.push(RegisteredPluginPanel {
+                plugin_id: record.id.clone(),
+                plugin_name: plugin_display_name(record),
+                panel_id: panel.id.clone(),
+                slot: panel.slot.clone(),
+                title,
+                titles: panel.titles.clone(),
+                permissions: record.permissions.clone(),
+            });
+        }
+    }
+    panels
+}
+
+#[tauri::command]
+pub fn plugins_list_actions(
+    manager: State<'_, PluginManagerState>,
+) -> Result<Vec<RegisteredPluginAction>, String> {
+    let records = store::list_installed_plugins(manager.db())?;
+    Ok(registered_actions(&records))
+}
+
+#[tauri::command]
+pub fn plugins_list_panels(
+    manager: State<'_, PluginManagerState>,
+) -> Result<Vec<RegisteredPluginPanel>, String> {
+    let records = store::list_installed_plugins(manager.db())?;
+    Ok(registered_panels(&records))
+}
+
+/// Mint a token-scoped session for one panel's HTML.
+///
+/// Panels never get a local service: they are static HTML in a sandbox, and
+/// handing them an arbitrary `127.0.0.1:<port>` through the CSP would let a
+/// panel reach another program on this machine. The route lives under the
+/// plugin's token table as `panel:<id>`, so disabling or uninstalling the
+/// plugin revokes it with its pages.
+async fn open_panel_session(
+    manager: &PluginManager,
+    plugin_id: &str,
+    panel_id: &str,
+) -> Result<PluginPageSession, String> {
+    let record = store::get_installed_plugin(manager.db(), plugin_id)?
+        .ok_or_else(|| format!("Plugin '{plugin_id}' is not installed"))?;
+    if !record.enabled {
+        return Err(format!("Plugin '{plugin_id}' is disabled"));
+    }
+    let panel = record
+        .panels
+        .iter()
+        .find(|panel| panel.id == panel_id)
+        .ok_or_else(|| format!("Plugin '{plugin_id}' has no panel '{panel_id}'"))?;
+    let target = installer::plugin_target_path(manager.paths(), &record);
+    let entry = installer::resolve_page_entry(&target, &panel.entry_file)?;
+    let route_id = format!("panel:{panel_id}");
+    let token = manager
+        .page_server()
+        .register_page(&record.id, &route_id, &entry, None)?;
+    let address = manager.page_server().ensure_started().await?;
+    let entry_name = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("'{}' has no usable file name", entry.display()))?;
+    Ok(PluginPageSession {
+        plugin_id: record.id,
+        page_id: panel.id.clone(),
+        url: format!(
+            "http://{address}/_plugin/{token}/{}",
+            page_bridge::encode_path_segment(entry_name)
+        ),
+        service_url: None,
+        options: record.options,
+        permissions: record.permissions,
+        keep_alive: false,
+    })
+}
+
+fn close_panel(manager: &PluginManager, plugin_id: &str, panel_id: &str) {
+    manager
+        .page_server()
+        .revoke_plugin_page(plugin_id, &format!("panel:{panel_id}"));
+}
+
+#[tauri::command]
+pub async fn plugins_open_panel(
+    manager: State<'_, PluginManagerState>,
+    plugin_id: String,
+    panel_id: String,
+) -> Result<PluginPageSession, String> {
+    let manager = manager.inner().clone();
+    open_panel_session(&manager, &plugin_id, &panel_id).await
+}
+
+#[tauri::command]
+pub async fn plugins_close_panel(
+    manager: State<'_, PluginManagerState>,
+    plugin_id: String,
+    panel_id: String,
+) -> Result<(), String> {
+    close_panel(manager.inner(), &plugin_id, &panel_id);
+    Ok(())
+}
+
+// ---- asynchronous gateway hook diagnostics (`magpie.hooks`) -----------------
+
+/// Map the Bun host's per-spec diagnostics onto installed plugin records.
+fn gateway_hook_states(
+    states: &Value,
+    records: &[InstalledPluginRecord],
+) -> Vec<GatewayHookStateDto> {
+    let Some(states) = states.as_object() else {
+        return Vec::new();
+    };
+    let mut output = Vec::new();
+    for record in records {
+        if !record.enabled || !record.contributions.has_hooks {
+            continue;
+        }
+        let Some(state) = states.get(&record.spec) else {
+            continue;
+        };
+        output.push(GatewayHookStateDto {
+            plugin_id: record.id.clone(),
+            plugin_spec: record.spec.clone(),
+            plugin_name: plugin_display_name(record),
+            calls: state.get("calls").and_then(Value::as_u64).unwrap_or(0),
+            failures: state.get("failures").and_then(Value::as_u64).unwrap_or(0),
+            avg_millis: state
+                .get("avgMillis")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
+            last_outcome: state
+                .get("lastOutcome")
+                .and_then(Value::as_str)
+                .unwrap_or("idle")
+                .to_string(),
+            last_bytes: state.get("lastBytes").and_then(Value::as_u64).unwrap_or(0),
+        });
+    }
+    output
+}
+
+#[tauri::command]
+pub async fn plugins_gateway_hook_states(
+    manager: State<'_, PluginManagerState>,
+) -> Result<Vec<GatewayHookStateDto>, String> {
+    let manager = manager.inner().clone();
+    let states = manager.host().gateway_states().await?;
+    let records = store::list_installed_plugins(manager.db())?;
+    Ok(gateway_hook_states(&states, &records))
 }
 
 #[tauri::command]
@@ -695,7 +904,8 @@ pub async fn plugins_list_providers(
     manager: State<'_, PluginManagerState>,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
-    let listing = manager.host().providers(json!({})).await?;
+    let params = gateway_bridge::provider_listing_params(&manager).await?;
+    let listing = manager.host().providers(params).await?;
     let listing = attach_provider_option_values(manager.db(), listing)?;
     attach_provider_auto_checkin(manager.db(), listing)
 }
@@ -712,7 +922,8 @@ pub async fn plugins_refresh_provider_models(
         .host()
         .set_provider_options(provider_options_value(manager.db())?)
         .await;
-    let listing = manager.host().providers(json!({})).await?;
+    let params = gateway_bridge::provider_listing_params(&manager).await?;
+    let listing = manager.host().providers(params).await?;
     let listing = attach_provider_option_values(manager.db(), listing)?;
     attach_provider_auto_checkin(manager.db(), listing)
 }
@@ -914,12 +1125,14 @@ pub async fn plugins_account_check(
     proxy: Option<String>,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
+    let proxy = gateway_bridge::effective_proxy(&manager, proxy).await?;
     let result = manager
         .host()
         .check(json!({ "provider": provider, "account": account, "proxy": proxy }))
         .await?;
     if let Some(usage) = result.get("usage") {
-        if let Err(error) = record_usage_snapshot(manager.db(), &provider, account.as_deref(), usage)
+        if let Err(error) =
+            record_usage_snapshot(manager.db(), &provider, account.as_deref(), usage)
         {
             log::warn!("saving the usage snapshot of {provider} failed: {error}");
         }
@@ -935,6 +1148,7 @@ pub async fn plugins_account_usage(
     proxy: Option<String>,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
+    let proxy = gateway_bridge::effective_proxy(&manager, proxy).await?;
     let result = manager
         .host()
         .usage(json!({ "provider": provider, "account": account, "proxy": proxy }))
@@ -954,6 +1168,7 @@ pub async fn plugins_account_checkin(
     proxy: Option<String>,
 ) -> Result<Value, String> {
     let manager = manager.inner().clone();
+    let proxy = gateway_bridge::effective_proxy(&manager, proxy).await?;
     let result = manager
         .host()
         .checkin(json!({ "provider": provider, "account": account, "proxy": proxy }))
@@ -1056,6 +1271,256 @@ pub async fn plugins_set_provider_option(
     Ok(record)
 }
 
+// ---- plugin tools -> central MCP server ------------------------------------
+
+const PLUGIN_TOOLS_MCP_SERVER_NAME: &str = "ai-toolbox-plugins";
+const PLUGIN_TOOLS_MCP_SERVER_DESCRIPTION: &str = "AI Toolbox plugin tools (Streamable HTTP MCP)";
+
+/// The gateway's current listen target and whether it is actually running.
+/// A stopped gateway still has a configured port, so the URL a user copies
+/// stays stable until they start it.
+fn gateway_listen_target(app: &AppHandle, db: &SqliteDbState) -> (bool, String, u16) {
+    if let Some(state) = app.try_state::<crate::coding::proxy_gateway::ProxyGatewayState>() {
+        if let Ok(manager) = state.manager.lock() {
+            let status = manager.status();
+            if status.running {
+                if let Some(port) = status.listen_port {
+                    return (true, status.listen_host, port);
+                }
+            }
+        }
+    }
+    let settings = crate::coding::proxy_gateway::settings::load_settings_from_sqlite_state(db)
+        .unwrap_or_default();
+    (false, settings.listen_host, settings.listen_port)
+}
+
+/// A host a client on this machine can dial: wildcard binds become loopback.
+fn endpoint_host(host: &str) -> String {
+    match host.trim() {
+        "" | "0.0.0.0" | "::" | "[::]" => "127.0.0.1".to_string(),
+        host => host.to_string(),
+    }
+}
+
+/// The MCP endpoint and its Magpie-compatible alias.
+fn plugin_tools_urls(host: &str, port: u16) -> (String, String) {
+    let host = endpoint_host(host);
+    let authority = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    (
+        format!("http://{authority}{}", tools_mcp::MCP_PATH),
+        format!("http://{authority}{}", tools_mcp::MCP_ALIAS_PATH),
+    )
+}
+
+fn plugin_display_name(record: &InstalledPluginRecord) -> String {
+    if record.display_name.trim().is_empty() {
+        record.package_name.clone()
+    } else {
+        record.display_name.clone()
+    }
+}
+
+/// The central HTTP MCP server that mirrors the plugin tools endpoint, if it
+/// was created before.
+async fn find_plugin_tools_mcp_server(
+    db: &SqliteDbState,
+) -> Option<crate::coding::mcp::types::McpServer> {
+    crate::coding::mcp::mcp_store::get_mcp_servers(db)
+        .await
+        .ok()?
+        .into_iter()
+        .find(|server| {
+            server.name == PLUGIN_TOOLS_MCP_SERVER_NAME
+                || (server.server_type == "http"
+                    && server
+                        .server_config
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .is_some_and(|url| {
+                            url.trim_end_matches('/').ends_with(tools_mcp::MCP_PATH)
+                        }))
+        })
+}
+
+/// Every tool the enabled provider plugins offer, plus where the gateway
+/// serves them. Reading the list never starts Bun unless a provider plugin is
+/// enabled.
+#[tauri::command]
+pub async fn plugins_list_tools(
+    app: AppHandle,
+    manager: State<'_, PluginManagerState>,
+) -> Result<PluginToolsSummaryDto, String> {
+    let manager = manager.inner().clone();
+    let (gateway_running, host, port) = gateway_listen_target(&app, manager.db());
+    let (endpoint_url, alias_url) = plugin_tools_urls(&host, port);
+    let sets = manager.host().list_tools().await?;
+    let records = store::list_installed_plugins(manager.db())?;
+    let by_spec = records
+        .iter()
+        .map(|record| (record.spec.as_str(), record))
+        .collect::<HashMap<_, _>>();
+    let tools = tools_mcp::named_tools(&sets)
+        .into_iter()
+        .map(|tool| {
+            let record = by_spec.get(tool.spec.as_str()).copied();
+            PluginToolDto {
+                plugin_id: record.map(|record| record.id.clone()).unwrap_or_default(),
+                plugin_spec: tool.spec.clone(),
+                plugin_name: record
+                    .map(plugin_display_name)
+                    .unwrap_or_else(|| tool.spec.clone()),
+                tool_name: tool.tool_name,
+                mcp_name: tool.mcp_name,
+                description: tool.description,
+                input_schema: tool.parameters,
+            }
+        })
+        .collect();
+    let mcp_server_id = find_plugin_tools_mcp_server(manager.db())
+        .await
+        .map(|server| server.id);
+    Ok(PluginToolsSummaryDto {
+        endpoint_url,
+        alias_url,
+        gateway_running,
+        mcp_server_id,
+        tools,
+    })
+}
+
+/// Pick the tools the central plugin-tools MCP server is enabled for: the
+/// user's preferred tools when configured, otherwise every installed tool that
+/// supports MCP.
+fn plugin_tools_server_enabled_tools_for(
+    preferred_tools: &[String],
+    installed_mcp_tool_keys: &[String],
+) -> Vec<String> {
+    if preferred_tools.is_empty() {
+        installed_mcp_tool_keys.to_vec()
+    } else {
+        preferred_tools.to_vec()
+    }
+}
+
+async fn plugin_tools_server_enabled_tools(db: &SqliteDbState) -> Result<Vec<String>, String> {
+    let preferences = crate::coding::mcp::mcp_store::get_mcp_preferences(db).await?;
+    if !preferences.preferred_tools.is_empty() {
+        return Ok(plugin_tools_server_enabled_tools_for(
+            &preferences.preferred_tools,
+            &[],
+        ));
+    }
+    let custom_tools = crate::coding::tools::custom_store::get_custom_tools(db)
+        .await
+        .unwrap_or_default();
+    let mut installed = Vec::new();
+    for tool in crate::coding::tools::detection::get_mcp_runtime_tools(&custom_tools) {
+        if crate::coding::tools::detection::is_tool_installed_with_db_async(db, &tool).await {
+            installed.push(tool.key);
+        }
+    }
+    Ok(plugin_tools_server_enabled_tools_for(&[], &installed))
+}
+
+/// Create or refresh the central `ai-toolbox-plugins` MCP server. A server
+/// that exists but was never enabled for any tool gets the current selection
+/// so a stale empty record cannot keep the endpoint unused. Returns its id and
+/// the tool keys it is enabled for.
+async fn upsert_plugin_tools_mcp_server(
+    db: &SqliteDbState,
+    endpoint_url: String,
+) -> Result<(String, Vec<String>), String> {
+    let now = crate::coding::mcp::types::now_ms();
+    let enabled_tools = plugin_tools_server_enabled_tools(db).await?;
+    match find_plugin_tools_mcp_server(db).await {
+        Some(mut server) => {
+            let mut config = server.server_config.clone();
+            if !config.is_object() {
+                config = json!({});
+            }
+            config["url"] = Value::String(endpoint_url);
+            server.server_config = config;
+            if server.enabled_tools.is_empty() {
+                server.enabled_tools = enabled_tools;
+            }
+            server.updated_at = now;
+            let server_id = crate::coding::mcp::mcp_store::upsert_mcp_server(db, &server).await?;
+            Ok((server_id, server.enabled_tools))
+        }
+        None => {
+            let server = crate::coding::mcp::types::McpServer {
+                id: String::new(),
+                name: PLUGIN_TOOLS_MCP_SERVER_NAME.to_string(),
+                server_type: "http".to_string(),
+                server_config: json!({ "url": endpoint_url }),
+                enabled_tools: enabled_tools.clone(),
+                sync_details: None,
+                description: Some(PLUGIN_TOOLS_MCP_SERVER_DESCRIPTION.to_string()),
+                user_group: None,
+                user_note: None,
+                tags: Vec::new(),
+                timeout: None,
+                sort_index: 0,
+                management_enabled: true,
+                disabled_previous_tools: Vec::new(),
+                created_at: now,
+                updated_at: now,
+            };
+            let server_id = crate::coding::mcp::mcp_store::upsert_mcp_server(db, &server).await?;
+            Ok((server_id, enabled_tools))
+        }
+    }
+}
+
+/// Create or refresh the central `ai-toolbox-plugins` MCP server so every
+/// tool's config points at the gateway, then re-sync all MCP servers.
+#[tauri::command]
+pub async fn plugins_sync_tools_mcp_server(
+    app: AppHandle,
+    manager: State<'_, PluginManagerState>,
+) -> Result<String, String> {
+    let manager = manager.inner().clone();
+    let (_running, host, port) = gateway_listen_target(&app, manager.db());
+    let (endpoint_url, _alias_url) = plugin_tools_urls(&host, port);
+    let (server_id, enabled_tools) =
+        upsert_plugin_tools_mcp_server(manager.db(), endpoint_url).await?;
+
+    let results =
+        crate::coding::mcp::commands::mcp_sync_all(app.clone(), app.state::<SqliteDbState>())
+            .await
+            .map_err(|error| {
+                format!("Syncing MCP servers after the plugin tools server update failed: {error}")
+            })?;
+
+    // `McpSyncResultDto` names the tool, not the server, so attribute failures
+    // to this server by the tools it is enabled for. A failed projection must
+    // never be reported as a successful sync.
+    let failures = results
+        .iter()
+        .filter(|result| !result.success && enabled_tools.contains(&result.tool))
+        .map(|result| {
+            format!(
+                "{}: {}",
+                result.tool,
+                result.error_message.as_deref().unwrap_or("unknown error")
+            )
+        })
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        return Err(format!(
+            "The plugin tools MCP server was updated, but syncing it to these tools failed: {}",
+            failures.join("; ")
+        ));
+    }
+
+    Ok(server_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1154,6 +1619,193 @@ mod tests {
     }
 
     #[test]
+    fn registered_actions_and_panels_skip_disabled_plugins_and_fill_titles() {
+        use crate::plugins::types::{
+            PluginActionManifest, PluginPageManifest, PluginPanelManifest,
+        };
+
+        let record = InstalledPluginRecord {
+            id: "demo".to_string(),
+            spec: "demo".to_string(),
+            package_name: "demo".to_string(),
+            display_name: "Demo".to_string(),
+            enabled: true,
+            pages: vec![PluginPageManifest {
+                id: "default".to_string(),
+                title: "Daily".to_string(),
+                ..PluginPageManifest::default()
+            }],
+            actions: vec![
+                PluginActionManifest {
+                    id: "refresh".to_string(),
+                    menu: "provider".to_string(),
+                    title: String::new(),
+                    ..PluginActionManifest::default()
+                },
+                PluginActionManifest {
+                    id: "ping".to_string(),
+                    menu: "agent".to_string(),
+                    title: "Ping".to_string(),
+                    ..PluginActionManifest::default()
+                },
+            ],
+            panels: vec![PluginPanelManifest {
+                id: "settings-1".to_string(),
+                slot: "settings".to_string(),
+                title: String::new(),
+                entry_file: "panel/index.html".to_string(),
+                ..PluginPanelManifest::default()
+            }],
+            permissions: vec!["usage:summary".to_string()],
+            ..InstalledPluginRecord::default()
+        };
+
+        let actions = registered_actions(std::slice::from_ref(&record));
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].page_id, "default");
+        // An action without its own title takes the page's.
+        assert_eq!(actions[0].title, "Daily");
+        assert_eq!(actions[1].title, "Ping");
+
+        let panels = registered_panels(std::slice::from_ref(&record));
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0].panel_id, "settings-1");
+        assert_eq!(panels[0].title, "Demo");
+        assert_eq!(panels[0].permissions, vec!["usage:summary"]);
+
+        let disabled = InstalledPluginRecord {
+            enabled: false,
+            ..record
+        };
+        assert!(registered_actions(std::slice::from_ref(&disabled)).is_empty());
+        assert!(registered_panels(std::slice::from_ref(&disabled)).is_empty());
+    }
+
+    #[test]
+    fn gateway_hook_states_map_specs_to_installed_records() {
+        use crate::plugins::types::PluginContributions;
+
+        let hooks = InstalledPluginRecord {
+            id: "hooks-1".to_string(),
+            spec: "hooks-pkg".to_string(),
+            package_name: "hooks-pkg".to_string(),
+            display_name: "Hooks".to_string(),
+            enabled: true,
+            contributions: PluginContributions {
+                has_hooks: true,
+                ..PluginContributions::default()
+            },
+            ..InstalledPluginRecord::default()
+        };
+        let provider = InstalledPluginRecord {
+            id: "provider-1".to_string(),
+            spec: "provider-pkg".to_string(),
+            package_name: "provider-pkg".to_string(),
+            enabled: true,
+            ..InstalledPluginRecord::default()
+        };
+        let states = json!({
+            "hooks-pkg": {
+                "calls": 4,
+                "failures": 1,
+                "avgMillis": 2.5,
+                "lastOutcome": "ready",
+                "lastBytes": 128
+            },
+            "provider-pkg": { "calls": 9 }
+        });
+
+        let mapped = gateway_hook_states(&states, &[hooks, provider]);
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].plugin_id, "hooks-1");
+        assert_eq!(mapped[0].plugin_name, "Hooks");
+        assert_eq!(mapped[0].calls, 4);
+        assert_eq!(mapped[0].failures, 1);
+        assert_eq!(mapped[0].avg_millis, 2.5);
+        assert_eq!(mapped[0].last_outcome, "ready");
+        assert_eq!(mapped[0].last_bytes, 128);
+
+        assert!(gateway_hook_states(&json!({}), &[]).is_empty());
+        assert!(gateway_hook_states(&Value::Null, &[]).is_empty());
+    }
+
+    async fn http_status(url: &str) -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let rest = url.strip_prefix("http://").expect("http url");
+        let (authority, path) = rest.split_once('/').expect("path");
+        let mut stream = tokio::net::TcpStream::connect(authority).await.unwrap();
+        let request =
+            format!("GET /{path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).await.unwrap();
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn panel_sessions_issue_tokens_and_close_revokes_them() {
+        use crate::plugins::types::PluginPanelManifest;
+
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let manager = PluginManager::new(db.clone(), root.path().join("app-data"));
+        let plugin_dir = root.path().join("panel-plugin");
+        std::fs::create_dir_all(plugin_dir.join("panel")).unwrap();
+        std::fs::write(
+            plugin_dir.join("panel/index.html"),
+            "<html><body>panel</body></html>",
+        )
+        .unwrap();
+
+        store::upsert_installed_plugin(
+            &db,
+            &InstalledPluginRecord {
+                id: "panel-plugin".to_string(),
+                spec: "panel-plugin".to_string(),
+                package_name: "panel-plugin".to_string(),
+                display_name: "Panel Plugin".to_string(),
+                enabled: true,
+                source_type: "local".to_string(),
+                local_path: plugin_dir.to_string_lossy().to_string(),
+                panels: vec![PluginPanelManifest {
+                    id: "settings-1".to_string(),
+                    slot: "settings".to_string(),
+                    title: "Settings".to_string(),
+                    entry_file: "panel/index.html".to_string(),
+                    ..PluginPanelManifest::default()
+                }],
+                ..InstalledPluginRecord::default()
+            },
+        )
+        .unwrap();
+
+        let session = open_panel_session(&manager, "panel-plugin", "settings-1")
+            .await
+            .unwrap();
+        assert_eq!(session.plugin_id, "panel-plugin");
+        assert_eq!(session.page_id, "settings-1");
+        // Panels never receive a local service.
+        assert!(session.service_url.is_none());
+        assert!(session.url.contains("/_plugin/"));
+        assert_eq!(http_status(&session.url).await, 200);
+
+        close_panel(&manager, "panel-plugin", "settings-1");
+        assert_eq!(http_status(&session.url).await, 404);
+
+        // A disabled plugin has no panel to open.
+        store::set_plugin_enabled(&db, "panel-plugin", false).unwrap();
+        assert!(open_panel_session(&manager, "panel-plugin", "settings-1")
+            .await
+            .is_err());
+    }
+
+    #[test]
     fn an_all_empty_normalized_usage_snapshot_keeps_the_previous_quota() {
         let db = SqliteDbState::in_memory_for_test().unwrap();
         record_usage_snapshot(
@@ -1189,5 +1841,101 @@ mod tests {
         let after = store::list_account_metas(&db).unwrap();
         assert_eq!(after[0].quota["plan"], "Pro");
         assert_eq!(after[0].quota_updated_at, previous_updated_at);
+    }
+
+    #[test]
+    fn plugin_tools_server_prefers_the_configured_tools_over_detection() {
+        assert_eq!(
+            plugin_tools_server_enabled_tools_for(
+                &["claude".to_string()],
+                &["codex".to_string(), "opencode".to_string()],
+            ),
+            vec!["claude".to_string()]
+        );
+        assert_eq!(
+            plugin_tools_server_enabled_tools_for(
+                &[],
+                &["codex".to_string(), "opencode".to_string()],
+            ),
+            vec!["codex".to_string(), "opencode".to_string()]
+        );
+        assert!(plugin_tools_server_enabled_tools_for(&[], &[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn plugin_tools_server_gets_enabled_tools_when_created_or_repaired() {
+        let db = SqliteDbState::in_memory_for_test().unwrap();
+        let mut preferences = crate::coding::mcp::types::McpPreferences::default();
+        preferences.preferred_tools = vec!["claude".to_string()];
+        crate::coding::mcp::mcp_store::save_mcp_preferences(&db, &preferences)
+            .await
+            .unwrap();
+
+        let endpoint = "http://127.0.0.1:37123/mcp/plugins".to_string();
+        let (server_id, enabled_tools) = upsert_plugin_tools_mcp_server(&db, endpoint.clone())
+            .await
+            .expect("create server");
+        assert_eq!(enabled_tools, vec!["claude".to_string()]);
+        let created = find_plugin_tools_mcp_server(&db)
+            .await
+            .expect("server exists");
+        assert_eq!(created.id, server_id);
+        assert_eq!(created.enabled_tools, vec!["claude".to_string()]);
+        assert_eq!(created.server_config["url"], endpoint);
+
+        // Re-running preserves a selection the user already made, even when
+        // the preferred list changed afterwards.
+        preferences.preferred_tools = vec!["codex".to_string()];
+        crate::coding::mcp::mcp_store::save_mcp_preferences(&db, &preferences)
+            .await
+            .unwrap();
+        let (same_id, kept_tools) =
+            upsert_plugin_tools_mcp_server(&db, "http://127.0.0.1:38000/mcp/plugins".to_string())
+                .await
+                .expect("update server");
+        assert_eq!(same_id, server_id);
+        assert_eq!(kept_tools, vec!["claude".to_string()]);
+        let updated = find_plugin_tools_mcp_server(&db)
+            .await
+            .expect("server exists");
+        assert_eq!(
+            updated.server_config["url"],
+            "http://127.0.0.1:38000/mcp/plugins"
+        );
+
+        // A stale record with no tools at all is repaired instead of staying
+        // unused.
+        let empty_db = SqliteDbState::in_memory_for_test().unwrap();
+        crate::coding::mcp::mcp_store::save_mcp_preferences(&empty_db, &preferences)
+            .await
+            .unwrap();
+        let legacy_id = crate::coding::mcp::mcp_store::upsert_mcp_server(
+            &empty_db,
+            &crate::coding::mcp::types::McpServer {
+                id: String::new(),
+                name: PLUGIN_TOOLS_MCP_SERVER_NAME.to_string(),
+                server_type: "http".to_string(),
+                server_config: json!({ "url": endpoint }),
+                enabled_tools: Vec::new(),
+                sync_details: None,
+                description: None,
+                user_group: None,
+                user_note: None,
+                tags: Vec::new(),
+                timeout: None,
+                sort_index: 0,
+                management_enabled: true,
+                disabled_previous_tools: Vec::new(),
+                created_at: 0,
+                updated_at: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let (repaired_id, repaired_tools) = upsert_plugin_tools_mcp_server(&empty_db, endpoint)
+            .await
+            .expect("repair server");
+        assert_eq!(repaired_id, legacy_id);
+        assert_eq!(repaired_tools, vec!["codex".to_string()]);
     }
 }
