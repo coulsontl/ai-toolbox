@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use std::time::UNIX_EPOCH;
 
 use chrono::Utc;
 use regex::Regex;
@@ -39,6 +41,7 @@ struct SessionIndexEntry {
 pub fn scan_sessions(root: &Path) -> Vec<SessionMeta> {
     let mut files = Vec::new();
     collect_jsonl_files(root, &mut files);
+    let files = dedupe_rollout_siblings(files);
 
     let thread_names = read_thread_names_by_session_id(root);
 
@@ -60,10 +63,11 @@ pub fn scan_recent_sessions(root: &Path, limit: usize) -> Vec<SessionMeta> {
     }
 
     let thread_names = read_thread_names_by_session_id(root);
-    let files =
-        collect_recent_files_by_modified(root, limit.saturating_mul(3).max(limit), |path| {
-            path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-        });
+    let files = dedupe_rollout_siblings(collect_recent_files_by_modified(
+        root,
+        limit.saturating_mul(3).max(limit),
+        is_rollout_artifact_file,
+    ));
     let mut sessions = Vec::new();
     for path in files {
         let Some(mut session) = parse_session(&path) else {
@@ -830,12 +834,12 @@ pub fn export_native_snapshot(
             root.display()
         )
     })?;
-    let session_file_content = std::fs::read_to_string(session_path).map_err(|error| {
-        format!(
-            "Failed to read Codex session file {}: {error}",
-            session_path.display()
-        )
-    })?;
+    let relative_session_path = relative_session_path
+        .strip_suffix(".zst")
+        .filter(|stem| stem.ends_with(".jsonl"))
+        .unwrap_or(&relative_session_path)
+        .to_string();
+    let session_file_content = read_rollout_text(session_path)?;
     let session_index_entry = read_session_index_entry(root, &session_id);
 
     Ok(serde_json::json!({
@@ -1044,12 +1048,95 @@ fn append_thread_name(root: &Path, session_id: &str, thread_name: &str) -> Resul
     Ok(())
 }
 
+const PARSE_HEAD_LINES: usize = 30;
+const PARSE_TAIL_LINES: usize = 30;
+
+fn read_rollout_text(path: &Path) -> Result<String, String> {
+    if !codex_rollout::is_compressed_rollout_path(path) {
+        return std::fs::read_to_string(path).map_err(|error| {
+            format!(
+                "Failed to read Codex session file {}: {error}",
+                path.display()
+            )
+        });
+    }
+
+    let file = File::open(path).map_err(|error| {
+        format!(
+            "Failed to open Codex session file {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut decoder = zstd::stream::read::Decoder::new(file).map_err(|error| {
+        format!(
+            "Failed to decode compressed Codex session file {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut content = String::new();
+    decoder.read_to_string(&mut content).map_err(|error| {
+        format!(
+            "Failed to read compressed Codex session file {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(content)
+}
+
+fn file_modified_ms(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+}
+
+/// Reads head/tail lines for session metadata parsing.
+///
+/// Compressed `.jsonl.zst` rollouts cannot seek to the tail without decoding the
+/// entire file, so only a bounded head prefix is decoded and the file `mtime`
+/// (preserved by Codex on compression) supplies `last_active_at`.
+fn read_session_head_tail(path: &Path) -> Option<(Vec<String>, Vec<String>, Option<i64>)> {
+    if !codex_rollout::is_compressed_rollout_path(path) {
+        let (head, tail) = read_head_tail_lines(path, PARSE_HEAD_LINES, PARSE_TAIL_LINES).ok()?;
+        return Some((head, tail, None));
+    }
+
+    let mut reader =
+        codex_rollout::open_rollout_reader(path, Some(codex_rollout::HEAD_BYTE_LIMIT))?;
+    let mut head = Vec::with_capacity(PARSE_HEAD_LINES);
+    let mut buffer = Vec::new();
+    let mut read_error = false;
+
+    for _ in 0..PARSE_HEAD_LINES {
+        buffer.clear();
+        match reader.read_until(b'\n', &mut buffer) {
+            Ok(0) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buffer);
+                head.push(line.trim_end_matches(['\r', '\n']).to_string());
+            }
+            Err(_) => {
+                read_error = true;
+                break;
+            }
+        }
+    }
+
+    if head.is_empty() && read_error {
+        return None;
+    }
+
+    Some((head, Vec::new(), file_modified_ms(path)))
+}
+
 fn parse_session(path: &Path) -> Option<SessionMeta> {
-    let (head, tail) = read_head_tail_lines(path, 30, 30).ok()?;
+    let (head, tail, fallback_last_active_at) = read_session_head_tail(path)?;
 
     let mut session_id: Option<String> = None;
     let mut project_dir: Option<String> = None;
     let mut created_at: Option<i64> = None;
+    let mut head_last_active_at: Option<i64> = None;
     let mut title: Option<String> = None;
 
     for line in &head {
@@ -1058,8 +1145,9 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
             Err(_) => continue,
         };
 
-        if created_at.is_none() {
-            created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
+        if let Some(ts) = value.get("timestamp").and_then(parse_timestamp_to_ms) {
+            created_at.get_or_insert(ts);
+            head_last_active_at = Some(ts);
         }
 
         if value.get("type").and_then(Value::as_str) == Some("session_meta") {
@@ -1078,6 +1166,7 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
                 }
                 if let Some(timestamp) = payload.get("timestamp").and_then(parse_timestamp_to_ms) {
                     created_at.get_or_insert(timestamp);
+                    head_last_active_at.get_or_insert(timestamp);
                 }
             }
         }
@@ -1114,6 +1203,10 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
         if last_active_at.is_some() && summary.is_some() {
             break;
         }
+    }
+
+    if last_active_at.is_none() && codex_rollout::is_compressed_rollout_path(path) {
+        last_active_at = fallback_last_active_at.or(head_last_active_at);
     }
 
     let session_id = session_id.or_else(|| infer_session_id_from_filename(path))?;
@@ -1185,10 +1278,35 @@ fn collect_jsonl_files(root: &Path, files: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             collect_jsonl_files(&path, files);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+        } else if is_rollout_artifact_file(&path) {
             files.push(path);
         }
     }
+}
+
+/// Drops `<name>.jsonl.zst` when its plain `<name>.jsonl` sibling is also present,
+/// preserving the original order of the kept paths.
+fn dedupe_rollout_siblings(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    let plain_paths: HashSet<PathBuf> = files
+        .iter()
+        .filter(|path| !codex_rollout::is_compressed_rollout_path(path))
+        .cloned()
+        .collect();
+
+    if plain_paths.is_empty() {
+        return files;
+    }
+
+    files
+        .into_iter()
+        .filter(|path| {
+            if !codex_rollout::is_compressed_rollout_path(path) {
+                return true;
+            }
+            let plain_sibling = path.with_extension("");
+            !plain_paths.contains(&plain_sibling)
+        })
+        .collect()
 }
 
 fn find_sessions_root(path: &Path) -> Option<PathBuf> {
@@ -2025,6 +2143,179 @@ mod tests {
         assert_eq!(
             sessions[0].resume_command.as_deref(),
             Some("pushd \"D:/GitHub/project with space\" && codex resume 11111111-2222-3333-4444-555555555555")
+        );
+    }
+
+    #[test]
+    fn scan_sessions_and_recent_discover_compressed_rollouts_and_dedupe_siblings() {
+        let test_dir = TestDir::new("compressed-scan");
+        let sessions_root = test_dir.path().join("sessions");
+        let compressed_id = "22222222-3333-4444-5555-666666666666";
+        let sibling_id = "33333333-4444-5555-6666-777777777777";
+        let corrupt_id = "44444444-5555-6666-7777-888888888888";
+
+        let compressed_path = sessions_root
+            .join("2026")
+            .join("11")
+            .join("01")
+            .join(format!(
+                "rollout-2026-11-01T10-00-00-{compressed_id}.jsonl.zst"
+            ));
+        write_compressed_rollout(
+            &compressed_path,
+            &[
+                session_meta_record(compressed_id, "legacy", None),
+                user_record("Compressed rollout question"),
+            ],
+        );
+
+        let sibling_plain = sessions_root
+            .join("2026")
+            .join("11")
+            .join("02")
+            .join(format!("rollout-2026-11-02T10-00-00-{sibling_id}.jsonl"));
+        let sibling_compressed = sessions_root
+            .join("2026")
+            .join("11")
+            .join("02")
+            .join(format!(
+                "rollout-2026-11-02T10-00-00-{sibling_id}.jsonl.zst"
+            ));
+        write_lineage_rollout(
+            &sibling_plain,
+            &[
+                session_meta_record(sibling_id, "legacy", None),
+                user_record("Plain sibling wins"),
+            ],
+        );
+        write_compressed_rollout(
+            &sibling_compressed,
+            &[
+                session_meta_record(sibling_id, "legacy", None),
+                user_record("Compressed sibling should be skipped"),
+            ],
+        );
+
+        let corrupt_path = sessions_root
+            .join("2026")
+            .join("11")
+            .join("03")
+            .join(format!(
+                "rollout-2026-11-03T10-00-00-{corrupt_id}.jsonl.zst"
+            ));
+        fs::create_dir_all(corrupt_path.parent().unwrap()).expect("create corrupt dir");
+        fs::write(&corrupt_path, b"not-valid-zstd-bytes").expect("write corrupt zst");
+
+        let sessions = scan_sessions(&sessions_root);
+        assert_eq!(sessions.len(), 2);
+
+        let compressed_meta = sessions
+            .iter()
+            .find(|session| session.session_id == compressed_id)
+            .expect("compressed rollout should be listed");
+        assert_eq!(
+            compressed_meta.source_path,
+            compressed_path.to_string_lossy()
+        );
+        assert_eq!(
+            compressed_meta.title.as_deref(),
+            Some("Compressed rollout question")
+        );
+        assert_eq!(compressed_meta.project_dir.as_deref(), Some("/tmp/project"));
+        assert!(compressed_meta.created_at.is_some());
+        assert!(compressed_meta.last_active_at.is_some());
+
+        let sibling_meta = sessions
+            .iter()
+            .find(|session| session.session_id == sibling_id)
+            .expect("sibling rollout should be listed once");
+        assert_eq!(sibling_meta.source_path, sibling_plain.to_string_lossy());
+        assert_eq!(sibling_meta.title.as_deref(), Some("Plain sibling wins"));
+
+        let recent = super::scan_recent_sessions(&sessions_root, 10);
+        assert_eq!(recent.len(), 2);
+        assert!(recent
+            .iter()
+            .any(|session| session.session_id == compressed_id));
+        assert!(recent
+            .iter()
+            .any(|session| session.source_path == sibling_plain.to_string_lossy()));
+    }
+
+    #[test]
+    fn compressed_rollout_supports_messages_search_rename_and_snapshot_roundtrip() {
+        let test_dir = TestDir::new("compressed-roundtrip");
+        let sessions_root = test_dir.path().join("sessions");
+        let session_id = "55555555-6666-7777-8888-999999999999";
+        let compressed_path = sessions_root
+            .join("2026")
+            .join("11")
+            .join("05")
+            .join(format!(
+                "rollout-2026-11-05T10-00-00-{session_id}.jsonl.zst"
+            ));
+        write_compressed_rollout(
+            &compressed_path,
+            &[
+                session_meta_record(session_id, "legacy", None),
+                user_record("Find the zstd needle in this session"),
+            ],
+        );
+
+        let messages = load_messages(&compressed_path).expect("load compressed messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "Find the zstd needle in this session");
+
+        assert!(scan_messages_for_query(&compressed_path, "zstd needle")
+            .expect("query compressed rollout"));
+
+        super::rename_session(
+            compressed_path.to_string_lossy().as_ref(),
+            "Renamed Compressed Thread",
+        )
+        .expect("rename compressed rollout");
+        let sessions = scan_sessions(&sessions_root);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].title.as_deref(),
+            Some("Renamed Compressed Thread")
+        );
+
+        let snapshot = super::export_native_snapshot(&sessions_root, &compressed_path)
+            .expect("export compressed rollout snapshot");
+        assert_eq!(
+            snapshot
+                .get("relativeSessionPath")
+                .and_then(serde_json::Value::as_str),
+            Some(
+                "2026/11/05/rollout-2026-11-05T10-00-00-55555555-6666-7777-8888-999999999999.jsonl"
+            )
+        );
+        assert!(snapshot
+            .get("sessionFileContent")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|content| content.contains("Find the zstd needle in this session")));
+
+        let import_dir = TestDir::new("compressed-import");
+        let import_sessions_root = import_dir.path().join("sessions");
+        let imported_path =
+            super::import_native_snapshot(&import_sessions_root, session_id, &snapshot)
+                .expect("import plain snapshot exported from compressed rollout");
+        assert_eq!(
+            imported_path.extension().and_then(|ext| ext.to_str()),
+            Some("jsonl")
+        );
+        let imported_sessions = scan_sessions(&import_sessions_root);
+        assert_eq!(imported_sessions.len(), 1);
+        assert_eq!(
+            imported_sessions[0].title.as_deref(),
+            Some("Renamed Compressed Thread")
+        );
+        let imported_messages = load_messages(&imported_path).expect("load imported messages");
+        assert_eq!(imported_messages.len(), 1);
+        assert_eq!(
+            imported_messages[0].content,
+            "Find the zstd needle in this session"
         );
     }
 }

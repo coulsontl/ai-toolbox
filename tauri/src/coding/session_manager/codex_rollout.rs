@@ -70,7 +70,7 @@ const HEAD_LINE_LIMIT: usize = 64;
 /// nothing for real files while keeping a damaged or hostile `.jsonl.zst` from
 /// ballooning a list scan (a compressed file can decode to far more than its
 /// size on disk).
-const HEAD_BYTE_LIMIT: u64 = 1 << 20;
+pub(super) const HEAD_BYTE_LIMIT: u64 = 1 << 20;
 
 /// Ceiling on the rollouts one [`rollout_cwds`] pass may read.
 ///
@@ -880,13 +880,22 @@ pub(super) fn same_rollout_path(left: &str, right: &str) -> bool {
 }
 
 /// Normalize a path for the comparison above.
+///
+/// Codex keeps `<name>.jsonl` in `state_<N>.sqlite` even after cold-compressing
+/// the file on disk to `<name>.jsonl.zst`, so strip an optional `.zst` suffix
+/// off `.jsonl.zst` paths before comparing.
 fn normalize_path_for_compare(path: &str) -> String {
-    let slashed = path.trim().replace('\\', "/");
+    let mut normalized = path.trim().replace('\\', "/");
     if cfg!(windows) {
-        slashed.to_lowercase()
-    } else {
-        slashed
+        normalized = normalized.to_lowercase();
     }
+    if let Some(stem) = normalized
+        .strip_suffix(ROLLOUT_COMPRESSED_SUFFIX)
+        .filter(|stem| stem.ends_with(ROLLOUT_SUFFIX))
+    {
+        normalized.truncate(stem.len());
+    }
+    normalized
 }
 
 fn is_rollout_timestamp(candidate: &str) -> bool {
@@ -1422,6 +1431,31 @@ mod tests {
             &candidates[0]
         };
         assert_eq!(candidates[selected].0, expected.0);
+    }
+
+    #[test]
+    fn database_plain_path_matches_compressed_rollout_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_state_db(
+            dir.path(),
+            "state_5.sqlite",
+            &[(PREFIX_ID, r"C:\codex\sessions\2026\09\11\rollout-old.jsonl")],
+        );
+        let index = CodexStateIndex::load(dir.path()).expect("index should load");
+
+        let candidates = vec![
+            (
+                "C:/codex/sessions/2026/09/17/rollout-new.jsonl.zst".to_string(),
+                900,
+            ),
+            (
+                "C:/codex/sessions/2026/09/11/rollout-old.jsonl.zst".to_string(),
+                100,
+            ),
+        ];
+        let selected = select_canonical_index(Some(&index), PREFIX_ID, &candidates)
+            .expect("a candidate should be selected");
+        assert_eq!(candidates[selected].0, candidates[1].0);
     }
 
     /// Builds a two-rollout paginated thread: a prefix and a child that references
