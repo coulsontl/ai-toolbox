@@ -45,6 +45,7 @@ use tauri::{
 #[derive(Clone, Copy)]
 struct TrayTexts {
     show_window: &'static str,
+    plugins_accounts: &'static str,
     quit: &'static str,
     lightweight_mode: &'static str,
     main_model: &'static str,
@@ -143,6 +144,7 @@ fn tray_texts(language: &str) -> TrayTexts {
     if language != "zh-CN" {
         TrayTexts {
             show_window: "Open Main Window",
+            plugins_accounts: "Plugins: Channels & Accounts  ›",
             quit: "Quit",
             lightweight_mode: "Lightweight Mode",
             main_model: "Main Model",
@@ -178,6 +180,7 @@ fn tray_texts(language: &str) -> TrayTexts {
     } else {
         TrayTexts {
             show_window: "打开主界面",
+            plugins_accounts: "插件：渠道与账号  ›",
             quit: "退出",
             lightweight_mode: "轻量模式",
             main_model: "主模型",
@@ -225,12 +228,16 @@ static LAST_USAGE_TEXT: Mutex<Option<String>> = Mutex::new(None);
 const TRAY_SHOW_MENU_ID: &str = "show";
 const TRAY_QUIT_MENU_ID: &str = "app_quit";
 const TRAY_LIGHTWEIGHT_MENU_ID: &str = "lightweight_mode";
-/// Emitted after the main window is up when the tray usage block is clicked.
-const GATEWAY_STATISTICS_OPEN_EVENT: &str = "gateway-open-statistics";
-/// Set when the usage block is clicked while the window is gone, so the
-/// freshly built webview can drain it even if the event fires before its
-/// listener is mounted (same cold-start race as deep-link import).
-static PENDING_GATEWAY_STATISTICS_NAVIGATION: AtomicBool = AtomicBool::new(false);
+const TRAY_PLUGINS_ACCOUNTS_MENU_ID: &str = "plugins_accounts";
+const GATEWAY_STATISTICS_PATH: &str = "/gateway/statistics";
+const PLUGINS_ACCOUNTS_PATH: &str = "/plugins/accounts";
+/// Emitted after the main window is up when a tray entry navigates to a page.
+/// The payload is the target route, e.g. `/plugins/accounts`.
+const TRAY_NAVIGATE_EVENT: &str = "tray-navigate";
+/// Target route of a tray navigation requested while the webview was being
+/// rebuilt. The freshly mounted frontend drains it through
+/// `take_pending_tray_navigation` because the live event races its listener.
+static PENDING_TRAY_NAVIGATION: Mutex<Option<String>> = Mutex::new(None);
 
 /// How long the event loop gets to act on `app.exit` before the watchdog
 /// concludes it was dropped.
@@ -299,17 +306,33 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Record that the next successfully loaded frontend should open the gateway
-/// statistics tab. Used when the webview is being rebuilt and cannot have
-/// mounted its event listener yet.
-fn mark_gateway_statistics_navigation_pending() {
-    PENDING_GATEWAY_STATISTICS_NAVIGATION.store(true, Ordering::SeqCst);
+/// Bring the main window forward and navigate it to `path`. In lightweight
+/// mode the window is rebuilt, so the target is also left as a pending route
+/// for the freshly mounted frontend to drain.
+fn navigate_from_tray<R: Runtime>(app: &AppHandle<R>, path: &str) {
+    if crate::lightweight::is_lightweight_mode() {
+        mark_tray_navigation_pending(path);
+    }
+    show_main_window(app);
+    let _ = app.emit(TRAY_NAVIGATE_EVENT, path);
+}
+
+/// Record that the next successfully loaded frontend should open `path`. Used
+/// when the webview is being rebuilt and cannot have mounted its event
+/// listener yet.
+fn mark_tray_navigation_pending(path: &str) {
+    if let Ok(mut pending) = PENDING_TRAY_NAVIGATION.lock() {
+        *pending = Some(path.to_string());
+    }
 }
 
 /// Frontend-facing command: atomically take the pending navigation request.
 #[tauri::command]
-pub fn take_pending_gateway_statistics_navigation() -> bool {
-    PENDING_GATEWAY_STATISTICS_NAVIGATION.swap(false, Ordering::SeqCst)
+pub fn take_pending_tray_navigation() -> Option<String> {
+    PENDING_TRAY_NAVIGATION
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 #[cfg(target_os = "macos")]
@@ -375,14 +398,10 @@ pub fn create_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 show_main_window(app);
             } else if event_id == crate::tray_usage::TRAY_GATEWAY_USAGE_MENU_ID {
                 // The menu line is itself the navigation: open the statistics
-                // tab without a second click. In lightweight mode the webview
-                // is rebuilt by `show_main_window`, so the event would race the
-                // listener mount — leave a pending flag it drains at startup.
-                if crate::lightweight::is_lightweight_mode() {
-                    mark_gateway_statistics_navigation_pending();
-                }
-                show_main_window(app);
-                let _ = app.emit(GATEWAY_STATISTICS_OPEN_EVENT, ());
+                // tab without a second click.
+                navigate_from_tray(app, GATEWAY_STATISTICS_PATH);
+            } else if event_id == TRAY_PLUGINS_ACCOUNTS_MENU_ID {
+                navigate_from_tray(app, PLUGINS_ACCOUNTS_PATH);
             } else if event_id == TRAY_LIGHTWEIGHT_MENU_ID {
                 if crate::lightweight::is_lightweight_mode() {
                     if let Err(e) = crate::lightweight::exit_lightweight_mode(app) {
@@ -1475,6 +1494,20 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
+    let plugins_accounts_item = if is_tab_visible("plugins") {
+        Some(
+            MenuItem::with_id(
+                app,
+                TRAY_PLUGINS_ACCOUNTS_MENU_ID,
+                texts.plugins_accounts,
+                true,
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
     // OpenCode Model section (only if enabled)
     let opencode_model_header = if opencode_enabled {
         Some(
@@ -2151,6 +2184,13 @@ async fn refresh_tray_menus_inner<R: Runtime>(app: &AppHandle<R>) -> Result<(), 
     // "open main window" entry so it is the first number the user sees.
     if let Some(usage_item) = usage_item {
         menu.append(&usage_item).map_err(|e| e.to_string())?;
+        append_separator(&menu)?;
+    }
+
+    // Navigation shortcut for the plugins workspace: only present while the
+    // Plugins tab is enabled.
+    if let Some(ref plugins_accounts_item) = plugins_accounts_item {
+        menu.append(plugins_accounts_item).map_err(|e| e.to_string())?;
         append_separator(&menu)?;
     }
 
@@ -4212,6 +4252,27 @@ mod tests {
         assert!(!usage_text_is_unchanged("今日  1.5M ($0.41)"));
 
         *LAST_USAGE_TEXT.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn pending_tray_navigation_is_taken_once() {
+        *PENDING_TRAY_NAVIGATION.lock().unwrap() = None;
+
+        mark_tray_navigation_pending(PLUGINS_ACCOUNTS_PATH);
+        assert_eq!(
+            take_pending_tray_navigation().as_deref(),
+            Some(PLUGINS_ACCOUNTS_PATH)
+        );
+        assert_eq!(take_pending_tray_navigation(), None);
+    }
+
+    #[test]
+    fn plugins_accounts_entry_uses_the_requested_wording() {
+        assert_eq!(tray_texts("zh-CN").plugins_accounts, "插件：渠道与账号  ›");
+        assert_eq!(
+            tray_texts("en-US").plugins_accounts,
+            "Plugins: Channels & Accounts  ›"
+        );
     }
 
     #[test]

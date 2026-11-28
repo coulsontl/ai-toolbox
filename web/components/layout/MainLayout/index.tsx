@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { CodeOutlined, SettingOutlined } from '@ant-design/icons';
 import { platform } from '@tauri-apps/plugin-os';
-import { takePendingGatewayStatisticsNavigation } from '@/services';
+import { takePendingTrayNavigation } from '@/services';
 import { MODULES } from '@/constants';
 import { useAppStore, useSettingsStore } from '@/stores';
 import { useThemeStore } from '@/stores/themeStore';
@@ -54,6 +54,16 @@ const DRAG_BAR_HEIGHT = platform() === 'windows' || platform() === 'linux' ? 0 :
 const HEADER_HEIGHT = 56; // px
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
 
+// A pending tray route is a one-shot handoff. React StrictMode mounts effects
+// twice in development, so cache the in-flight read: the second mount must see
+// the same route instead of finding it already consumed by the first.
+let pendingTrayNavigationPromise: Promise<string | null> | null = null;
+
+const readPendingTrayNavigation = (): Promise<string | null> => {
+  pendingTrayNavigationPromise ??= takePendingTrayNavigation();
+  return pendingTrayNavigationPromise;
+};
+
 const MainLayout: React.FC = () => {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -85,10 +95,11 @@ const MainLayout: React.FC = () => {
     };
   }, []);
 
-  // Tray usage block: opening the window counts as "show me that usage", so the
-  // click navigates to the statistics tab. Tray clicks fire inside the native
-  // menu's modal loop, which can run before this window's listener exists, so
-  // the backend also leaves a pending flag for the rebuilt webview to drain.
+  // Tray navigation entries (the usage line and the plugins shortcut): opening
+  // the window counts as "show me that page", so the click navigates to the
+  // target route. Tray clicks fire inside the native menu's modal loop, which
+  // can run before this window's listener exists, so the backend also leaves a
+  // pending route for the rebuilt webview to drain.
   //
   // The pending drain must win over the cold-boot "restore last tab" redirect
   // below: in lightweight mode both run in the same mount pass, and whichever
@@ -97,24 +108,30 @@ const MainLayout: React.FC = () => {
   const trayNavigationPendingRef = React.useRef(false);
   React.useEffect(() => {
     let disposed = false;
-    const openStatistics = () => {
+    const openTrayRoute = (route: string) => {
       trayNavigationPendingRef.current = true;
-      navigate('/gateway/statistics');
+      navigate(route);
     };
 
     void (async () => {
-      const pending = await takePendingGatewayStatisticsNavigation();
-      if (!disposed && pending) openStatistics();
+      const pendingRoute = await readPendingTrayNavigation();
+      if (!disposed && pendingRoute) {
+        openTrayRoute(pendingRoute);
+        // Consumed; a later remount must not replay the same route.
+        pendingTrayNavigationPromise = null;
+      }
     })();
 
     let unlisten: (() => void) | undefined;
-    void listen('gateway-open-statistics', () => openStatistics()).then((dispose) => {
-      if (disposed) {
-        dispose();
-        return;
-      }
-      unlisten = dispose;
-    });
+    void listen<string>('tray-navigate', (event) => openTrayRoute(event.payload)).then(
+      (dispose) => {
+        if (disposed) {
+          dispose();
+          return;
+        }
+        unlisten = dispose;
+      },
+    );
 
     return () => {
       disposed = true;

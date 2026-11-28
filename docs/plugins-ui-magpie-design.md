@@ -130,7 +130,7 @@
   - 开启开关：将 `npmRegistry` 设为 `https://registry.npmmirror.com` 并立即调 `savePluginSettings` 持久化；
   - 关闭开关：将 `npmRegistry` 设为 `https://registry.npmjs.org` 并立即持久化；
   - 若用户在「运行时」里手动填了私有 registry（非 npmjs 且非 npmmirror），开关显示关闭并在运行时页保持其自定义 URL。
-- 状态共享：在 `PluginsPage` 维护一份共享的 `pluginSettings` 与 `onToggleChinaMirror(enabled)` 回调（切完后触发保存 + 轻 toast 提示，并同步更新运行时页的草稿与已安装/市场页开关，保证三处实时一致）。
+- 状态共享：在 `PluginsPage` 维护一份共享的 `pluginSettings` 与 `onToggleChinaMirror(enabled)` 回调（切完后触发保存 + 轻 toast 提示，并同步更新运行时页的草稿与市场页开关，保证两处实时一致）。
 
 ---
 
@@ -160,7 +160,7 @@
 
 **顶栏（sticky，background `var(--pl-bg)`）**：
 - 左侧：轻量分段器（`全部 / 供应商 / 中间件 / 页面` + 安静数字计数）；
-- 右侧：`国内镜像` Switch（标签 + 开关）+ 紧凑搜索框（`220px`）+ 排序切换（`A→Z` / `Z→A` 可选）+ 刷新按钮 + 柔靛「安装插件」按钮。
+- 右侧：紧凑搜索框（`220px`）+ 排序切换（`A→Z` / `Z→A` 可选）+ 刷新按钮 + 「检查更新」（有多个可更新项时追加「全部更新」）。该页不再放 `国内镜像` 开关和「安装插件」按钮：安装入口统一在市场页、侧栏「安装插件」与空态「手动安装」。
 
 **主体列表（取代原 2 列厚阴影卡片）**：
 - 整块圆角列表容器：`background: var(--pl-surface)`，`border: 1px solid var(--pl-border)`，`border-radius: var(--pl-radius-card)`，`box-shadow: var(--pl-shadow-card)`，`overflow: hidden`；
@@ -189,7 +189,8 @@
 ### 5.2 「插件市场」页（`PluginMarketView` + 新建 `PluginMarketDetailModal` — 参考 Magpie 图 2 & 图 3）
 
 **顶栏（sticky，background `var(--pl-bg)`）**：
-- 类型分段器（`全部 / 供应商 / 中间件 / 页面`）+ 市场源 Select + 搜索框 + `搜索 npm` 轻开关 + **`国内镜像` Switch** + 「管理市场源」按钮 + 刷新按钮 + 安静总数 `N 个插件`。
+- 一级可见：类型分段器（`全部 / 供应商 / 中间件 / 页面`）+ 市场源 Select + 搜索框 + 刷新图标按钮 + `MoreHorizontal` 更多菜单 + 安静总数 `N 个插件`。
+- 更多菜单承载次级操作：`搜索 npm` 勾选项、**`国内镜像` 勾选项**、「管理市场源」。刷新是高频操作，保持一级可见；其余操作不得重新铺回工具栏，否则常见窗口宽度下会折到第二行。
 
 **三列网格（桌面固定一行 3 个！）**：
 ```less
@@ -239,13 +240,11 @@
   - 左：横向可滚动的渠道药丸胶囊列表（`min-height: 32px`，选中态柔靛 `var(--pl-accent-bg)` + `var(--pl-accent-border)` + `var(--pl-accent-text)`；含图标 + 名称 + 健康小圆点 + 账号数）；
   - 右：紧凑搜索框（`180px`）+ 图标刷新按钮（`32×32`）。
 
-#### 选中渠道信息头（紧凑单行卡片）
-- `padding: 12px 16px`，`border-radius: var(--pl-radius-card)`，`background: var(--pl-surface)`，`border: 1px solid var(--pl-border)`：
-  - 左：`32px` 图标 + `渠道名`（`15px / 600`）+ 同行/下行轻灰信息：`@package-spec` · `已登录 N 个账号`（去掉冗余的 `渠道 Provider` 胶囊）；
-  - 右操作组（统一 `32px` 高度、`8px` 圆角，主次分明）：
-    - **主按钮**（唯一实心柔靛 `var(--pl-accent)` 白字）：`登录账号`；
-    - 次级轻量按钮（`var(--pl-surface)` + `1px` 细边）：`添加到 CLI`、`刷新模型`、（有 `usage` 时）`刷新额度`、（有 `checkin` 时）`一键签到`；
-    - **渠道级「自动签到」Switch**（仅当 `selectedProvider.checkin === true` 时显示）：紧邻「一键签到」，带简洁文字标签「自动签到」+ `Switch size="small"` + Tooltip 说明「开启后每天自动为该渠道下所有已启用账号签到」。
+#### 选中渠道信息头（两行卡片，所有操作平铺可见）
+- `padding: 12px 16px`，`border-radius: var(--pl-radius-card)`，`background: var(--pl-surface)`，`border: 1px solid var(--pl-border)`，内部纵向 `gap: 8px`：
+  - **第一行（身份 + 主操作）**：`32px` 图标 + `渠道名`（`15px / 600`）+ 下行轻灰信息 `@package-spec` · `已登录 N 个账号`（去掉冗余的 `渠道 Provider` 胶囊）；右侧只放唯一实心主按钮 `登录账号`（`32px` 高、`8px` 圆角），靠标题 `flex: 1` 自然推到最右。
+  - **第二行（次级操作组，`1px solid var(--pl-divider)` 顶部分隔线 + `8px` 内边距）**：左侧依次为 `添加到 CLI`、`刷新模型`、（有 `usage` 时）`刷新额度`、（有 `checkin` 时）`一键签到`、插件动作菜单，均为 `var(--pl-surface)` + `1px` 细边的轻量按钮；**渠道级「自动签到」Switch**（仅当 `selectedProvider.checkin === true` 时显示）放在该行最右端（`margin-left: auto`），带简洁文字标签「自动签到」+ `Switch size="small"` + Tooltip 说明「开启后每天自动为该渠道下所有已启用账号签到」。窄屏（`< 760px`）取消该自动外边距，让按钮与开关按顺序换行。
+  - 所有操作保持一级可见，**不折叠进「更多」菜单**；不要把它们塞回首行，否则常见宽度下会与标题争抢空间并折行。
 
 #### 账号列表（单列紧凑，参考 Magpie 图 5）
 - 容器：整块圆角列表卡（`var(--pl-surface)` + `1px solid var(--pl-border)` + `border-radius: var(--pl-radius-card)`），多账号之间用 `1px solid var(--pl-divider)` 分隔，**保持单列排布**；

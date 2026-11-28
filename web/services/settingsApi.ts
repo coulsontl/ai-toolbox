@@ -372,16 +372,16 @@ export const saveGatewayUsageRange = async (range: GatewayUsageRangeValue): Prom
 };
 
 /**
- * Take a "open gateway statistics" request left by the tray while the window
- * was being rebuilt (lightweight mode), so the freshly mounted page can act on
+ * Take a tray navigation request (target route) left while the window was
+ * being rebuilt in lightweight mode, so the freshly mounted page can act on
  * it even though the live event fired before its listener existed.
  */
-export const takePendingGatewayStatisticsNavigation = async (): Promise<boolean> => {
+export const takePendingTrayNavigation = async (): Promise<string | null> => {
   try {
-    return await invoke<boolean>('take_pending_gateway_statistics_navigation');
+    return await invoke<string | null>('take_pending_tray_navigation');
   } catch (error) {
-    console.error('Failed to take pending gateway statistics navigation:', error);
-    return false;
+    console.error('Failed to take pending tray navigation:', error);
+    return null;
   }
 };
 

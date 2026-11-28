@@ -3027,7 +3027,7 @@ pub fn run() {
             coding::open_claw::launch_openclaw_gateway,
             // Tray
             tray::refresh_tray_menu,
-            tray::take_pending_gateway_statistics_navigation,
+            tray::take_pending_tray_navigation,
             // Oh My OpenAgent
             coding::oh_my_openagent::list_oh_my_openagent_configs,
             coding::oh_my_openagent::create_oh_my_openagent_config,

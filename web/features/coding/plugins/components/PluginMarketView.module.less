@@ -78,19 +78,12 @@
   max-width: 100%;
 }
 
-.npmToggle,
-.mirrorToggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--pl-text-secondary);
-  cursor: pointer;
-  font-size: 12px;
-  white-space: nowrap;
+.refreshButton {
+  margin-left: auto;
 }
 
-.mirrorToggle {
-  gap: 8px;
+.menuCheckHidden {
+  opacity: 0;
 }
 
 .actionButton {
@@ -166,7 +159,6 @@
 }
 
 .totalLabel {
-  margin-left: auto;
   color: var(--pl-text-muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -454,7 +446,7 @@
     width: 100%;
   }
 
-  .totalLabel {
+  .refreshButton {
     margin-left: 0;
   }
 }

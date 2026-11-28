@@ -1,11 +1,12 @@
 import React from 'react';
-import { App, Input, Select, Spin, Switch, Tooltip } from 'antd';
+import { App, Dropdown, Input, Select, Spin, Tooltip, type MenuProps } from 'antd';
 import {
   Check,
   Combine,
   Download,
   Layers,
   Loader2,
+  MoreHorizontal,
   PanelsTopLeft,
   PlugZap,
   RefreshCw,
@@ -250,6 +251,60 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
     );
   };
 
+  const mirrorEnabled = isChinaMirrorRegistry(pluginSettings?.npmRegistry);
+  const selectedMoreKeys = [
+    ...(includeNpmSearch ? ['npm-search'] : []),
+    ...(mirrorEnabled ? ['china-mirror'] : []),
+  ];
+  const moreMenuItems: MenuProps['items'] = [
+    {
+      key: 'npm-search',
+      icon: (
+        <Check
+          size={14}
+          className={includeNpmSearch ? undefined : styles.menuCheckHidden}
+          aria-hidden="true"
+        />
+      ),
+      label: t('plugins.market.includeNpmSearch'),
+    },
+    {
+      key: 'china-mirror',
+      icon: chinaMirrorBusy ? (
+        <Loader2 size={14} className={styles.spin} aria-hidden="true" />
+      ) : (
+        <Check
+          size={14}
+          className={mirrorEnabled ? undefined : styles.menuCheckHidden}
+          aria-hidden="true"
+        />
+      ),
+      label: t('plugins.market.chinaMirror'),
+      disabled: chinaMirrorBusy || !pluginSettings,
+    },
+    { type: 'divider', key: 'more-divider' },
+    {
+      key: 'manage-markets',
+      icon: <Settings2 size={14} aria-hidden="true" />,
+      label: t('plugins.market.manageMarkets'),
+    },
+  ];
+
+  const handleMoreMenuClick: MenuProps['onClick'] = ({ key }) => {
+    if (key === 'npm-search') {
+      setIncludeNpmSearch((current) => !current);
+      return;
+    }
+    if (key === 'china-mirror') {
+      if (chinaMirrorBusy || !pluginSettings) return;
+      onToggleChinaMirror(!mirrorEnabled);
+      return;
+    }
+    if (key === 'manage-markets') {
+      setRegistryOpen(true);
+    }
+  };
+
   const detailListing = detailPackage
     ? listings.find((listing) => listing.package === detailPackage) ?? null
     : null;
@@ -296,40 +351,10 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
           className={styles.searchInput}
         />
 
-        <label className={styles.npmToggle}>
-          <Switch
-            size="small"
-            checked={includeNpmSearch}
-            onChange={setIncludeNpmSearch}
-          />
-          <span>{t('plugins.market.includeNpmSearch')}</span>
-        </label>
-
-        <label className={styles.mirrorToggle}>
-          <span>{t('plugins.market.chinaMirror')}</span>
-          <Switch
-            size="small"
-            checked={isChinaMirrorRegistry(pluginSettings?.npmRegistry)}
-            loading={chinaMirrorBusy}
-            disabled={chinaMirrorBusy || !pluginSettings}
-            aria-label={t('plugins.market.chinaMirror')}
-            onChange={onToggleChinaMirror}
-          />
-        </label>
-
-        <button
-          type="button"
-          className={styles.actionButton}
-          onClick={() => setRegistryOpen(true)}
-        >
-          <Settings2 size={14} aria-hidden="true" />
-          <span>{t('plugins.market.manageMarkets')}</span>
-        </button>
-
         <Tooltip title={t('plugins.market.refresh')}>
           <button
             type="button"
-            className={styles.iconButton}
+            className={`${styles.iconButton} ${styles.refreshButton}`}
             aria-label={t('plugins.market.refresh')}
             disabled={refreshing}
             onClick={() => void handleRefresh()}
@@ -340,6 +365,28 @@ const PluginMarketView: React.FC<PluginMarketViewProps> = ({
               aria-hidden="true"
             />
           </button>
+        </Tooltip>
+
+        <Tooltip title={t('common.more')}>
+          <Dropdown
+            trigger={['click']}
+            placement="bottomRight"
+            menu={{
+              items: moreMenuItems,
+              selectable: true,
+              multiple: true,
+              selectedKeys: selectedMoreKeys,
+              onClick: handleMoreMenuClick,
+            }}
+          >
+            <button
+              type="button"
+              className={styles.iconButton}
+              aria-label={t('common.more')}
+            >
+              <MoreHorizontal size={16} aria-hidden="true" />
+            </button>
+          </Dropdown>
         </Tooltip>
 
         <span className={styles.totalLabel}>

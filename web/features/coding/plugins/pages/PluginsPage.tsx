@@ -792,8 +792,6 @@ const PluginsPage: React.FC = () => {
                 accounts={accounts}
                 middlewareStates={middlewareStates}
                 bunStatus={bunStatus}
-                pluginSettings={pluginSettings}
-                chinaMirrorBusy={chinaMirrorBusy}
                 updateItems={updateItems}
                 checkingUpdates={checkingUpdates}
                 loading={loading}
@@ -802,7 +800,6 @@ const PluginsPage: React.FC = () => {
                 onCheckUpdates={handleCheckUpdates}
                 onUpdateSummary={handleUpdateSummary}
                 onDataChanged={reloadSharedData}
-                onToggleChinaMirror={(enabled) => void handleToggleChinaMirror(enabled)}
                 onOpenInstall={() => openInstallModal()}
                 onBrowseMarket={() => handleSelectTab('market')}
                 onOpenRuntime={() => handleSelectTab('runtime')}

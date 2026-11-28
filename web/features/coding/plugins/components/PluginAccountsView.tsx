@@ -776,28 +776,28 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
         {selectedProvider ? (
           <>
             <div className={styles.detailHeader}>
-              <PluginIcon
-                icon={selectedProvider.icon}
-                name={providerName}
-                size={32}
-              />
-              <div className={styles.detailHeading}>
-                <h2 className={styles.detailTitle}>{providerName}</h2>
-                <div className={styles.detailMeta}>
-                  {providerSpec ? (
-                    <>
-                      <span className={styles.detailSpec} title={providerSpec}>
-                        {providerSpec}
-                      </span>
-                      <span aria-hidden="true">·</span>
-                    </>
-                  ) : null}
-                  <span>
-                    {t('plugins.accounts.signedInCount', { count: providerAccounts.length })}
-                  </span>
+              <div className={styles.detailHeaderMain}>
+                <PluginIcon
+                  icon={selectedProvider.icon}
+                  name={providerName}
+                  size={32}
+                />
+                <div className={styles.detailHeading}>
+                  <h2 className={styles.detailTitle}>{providerName}</h2>
+                  <div className={styles.detailMeta}>
+                    {providerSpec ? (
+                      <>
+                        <span className={styles.detailSpec} title={providerSpec}>
+                          {providerSpec}
+                        </span>
+                        <span aria-hidden="true">·</span>
+                      </>
+                    ) : null}
+                    <span>
+                      {t('plugins.accounts.signedInCount', { count: providerAccounts.length })}
+                    </span>
+                  </div>
                 </div>
-              </div>
-              <div className={styles.detailActions}>
                 {/* Disabled native buttons swallow pointer events, so the
                     tooltip needs a wrapper span to explain the lock. */}
                 <Tooltip
@@ -817,6 +817,8 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                     </button>
                   </span>
                 </Tooltip>
+              </div>
+              <div className={styles.detailActions}>
                 <button
                   type="button"
                   className={styles.actionButton}
@@ -866,27 +868,6 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                     <span>{t('plugins.accounts.checkinAll')}</span>
                   </button>
                 ) : null}
-                {selectedProvider.checkin ? (
-                  <Tooltip title={t('plugins.accounts.autoCheckinHint')}>
-                    <label
-                      className={`${styles.autoCheckinControl} ${
-                        providerAutoCheckinBusy ? styles.switchControlDisabled : ''
-                      }`}
-                    >
-                      <span className={styles.switchLabel}>
-                        {t('plugins.accounts.autoCheckin')}
-                      </span>
-                      <Switch
-                        size="small"
-                        checked={Boolean(selectedProvider.autoCheckin)}
-                        loading={providerAutoCheckinBusy}
-                        disabled={providerAutoCheckinBusy}
-                        aria-label={t('plugins.accounts.autoCheckin')}
-                        onChange={(checked) => void handleProviderAutoCheckinToggle(checked)}
-                      />
-                    </label>
-                  </Tooltip>
-                ) : null}
                 {providerMenuActions.length > 0 && onTriggerAction ? (
                   <Dropdown
                     trigger={['click']}
@@ -921,6 +902,27 @@ const PluginAccountsView: React.FC<PluginAccountsViewProps> = ({
                       <ChevronDown size={13} aria-hidden="true" />
                     </button>
                   </Dropdown>
+                ) : null}
+                {selectedProvider.checkin ? (
+                  <Tooltip title={t('plugins.accounts.autoCheckinHint')}>
+                    <label
+                      className={`${styles.autoCheckinControl} ${
+                        providerAutoCheckinBusy ? styles.switchControlDisabled : ''
+                      }`}
+                    >
+                      <span className={styles.switchLabel}>
+                        {t('plugins.accounts.autoCheckin')}
+                      </span>
+                      <Switch
+                        size="small"
+                        checked={Boolean(selectedProvider.autoCheckin)}
+                        loading={providerAutoCheckinBusy}
+                        disabled={providerAutoCheckinBusy}
+                        aria-label={t('plugins.accounts.autoCheckin')}
+                        onChange={(checked) => void handleProviderAutoCheckinToggle(checked)}
+                      />
+                    </label>
+                  </Tooltip>
                 ) : null}
               </div>
             </div>

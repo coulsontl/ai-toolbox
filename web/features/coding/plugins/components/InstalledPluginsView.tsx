@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Checkbox, Dropdown, Input, Modal, Spin, Switch, Tooltip } from 'antd';
+import { App, Checkbox, Dropdown, Input, Modal, Spin, Tooltip } from 'antd';
 import {
   ArrowDownAZ,
   ArrowUpAZ,
@@ -12,7 +12,6 @@ import {
   PackageCheck,
   PanelsTopLeft,
   PlugZap,
-  Plus,
   Power,
   PowerOff,
   RefreshCw,
@@ -36,7 +35,6 @@ import {
   type MiddlewareStateView,
   type PluginAccountSummary,
   type PluginKind,
-  type PluginSettings,
   type PluginToolDto,
   type PluginToolsSummaryDto,
   type PluginUpdateItem,
@@ -49,7 +47,6 @@ import {
   getPluginKindCategory,
   getPluginPageTitle,
   getPluginSummary,
-  isChinaMirrorRegistry,
   isMiddlewarePluginKind,
   isPagePluginKind,
   isProviderPluginKind,
@@ -65,8 +62,6 @@ interface InstalledPluginsViewProps {
   accounts: PluginAccountSummary[];
   middlewareStates: MiddlewareStateView[];
   bunStatus: BunRuntimeStatus | null;
-  pluginSettings: PluginSettings | null;
-  chinaMirrorBusy: boolean;
   /** Latest known available update per plugin id, shared with the runtime view. */
   updateItems: Record<string, PluginUpdateItem>;
   checkingUpdates: boolean;
@@ -76,7 +71,6 @@ interface InstalledPluginsViewProps {
   onCheckUpdates: () => Promise<PluginUpdateSummary>;
   onUpdateSummary: (summary: PluginUpdateSummary) => void;
   onDataChanged: () => Promise<void>;
-  onToggleChinaMirror: (enabled: boolean) => void;
   onOpenInstall: () => void;
   onBrowseMarket: () => void;
   onOpenRuntime: () => void;
@@ -90,8 +84,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   accounts,
   middlewareStates,
   bunStatus,
-  pluginSettings,
-  chinaMirrorBusy,
   updateItems,
   checkingUpdates,
   loading,
@@ -100,7 +92,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   onCheckUpdates,
   onUpdateSummary,
   onDataChanged,
-  onToggleChinaMirror,
   onOpenInstall,
   onBrowseMarket,
   onOpenRuntime,
@@ -125,7 +116,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
   const [uninstallBusy, setUninstallBusy] = React.useState(false);
   const [toolsSummary, setToolsSummary] = React.useState<PluginToolsSummaryDto | null>(null);
   const [syncingTools, setSyncingTools] = React.useState(false);
-  const chinaMirror = isChinaMirrorRegistry(pluginSettings?.npmRegistry);
 
   // Tools are optional decoration for this page: a failing backend command
   // (older build, host not ready) hides the strip instead of blocking the list.
@@ -559,17 +549,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
           ))}
         </div>
         <div className={styles.toolbarActions}>
-          <label className={styles.mirrorToggle}>
-            <span>{t('plugins.installed.chinaMirror')}</span>
-            <Switch
-              size="small"
-              checked={chinaMirror}
-              loading={chinaMirrorBusy}
-              disabled={chinaMirrorBusy || !pluginSettings}
-              aria-label={t('plugins.installed.chinaMirror')}
-              onChange={onToggleChinaMirror}
-            />
-          </label>
           <Input
             allowClear
             value={search}
@@ -648,14 +627,6 @@ const InstalledPluginsView: React.FC<InstalledPluginsViewProps> = ({
               </span>
             </button>
           ) : null}
-          <button
-            type="button"
-            className={`${styles.actionButton} ${styles.actionButtonPrimary}`}
-            onClick={onOpenInstall}
-          >
-            <Plus size={14} aria-hidden="true" />
-            <span>{t('plugins.installed.install')}</span>
-          </button>
         </div>
       </div>
 

@@ -209,14 +209,22 @@
 .detailHeader {
   display: flex;
   min-width: 0;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   padding: 12px 16px;
   border: 1px solid var(--pl-border);
   border-radius: var(--pl-radius-card);
   background: var(--pl-surface);
   box-shadow: var(--pl-shadow-card);
+}
+
+/* Title row keeps the primary login action next to the channel name. */
+.detailHeaderMain {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .detailHeading {
@@ -256,9 +264,12 @@
 
 .detailActions {
   display: flex;
+  min-width: 0;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--pl-divider);
 }
 
 /* Disabled buttons swallow pointer events; this wrapper keeps the tooltip
@@ -273,6 +284,7 @@
   height: 32px;
   align-items: center;
   gap: 8px;
+  margin-left: auto;
   padding: 0 4px;
   color: var(--pl-text-secondary);
   cursor: pointer;
@@ -1023,15 +1035,15 @@
     width: 140px;
   }
 
-  .detailHeader {
-    align-items: flex-start;
-  }
-
   .detailActions,
   .accountControls {
     width: 100%;
     margin-left: 0;
     justify-content: flex-start;
+  }
+
+  .autoCheckinControl {
+    margin-left: 0;
   }
 
   .modelSearch {
